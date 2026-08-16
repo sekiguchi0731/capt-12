@@ -148,6 +148,9 @@ def theorem4_gap_table(frame: pd.DataFrame) -> pd.DataFrame:
     result["attainment_full"] = np.where(abs(denom_full) > 1e-12, (result["U_CAPT"] - result["U_decoder_cover"]) / denom_full, np.nan)
     result["attainment_envelope"] = np.where(abs(denom_env) > 1e-12, (result["U_CAPT"] - result["U_decoder_cover"]) / denom_env, np.nan)
     result["converse_looseness"] = np.where(abs(denom_env) > 1e-12, (result["U_envelope"] - result["U_full"]) / denom_env, np.nan)
+    for column in ["attainment_full", "attainment_envelope", "converse_looseness"]:
+        result.loc[np.isclose(result[column], 0.0, atol=1e-12), column] = 0.0
+        result.loc[np.isclose(result[column], 1.0, atol=1e-12), column] = 1.0
     return result
 
 
