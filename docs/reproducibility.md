@@ -85,6 +85,36 @@ results, and model artifacts are ignored by Git. Source manifests under
   profile-wide input-independent common cover. They demonstrate the fail-safe,
   not a nontrivial CAPT privacy-utility improvement.
 
+## Fixed-support certificate scaling
+
+Use the focused experiment before interpreting a larger refitted Criteo run:
+
+```bash
+uv run capt12 fixed-support-scaling \
+  --config configs/criteo_fixed_support_scaling.yaml
+```
+
+This command freezes the `features_kv_bits_constrained_2` mapper, hash encoder,
+reference model, partition, decoder, common-cover distribution, utility cost,
+objective weights, support sets, and adjacency hashes from the complete
+`D_model` and `D_design` splits. It then selects one display per user-day by a
+stable event hash and evaluates nested BLAKE2b-ranked `D_cert` prefixes at 5k,
+10k, 25k, 50k, 100k, and full for sampling seeds 0, 1, and 2.
+
+The output separates the frozen Cartesian-minus-design tuple set from the
+design-minus-certificate tuple set. The current certified mechanism continues
+to use the Cartesian complete-coverage gate. A reported
+`design_support_ready_without_boundary_certificate` value is diagnostic only:
+it is not permission to certify on observed design support without a frozen
+runtime support rule and privacy constraints across the supported/unsupported
+boundary. Sample-size projections use design frequencies and require temporal
+stationarity; they are not certificate guarantees.
+
+Each of the 18 cells writes a self-contained certificate and immediately runs
+the independent bundle verifier. The ignored run directory also contains the
+frozen support table, component artifacts, CSV/Parquet results, deterministic
+PDF/PNG diagnostics, metadata, and a report.
+
 ## Full-scale command
 
 ```bash
