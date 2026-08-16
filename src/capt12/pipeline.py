@@ -189,6 +189,7 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
         frequencies,
         scores=population.token_scores,
     )
+    decoder_cover_retention = float(np.max(decoder @ objective_weights))
     block_groups = {
         key: _aggregate_distribution(value, assignment, l_count)
         for key, value in population.distributions.items()
@@ -359,6 +360,7 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
     metrics["confidence"] = config.get("confidence", "point")
     metrics["case"] = "standard"
     metrics["problem_signature"] = problem_signature
+    metrics["decoder_cover_retention"] = decoder_cover_retention
     metrics["certificate_audit_gap"] = np.nan
     metrics.to_parquet(path / "metrics.parquet", index=False)
     metrics.to_csv(path / "tables" / "metrics.csv", index=False)

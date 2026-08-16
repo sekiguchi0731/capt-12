@@ -151,6 +151,19 @@ Plot captions distinguish the CAPT-to-full algorithmic/block approximation gap
 from the full-to-envelope converse-relaxation looseness. Non-nested partitions
 need not be utility-monotone in `L`.
 
+For gap normalization, `U_decoder_cover(L)` is the best input-independent
+channel representable by the same fixed partition and common decoder as the
+CAPT row. If decoder row `D_l` is the output distribution for block `l`, then
+for exact-token retention
+
+`U_decoder_cover(L) = max_l sum_z pi(z) D_l(z)`.
+
+This channel is feasible in the fixed CAPT class by sending every source block
+to the maximizing destination block. Thus `U_decoder_cover <= U_CAPT`, and the
+reported CAPT-to-full/envelope attainment fractions use this within-class
+baseline. The separate token-level empirical common-cover mechanism is not
+used as their denominator.
+
 ## Risk-utility partition
 
 On `D_design` only, token `z` receives

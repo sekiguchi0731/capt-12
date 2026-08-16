@@ -92,11 +92,23 @@ def theorem4_gap_table(frame: pd.DataFrame) -> pd.DataFrame:
         ]
         if key in frame
     ]
-    capt = frame[frame["mechanism"] == "capt_block"]
-    if capt.empty or "L" not in capt:
+    capt_rows = frame[frame["mechanism"] == "capt_block"]
+    if capt_rows.empty or "L" not in capt_rows:
         return pd.DataFrame()
+    if "decoder_cover_retention" in capt_rows:
+        decoder_cover = (
+            capt_rows.groupby([*match_keys, "L"], dropna=False)[
+                "decoder_cover_retention"
+            ]
+            .mean()
+            .rename("U_decoder_cover")
+            .reset_index()
+        )
+    else:
+        decoder_cover = capt_rows[[*match_keys, "L"]].drop_duplicates()
+        decoder_cover["U_decoder_cover"] = np.nan
     capt = (
-        capt.groupby([*match_keys, "L"], dropna=False)["utility_retention"]
+        capt_rows.groupby([*match_keys, "L"], dropna=False)["utility_retention"]
         .mean()
         .rename("U_CAPT")
         .reset_index()
@@ -126,22 +138,15 @@ def theorem4_gap_table(frame: pd.DataFrame) -> pd.DataFrame:
         .rename("U_envelope")
         .reset_index()
     )
-    cover = (
-        frame[frame["mechanism"] == "common_cover"]
-        .groupby(match_keys, dropna=False)["utility_retention"]
-        .mean()
-        .rename("U_cover")
-        .reset_index()
-    )
     result = (
         capt.merge(full, on=match_keys, how="left")
         .merge(envelope, on=match_keys, how="left")
-        .merge(cover, on=match_keys, how="left")
+        .merge(decoder_cover, on=[*match_keys, "L"], how="left")
     )
-    denom_full = result["U_full"] - result["U_cover"]
-    denom_env = result["U_envelope"] - result["U_cover"]
-    result["attainment_full"] = np.where(abs(denom_full) > 1e-12, (result["U_CAPT"] - result["U_cover"]) / denom_full, np.nan)
-    result["attainment_envelope"] = np.where(abs(denom_env) > 1e-12, (result["U_CAPT"] - result["U_cover"]) / denom_env, np.nan)
+    denom_full = result["U_full"] - result["U_decoder_cover"]
+    denom_env = result["U_envelope"] - result["U_decoder_cover"]
+    result["attainment_full"] = np.where(abs(denom_full) > 1e-12, (result["U_CAPT"] - result["U_decoder_cover"]) / denom_full, np.nan)
+    result["attainment_envelope"] = np.where(abs(denom_env) > 1e-12, (result["U_CAPT"] - result["U_decoder_cover"]) / denom_env, np.nan)
     result["converse_looseness"] = np.where(abs(denom_env) > 1e-12, (result["U_envelope"] - result["U_full"]) / denom_env, np.nan)
     return result
 
@@ -211,7 +216,7 @@ def figure2(frame: pd.DataFrame, output: Path) -> list[Path]:
         ):
             melted = subset.melt(
                 id_vars=[column for column in [*condition_keys, "seed", "L"] if column in subset],
-                value_vars=["U_CAPT", "U_full", "U_envelope", "U_cover"],
+                value_vars=["U_CAPT", "U_full", "U_envelope", "U_decoder_cover"],
                 var_name="quantity",
                 value_name="retention",
             )
@@ -263,7 +268,7 @@ def figure2(frame: pd.DataFrame, output: Path) -> list[Path]:
         axes[row_idx, 1].set_title(f"Gap fractions — {title}", fontsize=10)
     fig.suptitle("Theorem-4 gap decomposition (retention only)", y=0.995)
     fig.subplots_adjust(hspace=0.55, top=0.96)
-    caption = "Known-population synthetic results only. Each row fixes K, epsilon, case, partition, and decoder; only seed is aggregated as a replicate. U_full is included only when the full LP is feasible, solver-optimal, independently verified, and marked comparison-eligible. U_CAPT(L) <= U_full <= U_envelope; L=K reaches full, not necessarily the envelope."
+    caption = "Known-population synthetic results only. Each row fixes K, epsilon, case, partition, and decoder; only seed is aggregated as a replicate. U_full is included only when the full LP is feasible, solver-optimal, independently verified, and marked comparison-eligible. U_CAPT(L) <= U_full <= U_envelope; L=K reaches full, not necessarily the envelope. Gap attainment is normalized from U_decoder_cover, the best input-independent cover representable by that row's fixed partition and common decoder, so it is a within-CAPT-class baseline rather than the separate token-level common-cover mechanism."
     return _save(fig, source, output, FIGURE_NAMES[2], caption)
 
 
@@ -289,6 +294,7 @@ def figure3(frame: pd.DataFrame, output: Path) -> list[Path]:
                 "pi_weighting",
                 "cost_aggregation",
                 "confidence",
+                "problem_signature",
             ]
             if key in source and key in gap
         ]

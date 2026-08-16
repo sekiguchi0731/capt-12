@@ -70,6 +70,11 @@ def test_theorem4_grid_enumerates_decoder_and_marks_verified_full(tmp_path) -> N
     assert full["full_comparison_eligible"].all()
     gap = theorem4_gap_table(result)
     assert gap["U_full"].notna().all()
+    assert gap["U_decoder_cover"].notna().all()
+    assert (gap["U_CAPT"] >= gap["U_decoder_cover"] - 1e-10).all()
+    for column in ["attainment_full", "attainment_envelope"]:
+        observed = gap[column].dropna()
+        assert observed.between(-1e-10, 1 + 1e-10).all()
     ineligible = result.copy()
     ineligible.loc[
         ineligible["mechanism"] == "capt_full", "full_oracle_optimized"
