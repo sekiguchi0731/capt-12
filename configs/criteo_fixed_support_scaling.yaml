@@ -1,0 +1,11 @@
+base_config: criteo_main.yaml
+output_dir: outputs/fixed_support_runs
+profiles:
+  - features_kv_bits_constrained_2
+seed: 0
+frozen_design_seed: 0
+fixed_support_scaling:
+  cert_sizes: [5000, 10000, 25000, 50000, 100000]
+  cert_sampling_seeds: [0, 1, 2]
+  frozen_design_seed: 0
+

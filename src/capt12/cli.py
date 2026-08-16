@@ -266,6 +266,17 @@ def verify_certificate(
         raise typer.Exit(code=1)
 
 
+@app.command("fixed-support-scaling")
+def fixed_support_scaling(
+    config: Path = typer.Option(..., "--config", exists=True),
+) -> None:
+    """Run a frozen Criteo design against nested D_cert user-day samples."""
+    from capt12.experiments.fixed_support import run_fixed_support_scaling
+
+    path = run_fixed_support_scaling(_load(config))
+    typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),
