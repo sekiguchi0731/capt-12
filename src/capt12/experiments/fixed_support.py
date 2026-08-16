@@ -115,6 +115,12 @@ def _peak_rss_bytes() -> int:
     return value if value > 10_000_000 else value * 1024
 
 
+def ordered_size_labels(results: pd.DataFrame) -> list[str]:
+    """Normalize nullable numeric targets to the string labels stored per cell."""
+    numeric = pd.to_numeric(results["cert_target_user_days"], errors="coerce")
+    return [str(int(value)) for value in sorted(numeric.dropna().unique())] + [FULL_LABEL]
+
+
 def _fixed_design(
     config: dict[str, Any],
     path: Path,
@@ -600,10 +606,7 @@ def _plot_results(results: pd.DataFrame, path: Path) -> None:
     orange = "#D97706"
     grey = "#666666"
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    ordered_labels = [
-        str(value)
-        for value in sorted(value for value in results["cert_target_user_days"].dropna().unique())
-    ] + [FULL_LABEL]
+    ordered_labels = ordered_size_labels(results)
     label_to_x = {label: idx for idx, label in enumerate(ordered_labels)}
     plot_frame = results.copy()
     plot_frame["x"] = plot_frame["cert_size_label"].map(label_to_x)
@@ -656,22 +659,24 @@ def _plot_results(results: pd.DataFrame, path: Path) -> None:
         subset = subset.sort_values("x")
         axes[1, 0].plot(
             subset["x"],
-            subset["min_design_group_count"],
+            subset["design_groups_below_min_count"],
             color=blue,
             alpha=0.35,
             marker="o",
             label=f"seed {seed}",
         )
-    axes[1, 0].axhline(
-        20,
-        color=orange,
-        linestyle="--",
-        label="min_group_count=20",
+    axes[1, 0].text(
+        0.02,
+        0.06,
+        "minimum design-group count = 0 at every cell",
+        transform=axes[1, 0].transAxes,
+        fontsize=8,
+        color=grey,
     )
-    axes[1, 0].set_yscale("symlog", linthresh=1)
-    axes[1, 0].set_title("Minimum count over frozen design support")
-    axes[1, 0].set_ylabel("minimum count")
-    axes[1, 0].legend(fontsize=7, ncol=2)
+    axes[1, 0].set_ylim(bottom=0)
+    axes[1, 0].set_title("Frozen design groups below count 20")
+    axes[1, 0].set_ylabel("group count (missing included)")
+    axes[1, 0].legend(fontsize=7, ncol=3)
 
     fallback = grouped["mechanism_fallback_share"].mean().reindex(x)
     nontrivial = grouped["nontrivial_channel"].mean().reindex(x)
@@ -714,7 +719,11 @@ def _write_report(
     path: Path,
 ) -> None:
     full = results.loc[results["cert_size_label"] == FULL_LABEL]
+    full_row = full.iloc[0]
     structural = int(results["cartesian_minus_design_count"].iloc[0])
+    constraints = int(results["certificate_checked_constraints"].sum())
+    n_observed = int(results["n_all_design_groups_observed_95_union_bound"].iloc[0])
+    n_count_20 = int(results["n_min_expected_count_20"].iloc[0])
     report = f"""# Criteo fixed-support nested D_cert experiment
 
 ## Scope
@@ -730,13 +739,17 @@ def _write_report(
 - G_design: joint tuples observed in full D_model union D_design after the frozen mapper.
 - G_cert(n): tuples observed in the nested contributed certificate sample.
 
-G_cart has {int(results["G_cart_count"].iloc[0])} tuples; G_design has {int(results["G_design_count"].iloc[0])}. The fixed difference G_cart minus G_design contains {structural} structural-zero candidates.
+G_cart has {int(results["G_cart_count"].iloc[0])} tuples; G_design has {int(results["G_design_count"].iloc[0])}. The fixed difference G_cart minus G_design contains {structural} structural-zero candidates. These are candidates rather than proven zeros: {int(full_row["cartesian_minus_design_observed_in_cert_count"])} of the {structural} appear in full D_cert.
 
 ## Full-split result
 
-Across the three sampling seeds, full D_cert contains {int(full["cert_user_days"].min())} user-days. Cartesian missing ranges from {int(full["cartesian_minus_cert_count"].min())} to {int(full["cartesian_minus_cert_count"].max())}; design-support missing ranges from {int(full["design_minus_cert_count"].min())} to {int(full["design_minus_cert_count"].max())}.
+Across the three sampling seeds, full D_cert contains {int(full["cert_user_days"].min())} user-days. The deterministic full sample has {int(full_row["cartesian_minus_cert_count"])} Cartesian groups missing and {int(full_row["design_minus_cert_count"])} design-support groups missing. Of the {int(results["G_design_count"].iloc[0])} frozen design groups, {int(full_row["design_groups_below_min_count"])} have count below 20 (missing groups included); the minimum count is {int(full_row["min_design_group_count"])}. Rare observed groups carry only {float(full_row["rare_group_mass"]):.6f} of full D_cert mass, so low mass does not remove the complete-coverage gate.
 
-All {len(results)} cells have valid certificates. Certified CAPT remains the input-independent common cover whenever the current Cartesian support is incomplete or rare. `design_support_ready_without_boundary_certificate` is diagnostic only: it must not be interpreted as a sound supported-only certificate because supported/unsupported boundary constraints are not implemented.
+Observed tuple-adjacency paths are complete in every cell. Nevertheless, all {len(results)} cells stop before LP optimization with `forced_cover_incomplete_group_coverage`, `mechanism_fallback_share=1`, and `U_CAPT=U_common_cover`. All {len(results)} certificates pass independent verification, covering {constraints:,} checked robust constraints in total.
+
+Using frozen D_model-union-D_design frequencies as p_g, the rarest design group has estimated probability {float(full_row["min_design_probability"]):.3e}. A union-bound projection needs about {n_observed:,} user-days for every design group to be observed with probability at least 0.95, and about {n_count_20:,} for the rarest group's expected count to reach 20.
+
+Certified CAPT remains the input-independent common cover whenever the current Cartesian support is incomplete or rare. `design_support_ready_without_boundary_certificate` is false in every cell and is diagnostic only: it must not be interpreted as a sound supported-only certificate because supported/unsupported boundary constraints are not implemented.
 
 ## Interpretation
 

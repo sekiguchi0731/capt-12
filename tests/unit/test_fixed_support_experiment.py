@@ -3,7 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from capt12.experiments.fixed_support import cartesian_support_from_domains
+from capt12.experiments.fixed_support import (
+    cartesian_support_from_domains,
+    ordered_size_labels,
+)
 from capt12.experiments.sampling import (
     select_one_display_per_user_day,
     stable_hash64,
@@ -81,3 +84,15 @@ def test_cartesian_support_does_not_add_padding_nan_level() -> None:
     )
     assert len(support) == 5 * 4
     assert all("nan" not in value for group in support for value in group)
+
+
+def test_plot_size_labels_match_cell_labels() -> None:
+    results = pd.DataFrame(
+        {
+            "cert_target_user_days": [5000.0, 10000.0, np.nan],
+            "cert_size_label": ["5000", "10000", "full"],
+        }
+    )
+    labels = ordered_size_labels(results)
+    assert labels == ["5000", "10000", "full"]
+    assert results["cert_size_label"].isin(labels).all()
