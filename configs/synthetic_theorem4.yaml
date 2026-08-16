@@ -2,6 +2,7 @@ dataset: synthetic_theorem4
 seed: 0
 seeds: [0, 1, 2]
 output_dir: outputs/runs
+require_clean_worktree: true
 K: 3
 K_list: [3]
 L_list: [1, 2, 3]
@@ -14,4 +15,3 @@ confidence: point
 adjacency: tuple_adjacent
 full_max_k: 256
 solver_tolerance: 1.0e-9
-

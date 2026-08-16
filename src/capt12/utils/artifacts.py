@@ -31,6 +31,34 @@ def git_sha() -> str:
         return "unknown"
 
 
+def git_worktree_changes() -> list[str]:
+    """Return tracked and untracked non-ignored changes affecting provenance."""
+    try:
+        output = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("cannot establish Git worktree provenance") from error
+    return [line for line in output.splitlines() if line.strip()]
+
+
+def require_clean_worktree() -> str:
+    """Require a clean, committed source tree and return its Git SHA."""
+    sha = git_sha()
+    if sha == "unknown":
+        raise RuntimeError("certified runs require a committed Git revision")
+    changes = git_worktree_changes()
+    if changes:
+        preview = ", ".join(changes[:5])
+        raise RuntimeError(
+            "certified runs require a clean Git worktree; commit or discard source "
+            f"changes first ({preview})"
+        )
+    return sha
+
+
 def environment() -> dict[str, Any]:
     wanted = ["numpy", "scipy", "pandas", "pyarrow", "scikit-learn", "typer"]
     versions = {}
@@ -73,4 +101,3 @@ def finish_run(path: Path, extra: dict[str, Any] | None = None) -> None:
     manifest["status"] = "complete"
     manifest["completed_at"] = datetime.now(UTC).isoformat()
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-

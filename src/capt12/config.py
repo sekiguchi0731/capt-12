@@ -70,6 +70,10 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> di
 
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(config)
+    if cfg.get("require_clean_worktree") is False:
+        raise ValueError(
+            "certificate-producing runs cannot disable the clean-worktree requirement"
+        )
     for key in ("K", "L"):
         if key in cfg:
             cfg[key] = int(cfg[key])

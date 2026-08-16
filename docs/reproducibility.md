@@ -32,6 +32,12 @@ run ID. Each ignored run directory records seed, component names, git SHA,
 dependency versions, split IDs, input file metadata, solver status/size, model
 and mechanism hashes, metrics, certificate, and plot source tables.
 
+Certificate-producing runs require a clean worktree at a committed revision.
+The resolved config records that revision as `source_git_sha`, and the writer
+requires it to equal the certificate's `code_git_sha`. Verification rejects a
+bundle whose two SHA fields disagree. Generated artifacts must therefore be
+rerun after the last source commit; an older certificate is not relabeled.
+
 Version-2 certificates embed histogram counts, structured groups, partition,
 and common decoder. `verify-certificate` reconstructs adjacency and confidence
 boxes, validates the block-to-token lift and component hashes, and rechecks the
@@ -39,6 +45,11 @@ robust constraints with a verifier-owned tolerance capped at `1e-8`. This
 establishes internal deployment-bundle consistency; it does not independently
 prove that embedded counts came from the named raw shards. Raw-data provenance
 requires a separately trusted manifest or signature.
+
+Theorem-4 rows include a `problem_signature` over the distributions,
+adjacency, objective weights, and cost matrix. Figure aggregation matches this
+signature together with K, epsilon, seed, case, partition, decoder, distortion,
+weighting, and confidence so unrelated smoke runs cannot enter the comparison.
 
 Generated data, source data, DP histograms, checkpoints, caches, certificates,
 results, and model artifacts are ignored by Git. Source manifests under

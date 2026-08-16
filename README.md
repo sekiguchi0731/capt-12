@@ -65,6 +65,10 @@ robust constraints using a verifier-owned tolerance. It is bundle-consistency
 verification, not authentication of the original raw data; deployment still
 requires a trusted manifest or signature for provenance.
 
+Certificate generation also requires a clean committed worktree. The embedded
+`source_git_sha` and `code_git_sha` must agree, so publication artifacts must be
+regenerated after the final implementation commit.
+
 Serialized external `f_ref` artifacts must declare feature columns, and a
 precomputed prediction column requires `prediction_manifest_path` declaring
 its upstream features. Certified Criteo runs reject either path if protected

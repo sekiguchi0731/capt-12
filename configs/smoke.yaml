@@ -1,6 +1,7 @@
 dataset: synthetic
 seed: 0
 output_dir: outputs/runs
+require_clean_worktree: true
 K: 6
 L: 3
 n_rows: 3000

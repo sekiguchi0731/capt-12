@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from capt12.pipeline import run_synthetic, run_theorem4_grid
 from capt12.plots.paper import plot_paper_suite, theorem4_gap_table
+
+
+@pytest.fixture(autouse=True)
+def _clean_committed_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "capt12.pipeline.require_clean_worktree", lambda: "test-source-sha"
+    )
+    monkeypatch.setattr(
+        "capt12.certification.artifact.require_clean_worktree",
+        lambda: "test-source-sha",
+    )
 
 
 def test_synthetic_pipeline_and_all_paper_figures(tmp_path) -> None:

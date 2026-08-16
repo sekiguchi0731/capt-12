@@ -64,6 +64,7 @@ from capt12.privacy.profile import evaluate_profile_privacy
 from capt12.utils.artifacts import (
     finish_run,
     prepare_run,
+    require_clean_worktree,
     sha256_file,
 )
 
@@ -74,6 +75,15 @@ def _aggregate_distribution(distribution: np.ndarray, assignment: np.ndarray, l_
 
 def _singleton_decoder(k: int) -> np.ndarray:
     return np.eye(k)
+
+
+def record_source_provenance(config: dict[str, Any]) -> dict[str, Any]:
+    config = dict(config)
+    sha = require_clean_worktree()
+    config["require_clean_worktree"] = True
+    config["source_worktree_clean"] = True
+    config["source_git_sha"] = sha
+    return config
 
 
 def _problem_signature(
@@ -146,6 +156,7 @@ def _metric_row(
 
 def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
     config = validate_config(config)
+    config = record_source_provenance(config)
     path = prepare_run(config)
     k = int(config.get("K", 6))
     l_count = int(config.get("L", min(3, k)))
@@ -380,9 +391,10 @@ def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFr
             "distortion": "retention",
             "mechanisms": ["common_cover", "capt_block", "capt_full"],
         }
+        cfg = record_source_provenance(validate_config(cfg))
         target = (
             Path(cfg.get("output_dir", "outputs/runs"))
-            / run_id(validate_config(cfg))
+            / run_id(cfg)
             / "metrics.parquet"
         )
         if resume and target.exists():
@@ -666,6 +678,7 @@ def _audit_certificate_comparison(
 
 def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[Path, pd.DataFrame]:
     config = validate_config(config)
+    config = record_source_provenance(config)
     required_splits = {"D_model", "D_design", "D_cert", "D_attack_train", "D_test"}
     if set(config.get("splits", {})) != required_splits:
         raise ValueError(f"Criteo requires exactly five splits: {sorted(required_splits)}")

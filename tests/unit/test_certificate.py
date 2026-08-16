@@ -13,6 +13,14 @@ from capt12.mechanisms.lp import SolverInfo
 from capt12.privacy.adjacency import Group, build_adjacency
 
 
+@pytest.fixture(autouse=True)
+def _clean_committed_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "capt12.certification.artifact.require_clean_worktree",
+        lambda: "test-source-sha",
+    )
+
+
 def test_certificate_roundtrip_verifies_identically(tmp_path) -> None:
     groups = [Group("a", (0,)), Group("a", (1,))]
     p0 = np.array([0.7, 0.3])
@@ -139,6 +147,38 @@ def test_certificate_ignores_embedded_solver_gap_and_checks_hashes(tmp_path) -> 
     result = verify_certificate(path)
     assert not result.valid
     assert "hash mismatch" in result.worst_case["error"]
+
+
+def test_certificate_rejects_mismatched_source_provenance(tmp_path) -> None:
+    groups = [Group("a", (0,)), Group("a", (1,))]
+    values = [np.array([0.6, 0.4]), np.array([0.4, 0.6])]
+    boxes = {
+        group.key(): ConfidenceBox(value, value, value, "point", 1)
+        for group, value in zip(groups, values, strict=True)
+    }
+    adjacency = build_adjacency(groups, epsilon=0)
+    channel = common_cover(np.array([0.5, 0.5]))
+    certificate = make_certificate(
+        config={"dataset": "synthetic", "epsilon": 0},
+        channel=channel,
+        boxes=boxes,
+        adjacency=adjacency,
+        verification=verify_robust_channel(channel, boxes, adjacency),
+        solver=SolverInfo("optimal", 0, 0, 1),
+        assignment=np.arange(2),
+        decoder=np.eye(2),
+        groups=groups,
+    )
+    path = tmp_path / "certificate.json"
+    certificate.write(path)
+    payload = json.loads(path.read_text())
+    payload["resolved_config"]["source_git_sha"] = "different-source-sha"
+    payload["component_hashes"]["config"] = hash_json(payload["resolved_config"])
+    path.write_text(json.dumps(payload))
+
+    rejected = verify_certificate(path)
+    assert not rejected.valid
+    assert "source Git SHA" in rejected.worst_case["error"]
 
 
 def test_experimental_and_real_data_point_certificates_are_rejected() -> None:

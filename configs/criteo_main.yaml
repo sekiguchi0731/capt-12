@@ -1,6 +1,7 @@
 dataset: criteo
 data_root: data/CriteoPrivateAd_release/data
 output_dir: outputs/runs
+require_clean_worktree: true
 seed: 0
 label_col: is_clicked
 id_col: id

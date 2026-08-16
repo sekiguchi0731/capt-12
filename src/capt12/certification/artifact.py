@@ -15,7 +15,7 @@ from capt12.confidence.boxes import CONFIDENCE_REGISTRY, ConfidenceBox
 from capt12.decoders.registry import validate_decoder
 from capt12.mechanisms.lp import lift_block_channel
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
-from capt12.utils.artifacts import git_sha, sha256_file
+from capt12.utils.artifacts import require_clean_worktree, sha256_file
 
 DEFAULT_VERIFICATION_TOLERANCE = 1e-8
 
@@ -93,6 +93,7 @@ def make_certificate(
     coverage: dict[str, Any] | None = None,
     groups: Sequence[Group] | None = None,
 ) -> Certificate:
+    config = dict(config)
     if config.get("rare_group_policy") == "merge_to_other":
         raise ValueError(
             "merge_to_other cannot produce a certificate without a frozen runtime "
@@ -131,6 +132,16 @@ def make_certificate(
             raise ValueError(
                 "user_day_iid certificates require one-display-per-uuid-day contributions"
             )
+    source_sha = require_clean_worktree()
+    declared_sha = config.get("source_git_sha")
+    if declared_sha not in {None, source_sha}:
+        raise ValueError(
+            "resolved source_git_sha does not match the clean checkout used to create "
+            "the certificate"
+        )
+    config["require_clean_worktree"] = True
+    config["source_worktree_clean"] = True
+    config["source_git_sha"] = source_sha
     if assignment is None or decoder is None:
         raise ValueError("certificates require embedded assignment and common decoder")
     if not groups:
@@ -174,7 +185,7 @@ def make_certificate(
     return Certificate(
         version=2,
         created_at=datetime.now(UTC).isoformat(),
-        code_git_sha=git_sha(),
+        code_git_sha=source_sha,
         resolved_config=config,
         component_hashes=hashes,
         split_identifiers=serialized_splits,
@@ -299,6 +310,15 @@ def _verify_profile_bundle(certificate: Certificate, path: Path) -> str | None:
 
 def _verify_provenance_metadata(certificate: Certificate) -> str | None:
     config = certificate.resolved_config
+    if config.get("require_clean_worktree") is not True:
+        return "certificate does not require a clean source worktree"
+    if config.get("source_worktree_clean") is not True:
+        return "certificate was not recorded as coming from a clean source worktree"
+    source_sha = config.get("source_git_sha")
+    if not source_sha or source_sha == "unknown":
+        return "certificate is missing a committed source Git SHA"
+    if source_sha != certificate.code_git_sha:
+        return "certificate source Git SHA does not match code_git_sha"
     if config.get("rare_group_policy") == "merge_to_other":
         return "merge_to_other certificates are disabled without runtime coarsening"
     if config.get("dataset", "synthetic") in {"synthetic", "synthetic_theorem4"}:

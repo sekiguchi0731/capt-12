@@ -8,7 +8,11 @@ from typing import Any
 import pandas as pd
 
 from capt12.config import run_id, validate_config
-from capt12.pipeline import run_pipeline, run_theorem4_grid
+from capt12.pipeline import (
+    record_source_provenance,
+    run_pipeline,
+    run_theorem4_grid,
+)
 
 MECHANISM_ALIASES = {
     "cover": "common_cover",
@@ -66,6 +70,8 @@ def run_grid(
         except ValueError as error:
             rows.append({**overrides, "status": "skipped", "skip_reason": str(error)})
             continue
+        if not dry_run:
+            cfg = record_source_provenance(cfg)
         target = Path(cfg.get("output_dir", "outputs/runs")) / run_id(cfg) / "metrics.parquet"
         if dry_run:
             rows.append({**overrides, "status": "dry_run", "run_id": run_id(cfg)})
@@ -96,4 +102,3 @@ def run_grid(
         + "\n"
     )
     return result
-
