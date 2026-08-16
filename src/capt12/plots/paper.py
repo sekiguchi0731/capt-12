@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib
@@ -13,6 +14,9 @@ import pandas as pd
 import seaborn as sns
 
 PALETTE = sns.color_palette("colorblind")
+PLOT_RANDOM_SEED = 0
+FIXED_ARTIFACT_TIME = datetime(2000, 1, 1, tzinfo=UTC)
+matplotlib.rcParams["svg.hashsalt"] = "capt12-paper-artifacts"
 FIGURE_NAMES = {
     1: "privacy_utility_frontier",
     2: "theorem4_gap_decomposition",
@@ -161,7 +165,18 @@ def _save(fig: plt.Figure, source: pd.DataFrame, output: Path, name: str, captio
     paths = []
     for suffix in ("pdf", "svg", "png"):
         target = output / f"{name}.{suffix}"
-        fig.savefig(target, bbox_inches="tight", dpi=220)
+        if suffix == "pdf":
+            metadata = {
+                "Creator": "CAPT-12",
+                "Producer": "CAPT-12",
+                "CreationDate": FIXED_ARTIFACT_TIME,
+                "ModDate": FIXED_ARTIFACT_TIME,
+            }
+        elif suffix == "svg":
+            metadata = {"Creator": "CAPT-12", "Date": "2000-01-01T00:00:00Z"}
+        else:
+            metadata = {"Software": "CAPT-12"}
+        fig.savefig(target, bbox_inches="tight", dpi=220, metadata=metadata)
         paths.append(target)
     plt.close(fig)
     return paths
@@ -184,7 +199,7 @@ def figure1(frame: pd.DataFrame, output: Path) -> list[Path]:
     for ax, metric in zip(axes.flat, metrics, strict=True):
         if _empty_or_axis(ax, source, ["epsilon_x", metric, "mechanism"]):
             continue
-        sns.lineplot(data=source, x="epsilon_x", y=metric, hue="mechanism", style="L" if "L" in source else None, estimator="mean", errorbar=("ci", 95), palette="colorblind", ax=ax)
+        sns.lineplot(data=source, x="epsilon_x", y=metric, hue="mechanism", style="L" if "L" in source else None, estimator="mean", errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, palette="colorblind", ax=ax)
         uncertified = source.get("certified", pd.Series(True, index=source.index)).fillna(False) == False  # noqa: E712
         ax.scatter(source.loc[uncertified, "epsilon_x"], _numeric(source.loc[uncertified], metric), marker="x", color="black", s=28, label="uncertified/infeasible")
         ax.set_title(metric.replace("_", " "))
@@ -229,7 +244,8 @@ def figure2(frame: pd.DataFrame, output: Path) -> list[Path]:
                 y="retention",
                 hue="quantity",
                 marker="o",
-                errorbar=("ci", 95),
+                errorbar=("pi", 100),
+                seed=PLOT_RANDOM_SEED,
                 palette="colorblind",
                 ax=axes[row_idx, 0],
             )
@@ -254,7 +270,8 @@ def figure2(frame: pd.DataFrame, output: Path) -> list[Path]:
                 y="fraction",
                 hue="gap",
                 marker="o",
-                errorbar=("ci", 95),
+                errorbar=("pi", 100),
+                seed=PLOT_RANDOM_SEED,
                 palette="colorblind",
                 ax=axes[row_idx, 1],
             )
@@ -271,7 +288,7 @@ def figure2(frame: pd.DataFrame, output: Path) -> list[Path]:
         axes[row_idx, 1].set_title(f"Gap fractions — {title}", fontsize=10)
     fig.suptitle("Theorem-4 gap decomposition (retention only)", y=0.995)
     fig.subplots_adjust(hspace=0.55, top=0.96)
-    caption = "Known-population synthetic results only. Each row fixes K, epsilon, case, partition, and decoder; only seed is aggregated as a replicate. U_full is included only when the full LP is feasible, solver-optimal, independently verified, and marked comparison-eligible. U_CAPT(L) <= U_full <= U_envelope; L=K reaches full, not necessarily the envelope. Gap attainment is normalized from U_decoder_cover, the best input-independent cover representable by that row's fixed partition and common decoder, so it is a within-CAPT-class baseline rather than the separate token-level common-cover mechanism."
+    caption = "Known-population synthetic results only. Each row fixes K, epsilon, case, partition, and decoder. Markers are means over the three seeds and bands show the observed seed minimum and maximum; no bootstrap confidence interval is claimed. U_full is included only when the full LP is feasible, solver-optimal, independently verified, and marked comparison-eligible. U_CAPT(L) <= U_full <= U_envelope; L=K reaches full, not necessarily the envelope. Gap attainment is normalized from U_decoder_cover, the best input-independent cover representable by that row's fixed partition and common decoder, so it is a within-CAPT-class baseline rather than the separate token-level common-cover mechanism. Attainment_full is N/A when U_full equals U_decoder_cover because the normalizing gap is zero."
     return _save(fig, source, output, FIGURE_NAMES[2], caption)
 
 
@@ -309,7 +326,7 @@ def figure3(frame: pd.DataFrame, output: Path) -> list[Path]:
         if _empty_or_axis(ax, source, ["L", metric]):
             continue
         hue = "partition_mode" if "partition_mode" in source else "mechanism"
-        sns.lineplot(data=source, x="L", y=metric, hue=hue, marker="o", errorbar=("ci", 95), palette="colorblind", ax=ax)
+        sns.lineplot(data=source, x="L", y=metric, hue=hue, marker="o", errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, palette="colorblind", ax=ax)
         ax.set_title(metric.replace("_", " "))
     fig.suptitle("Scaling with L")
     return _save(fig, source, output, FIGURE_NAMES[3], "Scaling panels distinguish nested and non-nested partitions. Utility monotonicity is not claimed for independently fitted non-nested partitions.")
@@ -378,7 +395,7 @@ def figure5(frame: pd.DataFrame, output: Path) -> list[Path]:
             ax = axes[row, col]
             if _empty_or_axis(ax, source, [x_name, metric]):
                 continue
-            sns.lineplot(data=source, x=x_name, y=metric, marker="o", errorbar=("ci", 95), color=PALETTE[col % len(PALETTE)], ax=ax)
+            sns.lineplot(data=source, x=x_name, y=metric, marker="o", errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, color=PALETTE[col % len(PALETTE)], ax=ax)
     fig.suptitle("Sample complexity and robustness")
     return _save(fig, source, output, FIGURE_NAMES[5], "Utility, certificate width/gap, and certificate success versus D_cert size, L, DP epsilon, confidence level, and TV shift. DP-aware points remain experimental unless explicitly certified by a future validated method.")
 
@@ -406,7 +423,7 @@ def figure7(frame: pd.DataFrame, output: Path) -> list[Path]:
     for ax, metric in zip(axes.flat, metrics[:6], strict=False):
         if _empty_or_axis(ax, source, ["mechanism", metric]):
             continue
-        sns.barplot(data=source, x="mechanism", y=metric, hue="L" if "L" in source else None, errorbar=("ci", 95), palette="colorblind", ax=ax)
+        sns.barplot(data=source, x="mechanism", y=metric, hue="L" if "L" in source else None, errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, palette="colorblind", ax=ax)
         ax.tick_params(axis="x", rotation=30)
         ax.set_title(metric)
     return _save(fig, source, output, FIGURE_NAMES[7], "Frozen reference-score surrogate diagnostics: LLHCompVN, calibration ratio, weighted log-loss, and configured target-CTR reweighting. No downstream CTR model is retrained on sanitized (O,B), so this figure does not establish deployed bidding or CTR utility.")
@@ -420,7 +437,7 @@ def figure8(frame: pd.DataFrame, output: Path) -> list[Path]:
         metric = "expected_distortion" if "expected_distortion" in source else "utility_retention"
         if _empty_or_axis(ax, source, [dimension, metric]):
             continue
-        sns.pointplot(data=source, x=dimension, y=metric, errorbar=("ci", 95), color=PALETTE[0], ax=ax)
+        sns.pointplot(data=source, x=dimension, y=metric, errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, color=PALETTE[0], ax=ax)
         ax.tick_params(axis="x", rotation=35)
         ax.set_title(dimension)
     return _save(fig, source, output, FIGURE_NAMES[8], "Ablations for frozen encoder, reference model, distortion, partition, common decoder, L, confidence construction, and TV shift.")
@@ -443,9 +460,9 @@ def _appendix(frame: pd.DataFrame, output: Path) -> list[Path]:
         fig, ax = plt.subplots(figsize=(6, 4))
         if not _empty_or_axis(ax, source, [x_name, y_name]):
             if pd.api.types.is_numeric_dtype(source[x_name]):
-                sns.lineplot(data=source, x=x_name, y=y_name, hue="mechanism" if "mechanism" in source else None, marker="o", errorbar=("ci", 95), palette="colorblind", ax=ax)
+                sns.lineplot(data=source, x=x_name, y=y_name, hue="mechanism" if "mechanism" in source else None, marker="o", errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, palette="colorblind", ax=ax)
             else:
-                sns.barplot(data=source, x=x_name, y=y_name, hue="L" if "L" in source else None, errorbar=("ci", 95), palette="colorblind", ax=ax)
+                sns.barplot(data=source, x=x_name, y=y_name, hue="L" if "L" in source else None, errorbar=("ci", 95), seed=PLOT_RANDOM_SEED, palette="colorblind", ax=ax)
         generated.extend(_save(fig, source, output, f"appendix_{name}", f"Appendix diagnostic: {name.replace('_', ' ')}. Source values come from standardized result tables."))
     return generated
 

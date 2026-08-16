@@ -54,6 +54,11 @@ Theorem-4 rows include a `problem_signature` over the distributions,
 adjacency, objective weights, and cost matrix. Figure aggregation matches this
 signature together with K, epsilon, seed, case, partition, decoder, distortion,
 weighting, and confidence so unrelated smoke runs cannot enter the comparison.
+The Theorem-4 figure reports the mean and observed min–max across its three
+seeds; it does not label a three-point bootstrap interval as a confidence
+interval. Other Seaborn bootstrap intervals use a fixed random seed. PDF/SVG
+metadata and SVG hash salt are fixed, and repeated rendering is byte-checked
+in the integration suite.
 
 Generated data, source data, DP histograms, checkpoints, caches, certificates,
 results, and model artifacts are ignored by Git. Source manifests under

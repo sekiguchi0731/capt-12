@@ -39,6 +39,13 @@ def test_synthetic_pipeline_and_all_paper_figures(tmp_path) -> None:
     assert len(generated) == (8 + 6) * 3
     assert all(item.exists() for item in generated)
     assert len(list((tmp_path / "runs" / "paper_figures").glob("*_source.csv"))) == 14
+    repeat_dir = tmp_path / "repeat_figures"
+    repeated = plot_paper_suite(tmp_path / "runs", repeat_dir)
+    assert len(repeated) == len(generated)
+    for original in generated:
+        assert original.read_bytes() == (repeat_dir / original.name).read_bytes()
+    for original in (tmp_path / "runs" / "paper_figures").glob("*_source.csv"):
+        assert original.read_bytes() == (repeat_dir / original.name).read_bytes()
     assert isinstance(pd.read_parquet(path / "metrics.parquet"), pd.DataFrame)
 
 
