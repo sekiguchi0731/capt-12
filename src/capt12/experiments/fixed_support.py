@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,6 @@ from capt12.data.loader import (
 from capt12.data.preprocessing import (
     FrozenCategoryMapper,
     build_group_histograms,
-    expected_tuple_grid,
 )
 from capt12.decoders.registry import build_decoder
 from capt12.distortions.registry import block_cost_matrix, token_cost_matrix
@@ -85,6 +85,28 @@ def _expected_frame_from_cartesian(
     attributes = profile.split("+") if profile else []
     columns = [*attributes, context]
     return pd.DataFrame(list(sorted(tuples)), columns=columns)
+
+
+def cartesian_support_from_domains(
+    domains: dict[str, set[str]],
+    *,
+    profile: str,
+    contexts: Sequence[str],
+) -> set[tuple[str, ...]]:
+    """Build the current Cartesian support without padding unequal domains."""
+    attributes = profile.split("+") if profile else []
+
+    def levels(column: str) -> list[str]:
+        values = set(map(str, domains[column]))
+        values.update({"__OTHER__", "__MISSING__"})
+        return sorted(values)
+
+    attribute_domains = [levels(column) for column in attributes]
+    context_domains = [levels(column) for column in contexts]
+    context_levels = (
+        ["|".join(values) for values in product(*context_domains)] if context_domains else ["all"]
+    )
+    return {tuple(map(str, value)) for value in product(*attribute_domains, context_levels)}
 
 
 def _peak_rss_bytes() -> int:
@@ -226,18 +248,11 @@ def _fixed_design(
     block_cost = block_cost_matrix(token_cost, assignment, decoder, cost_weights)
     block_weights = np.bincount(assignment, weights=objective_weights, minlength=l_count)
 
-    domain_frame = pd.DataFrame(
-        {column: pd.Series(sorted(values)) for column, values in domains.items()}
+    cartesian_support = cartesian_support_from_domains(
+        domains,
+        profile=profile,
+        contexts=contexts,
     )
-    cartesian_support = {
-        tuple(map(str, value))
-        for value in expected_tuple_grid(
-            domain_frame,
-            profile,
-            contexts,
-            include_fallback_levels=True,
-        )
-    }
     observed_design_support = set(combined_support)
     design_total = sum(combined_support.values())
     design_probability = {group: count / design_total for group, count in combined_support.items()}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from capt12.experiments.fixed_support import cartesian_support_from_domains
 from capt12.experiments.sampling import (
     select_one_display_per_user_day,
     stable_hash64,
@@ -67,3 +68,16 @@ def test_nested_positions_are_exact_prefixes() -> None:
         day_col="day",
     )
     assert set(positions["5"]) != set(other_seed["5"])
+
+
+def test_cartesian_support_does_not_add_padding_nan_level() -> None:
+    support = cartesian_support_from_domains(
+        {
+            "a": {"a0", "a1", "a2"},
+            "b": {"b0", "b1"},
+        },
+        profile="a",
+        contexts=["b"],
+    )
+    assert len(support) == 5 * 4
+    assert all("nan" not in value for group in support for value in group)
