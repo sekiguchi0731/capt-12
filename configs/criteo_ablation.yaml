@@ -1,0 +1,12 @@
+dataset: criteo
+base_config: configs/criteo_main.yaml
+phi_list: [hash, ctr_quantile, ctr_kmeans]
+K_list: [64, 256]
+L_list: [16, 32, 64]
+epsilon_list: [0.25, 0.5, 1.0, 2.0]
+distortion_list: [bernoulli_kl, brier, retention]
+partition_list: [frequency_balanced, score_quantile, risk_utility]
+decoder_list: [pi0_conditional, uniform_within_block, utility_medoid]
+confidence_list: [cp_box, hoeffding_box]
+shift_tv_list: [0.0, 0.01, 0.05]
+

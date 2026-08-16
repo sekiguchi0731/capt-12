@@ -1,0 +1,17 @@
+dataset: synthetic_theorem4
+seed: 0
+seeds: [0, 1, 2]
+output_dir: outputs/runs
+K: 3
+K_list: [3]
+L_list: [1, 2, 3]
+epsilon_list: [0.0, 0.25, 0.5, 1.0]
+distortion_list: [retention]
+partition_list: [frequency_balanced]
+decoder_list: [uniform_within_block]
+mechanism_list: [common_cover, capt_block, capt_full, theorem4_envelope]
+confidence: point
+adjacency: tuple_adjacent
+full_max_k: 256
+solver_tolerance: 1.0e-9
+

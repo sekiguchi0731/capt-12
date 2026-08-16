@@ -1,0 +1,19 @@
+dataset: synthetic
+seed: 0
+output_dir: outputs/runs
+K: 6
+L: 3
+n_rows: 3000
+epsilon: 0.5
+adjacency: tuple_adjacent
+confidence: point
+alpha_cert: 0.05
+distortion: retention
+partition: frequency_balanced
+decoder: design_frequency
+mechanisms: [common_cover, k_ary_rr, scalar_keep_or_cover, capt_block, capt_full]
+full_max_k: 256
+solver_tolerance: 1.0e-8
+profile_weighting: global_design
+pi_weighting: empirical
+cost_aggregation: empirical

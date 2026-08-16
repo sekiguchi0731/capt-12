@@ -1,0 +1,58 @@
+dataset: criteo
+data_root: data/CriteoPrivateAd_release/data
+output_dir: outputs/runs
+seed: 0
+label_col: is_clicked
+id_col: id
+user_col: user_id
+day_partition: day_int
+sensitive_cols:
+  - features_kv_bits_constrained_2
+  - features_kv_bits_constrained_3
+profiles:
+  - features_kv_bits_constrained_2
+  - features_kv_bits_constrained_3
+  - features_kv_bits_constrained_2+features_kv_bits_constrained_3
+context_cols: [features_ctx_not_constrained_0]
+phi_source_cols: [campaign_id, publisher_id, display_order, features_ctx_not_constrained_0]
+splits:
+  D_model: [1, 2, 3, 4, 5, 6]
+  D_design: [7, 8, 9, 10, 11, 12]
+  D_cert: [13, 14, 15, 16, 17, 18]
+  D_attack_train: [19, 20, 21, 22, 23, 24]
+  D_test: [25, 26, 27, 28, 29, 30]
+fixed_model: ctr_model
+phi: hash
+phi_sensitive_policy: exclude
+K: 64
+L: 16
+epsilon: 1.0
+epsilon_by_attr: {}
+privacy_scope: tuple_adjacent
+adjacency: tuple_adjacent
+distortion: bernoulli_kl
+distortion_clip: 1.0e-6
+partition: frequency_balanced
+decoder: design_frequency
+nested_partitions: true
+confidence: cp_box
+alpha_cert: 0.05
+shift_tv: 0.0
+min_group_count: 20
+rare_group_policy: force_cover
+contribution_policy: one-display-per-uuid-day
+contribution_adjacency: add_remove
+# Statistical assumption for CP/Hoeffding certificate and lower-audit coverage:
+# after contribution sampling, user-day privacy epochs are conditionally i.i.d.
+# within each protected group and context stratum. This is an external modeling
+# assumption, not something the certificate verifier can establish from the data.
+sampling_assumption: user_day_iid
+max_context_cardinality: 32
+full_max_k: 256
+solver: scipy_highs
+solver_tolerance: 1.0e-8
+target_ctr_list: [0.001, 0.005, 0.01]
+profile_weighting: global_design
+pi_weighting: empirical
+cost_aggregation: empirical
+protect_profile: "off"
