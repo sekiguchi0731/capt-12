@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import platform
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+import capt12
 from capt12.config import run_id
 
 
@@ -22,20 +25,94 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def git_sha() -> str:
+def _module_source_file(module: Any) -> Path | None:
+    raw_path = getattr(module, "__file__", None)
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.suffix == ".pyc":
+        try:
+            path = Path(importlib.util.source_from_cache(str(path)))
+        except ValueError:
+            return None
+    return path.resolve()
+
+
+def capt12_source_root() -> Path:
+    """Return the Git root that actually contains the imported CAPT sources."""
+    package_file = _module_source_file(capt12)
+    if package_file is None:
+        raise RuntimeError("cannot locate the imported capt12 package source")
     try:
+        output = subprocess.check_output(
+            ["git", "-C", str(package_file.parent), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "certified runs require imported capt12 sources in a Git worktree; "
+            "installed wheels require a build attestation"
+        ) from error
+    root = Path(output.strip()).resolve()
+    if not package_file.is_relative_to(root):
+        raise RuntimeError("imported capt12 package is outside its reported Git root")
+
+    core_sources = {
+        package_file,
+        Path(__file__).resolve(),
+        package_file.parent / "certification" / "artifact.py",
+    }
+    if any(not source.is_file() for source in core_sources):
+        raise RuntimeError("required CAPT certificate sources are unavailable")
+    loaded_sources = core_sources | {
+        source
+        for name, module in sys.modules.items()
+        if (name == "capt12" or name.startswith("capt12."))
+        and (source := _module_source_file(module)) is not None
+    }
+    if not loaded_sources or any(not source.is_relative_to(root) for source in loaded_sources):
+        raise RuntimeError("loaded capt12 modules do not share one source Git worktree")
+    relative_sources = [str(source.relative_to(root)) for source in sorted(loaded_sources)]
+    try:
+        subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", *relative_sources],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "loaded capt12 modules are not tracked files in the source Git worktree"
+        ) from error
+    return root
+
+
+def git_sha(source_root: Path | None = None) -> str:
+    try:
+        root = source_root or capt12_source_root()
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
         return "unknown"
 
 
-def git_worktree_changes() -> list[str]:
+def git_worktree_changes(source_root: Path | None = None) -> list[str]:
     """Return tracked and untracked non-ignored changes affecting provenance."""
+    root = source_root or capt12_source_root()
     try:
         output = subprocess.check_output(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -46,10 +123,11 @@ def git_worktree_changes() -> list[str]:
 
 def require_clean_worktree() -> str:
     """Require a clean, committed source tree and return its Git SHA."""
-    sha = git_sha()
+    source_root = capt12_source_root()
+    sha = git_sha(source_root)
     if sha == "unknown":
         raise RuntimeError("certified runs require a committed Git revision")
-    changes = git_worktree_changes()
+    changes = git_worktree_changes(source_root)
     if changes:
         preview = ", ".join(changes[:5])
         raise RuntimeError(

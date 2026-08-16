@@ -33,7 +33,11 @@ dependency versions, split IDs, input file metadata, solver status/size, model
 and mechanism hashes, metrics, certificate, and plot source tables.
 
 Certificate-producing runs require a clean worktree at a committed revision.
-The resolved config records that revision as `source_git_sha`, and the writer
+The Git root is resolved from the actually imported `capt12.__file__`, never
+from the process working directory. Every loaded `capt12` source module must
+be a tracked file below that one root. A wheel or copied package without a Git
+root is rejected unless a future build-attestation path is implemented. The
+resolved config records the revision as `source_git_sha`, and the writer
 requires it to equal the certificate's `code_git_sha`. Verification rejects a
 bundle whose two SHA fields disagree. Generated artifacts must therefore be
 rerun after the last source commit; an older certificate is not relabeled.

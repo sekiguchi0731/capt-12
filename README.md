@@ -65,9 +65,11 @@ robust constraints using a verifier-owned tolerance. It is bundle-consistency
 verification, not authentication of the original raw data; deployment still
 requires a trusted manifest or signature for provenance.
 
-Certificate generation also requires a clean committed worktree. The embedded
-`source_git_sha` and `code_git_sha` must agree, so publication artifacts must be
-regenerated after the final implementation commit.
+Certificate generation also requires the clean committed worktree containing
+the actually imported `capt12` package; process CWD is irrelevant, and loaded
+CAPT modules must be tracked below that source root. The embedded
+`source_git_sha` and `code_git_sha` must agree, so publication artifacts must
+be regenerated after the final implementation commit.
 
 Serialized external `f_ref` artifacts must declare feature columns, and a
 precomputed prediction column requires `prediction_manifest_path` declaring
