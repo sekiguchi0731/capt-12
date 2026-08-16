@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 
 from capt12.audit.lower import lower_audit
 from capt12.bounds.theorem4 import theorem4_envelope
-from capt12.certification.artifact import make_certificate
+from capt12.certification.artifact import hash_json, make_certificate
 from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
 from capt12.confidence.boxes import CONFIDENCE_REGISTRY, ConfidenceBox
 from capt12.config import run_id, validate_config
@@ -61,7 +61,11 @@ from capt12.privacy.adjacency import (
     disconnected_hybrid_components,
 )
 from capt12.privacy.profile import evaluate_profile_privacy
-from capt12.utils.artifacts import finish_run, prepare_run, sha256_file
+from capt12.utils.artifacts import (
+    finish_run,
+    prepare_run,
+    sha256_file,
+)
 
 
 def _aggregate_distribution(distribution: np.ndarray, assignment: np.ndarray, l_count: int) -> np.ndarray:
@@ -70,6 +74,25 @@ def _aggregate_distribution(distribution: np.ndarray, assignment: np.ndarray, l_
 
 def _singleton_decoder(k: int) -> np.ndarray:
     return np.eye(k)
+
+
+def _problem_signature(
+    distributions: dict[str, np.ndarray],
+    adjacency: list[Any],
+    weights: np.ndarray,
+    cost: np.ndarray,
+) -> str:
+    return hash_json(
+        {
+            "distributions": {
+                key: np.asarray(value, dtype=float).tolist()
+                for key, value in sorted(distributions.items())
+            },
+            "adjacency": [asdict(pair) for pair in adjacency],
+            "weights": np.asarray(weights, dtype=float).tolist(),
+            "cost": np.asarray(cost, dtype=float).tolist(),
+        }
+    )
 
 
 def _metric_row(
@@ -100,9 +123,11 @@ def _metric_row(
         row.update(expected_channel_metrics(channel, weights, cost, assignment))
         row["utility_retention"] = row["exact_token_retention"]
         row["mechanism_table_size"] = int(channel.size)
-        row["nontrivial_channel"] = bool(
-            np.max(np.abs(channel - channel[0][None, :])) > 1e-10
+        is_universal = bool(
+            np.max(np.abs(channel - channel[0][None, :])) <= 1e-10
         )
+        row["is_universal_channel"] = is_universal
+        row["nontrivial_channel"] = not is_universal
     if solver is not None:
         row.update(
             {
@@ -161,6 +186,12 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
     context_probabilities = np.c_[population.token_scores, np.clip(population.token_scores * 1.15, 1e-6, 1 - 1e-6)]
     context_weights = np.ones_like(context_probabilities) / 2
     token_cost = token_cost_matrix(context_probabilities, context_weights, distortion)
+    problem_signature = _problem_signature(
+        population.distributions,
+        population.adjacency,
+        objective_weights,
+        token_cost,
+    )
     cost_weights = (
         np.ones(k) / k
         if config.get("cost_aggregation", "empirical") == "uniform"
@@ -316,6 +347,7 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
     metrics["cost_aggregation"] = config.get("cost_aggregation", "empirical")
     metrics["confidence"] = config.get("confidence", "point")
     metrics["case"] = "standard"
+    metrics["problem_signature"] = problem_signature
     metrics["certificate_audit_gap"] = np.nan
     metrics.to_parquet(path / "metrics.parquet", index=False)
     metrics.to_csv(path / "tables" / "metrics.csv", index=False)
@@ -372,6 +404,12 @@ def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFr
         adjacency,
     )
     envelope = theorem4_envelope(distributions, adjacency, weights)
+    counter_problem_signature = _problem_signature(
+        distributions,
+        adjacency,
+        weights,
+        1 - np.eye(3),
+    )
     counter_rows = pd.DataFrame(
         [
             {
@@ -387,7 +425,48 @@ def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFr
                 "partition": str(partition),
                 "decoder": str(decoder_name),
                 "confidence": "point",
+                "problem_signature": counter_problem_signature,
                 "feasible": mechanism == "capt_full",
+                "is_universal_channel": (
+                    bool(
+                        np.max(
+                            np.abs(full.channel - full.channel[0][None, :])
+                        )
+                        <= 1e-10
+                    )
+                    if mechanism == "capt_full"
+                    else math.nan
+                ),
+                "nontrivial_channel": (
+                    bool(
+                        np.max(
+                            np.abs(full.channel - full.channel[0][None, :])
+                        )
+                        > 1e-10
+                    )
+                    if mechanism == "capt_full"
+                    else math.nan
+                ),
+                "solver_status": (
+                    full.solver.status if mechanism == "capt_full" else None
+                ),
+                "solver_runtime": (
+                    full.solver.runtime_seconds
+                    if mechanism == "capt_full"
+                    else math.nan
+                ),
+                "solver_iterations": (
+                    full.solver.iterations if mechanism == "capt_full" else math.nan
+                ),
+                "solver_objective": (
+                    full.solver.objective if mechanism == "capt_full" else math.nan
+                ),
+                "primal_gap": (
+                    full.solver.primal_gap if mechanism == "capt_full" else math.nan
+                ),
+                "dual_gap": (
+                    full.solver.dual_gap if mechanism == "capt_full" else math.nan
+                ),
                 "full_verification_valid": (
                     full_verification.valid if mechanism == "capt_full" else math.nan
                 ),

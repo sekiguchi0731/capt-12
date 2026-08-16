@@ -88,6 +88,7 @@ def theorem4_gap_table(frame: pd.DataFrame) -> pd.DataFrame:
             "pi_weighting",
             "cost_aggregation",
             "confidence",
+            "problem_signature",
         ]
         if key in frame
     ]
