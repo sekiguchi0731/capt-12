@@ -57,9 +57,46 @@ inequalities and cancelling the intermediate probabilities gives
 
 The implementation checks every ordered edge. `marginal` is an ablation;
 `joint_all_pairs` directly compares all tuple pairs. Rare groups are handled by
-the explicit `fail` or `force_cover` policy. `merge_to_other` is rejected by
-configuration, certificate creation, and verification until a frozen
-coarsening map is applied identically at runtime and embedded in the bundle.
+the explicit `fail`, `force_cover`, or finite-sample `confidence_box` policy.
+`merge_to_other` is rejected by configuration, certificate creation, and
+verification until a frozen coarsening map is applied identically at runtime
+and embedded in the bundle.
+
+## Full-simplex completion for unobserved groups
+
+For a fixed expected support, observed group `g` receives its simultaneous
+finite-sample CP/TV set. If `g` has zero certificate observations, the explicit
+`missing_group_policy: full_simplex` mode sets
+
+`C_g = Delta_L = {p >= 0: sum_l p(l)=1}`.
+
+For every channel column `r`, its exact support values are
+
+`sup_{p in Delta_L} p^T r = max_l r(l)` and
+`inf_{p in Delta_L} p^T r = min_l r(l)`.
+
+The same robust ordered-adjacency constraints therefore apply without an
+estimated conditional distribution for the missing group. A zero-count group
+is never assigned a point estimate. The certificate embeds zero histograms,
+labels their boxes `full_simplex`, and independently reconstructs both the
+mixed box family and all expected-support adjacency edges.
+
+On the simultaneous coverage event for all observed-group boxes, robust
+feasibility implies the requested group privacy for every expected group;
+missing groups are covered distribution-free because every possible block
+distribution lies in `Delta_L`. Every row-wise epsilon-LDP block channel is
+feasible when all ordered edges use that epsilon: `max_l R(l,o) <=
+exp(epsilon) min_l R(l,o)` is exactly the full-simplex robust inequality.
+Consequently, for the same fixed channel class, decoder, cost, and objective,
+
+`U_simplex-CAPT >= U_optimal-LDP >= U_common-cover`.
+
+If every confidence set is replaced by a subset, the robust feasible region
+can only expand and the optimal utility cannot decrease. This is a deterministic
+set-inclusion statement. CP boxes recomputed from larger random samples need
+not be nested realization by realization, so ordinary sample-size curves do
+not automatically satisfy pointwise monotonicity without an explicitly nested
+confidence construction.
 
 ## Sampling assumption
 

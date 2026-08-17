@@ -1,0 +1,14 @@
+base_config: criteo_main.yaml
+output_dir: outputs/simplex_completion_runs
+profiles:
+  - features_kv_bits_constrained_2
+K: 64
+L: 16
+epsilon: 1.0
+confidence: cp_box
+alpha_cert: 0.05
+shift_tv: 0.0
+min_group_count: 20
+rare_group_policy: confidence_box
+missing_group_policy: full_simplex
+frozen_design_seed: 0

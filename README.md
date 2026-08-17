@@ -53,11 +53,25 @@ bounds each privacy epoch's contribution but does not itself prove i.i.d.
 sampling or physical-user independence across days.
 
 Expected protected/context tuples are formed from the frozen pre-certificate
-domains, including `__OTHER__` and `__MISSING__`. An unobserved tuple or a
-disconnected hybrid path triggers the configured explicit failure/common-cover
-policy; it is never removed from the claimed scope silently.
+domains, including `__OTHER__` and `__MISSING__`. By default, an unobserved
+tuple or a disconnected hybrid path triggers the configured explicit
+failure/common-cover policy; it is never removed from the claimed scope
+silently. The explicit `missing_group_policy: full_simplex` mode instead gives
+every zero-count group the full block-probability simplex and keeps CP/TV boxes
+for all observed groups, including rare ones. The certificate binds and
+reconstructs this mixed uncertainty policy.
 `merge_to_other` is disabled until an identical frozen runtime coarsening map
 can be included in the deployment certificate.
+
+The first fixed-design full-simplex comparison is run with:
+
+```bash
+uv run capt12 simplex-completion --config configs/criteo_simplex_completion.yaml
+```
+
+It compares common cover, k-ary randomized response, the optimal row-wise LDP
+block LP, and simplex-completed CAPT in the same fixed partition, common
+decoder, cost, and objective class.
 
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and

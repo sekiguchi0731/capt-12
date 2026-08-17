@@ -277,6 +277,17 @@ def fixed_support_scaling(
     typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
 
 
+@app.command("simplex-completion")
+def simplex_completion(
+    config: Path = typer.Option(..., "--config", exists=True),
+) -> None:
+    """Compare full-simplex CAPT with cover and LDP baselines on full D_cert."""
+    from capt12.experiments.simplex_completion import run_simplex_completion
+
+    path = run_simplex_completion(_load(config))
+    typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),

@@ -115,6 +115,32 @@ the independent bundle verifier. The ignored run directory also contains the
 frozen support table, component artifacts, CSV/Parquet results, deterministic
 PDF/PNG diagnostics, metadata, and a report.
 
+## Full-simplex completion comparison
+
+After the fixed-support diagnostic, run the prescribed one-condition
+graceful-degradation experiment with:
+
+```bash
+uv run capt12 simplex-completion \
+  --config configs/criteo_simplex_completion.yaml
+```
+
+This reuses the same full `D_model`/`D_design` frozen design and the complete
+one-display-per-user-day `D_cert` split for
+`features_kv_bits_constrained_2`, `L=16`, and `epsilon=1`. Positive-count
+groups use their simultaneous CP/TV boxes regardless of the count-20
+diagnostic threshold. Zero-count expected Cartesian groups use the exact full
+simplex. The four methods—common cover, k-ary randomized response, optimal
+row-wise LDP, and simplex-completed CAPT—share the identical block class,
+common decoder, cost, and objective weights.
+
+The run saves one independently verified certificate per method, all four
+channels, a group-level uncertainty audit table, an exact comparison table,
+deterministic PDF/PNG bars for utility gain and input dependence, resource
+metadata, and a concise interpretation report. The first condition is a gate:
+expand nested `D_cert`, epsilon, and L only after checking whether the optimized
+simplex-CAPT channel is non-input-independent.
+
 ## Full-scale command
 
 ```bash
