@@ -39,6 +39,18 @@ def _objective(channel: np.ndarray, cost: np.ndarray, weights: np.ndarray) -> fl
     return float(np.sum(normalized[:, None] * np.asarray(channel) * np.asarray(cost)))
 
 
+def _best_input_independent_channel(
+    cost: np.ndarray, weights: np.ndarray
+) -> tuple[np.ndarray, int]:
+    """Return the utility-optimal constant-row channel in the fixed block class."""
+    normalized = np.asarray(weights, dtype=float) / np.asarray(weights, dtype=float).sum()
+    destination_cost = normalized @ np.asarray(cost, dtype=float)
+    destination = int(np.argmin(destination_cost))
+    distribution = np.zeros(len(destination_cost), dtype=float)
+    distribution[destination] = 1.0
+    return common_cover(distribution), destination
+
+
 def _max_row_tv(channel: np.ndarray) -> float:
     channel = np.asarray(channel, dtype=float)
     differences = np.abs(channel[:, None, :] - channel[None, :, :]).sum(axis=2) / 2
@@ -92,7 +104,7 @@ def _build_boxes(
 
 
 def _plot_comparison(results: pd.DataFrame, path: Path) -> None:
-    labels = ["Common cover", "k-ary RR", "Optimal LDP", "Simplex-CAPT"]
+    labels = ["Frozen mu cover", "k-ary RR", "Optimal LDP", "Simplex-CAPT"]
     order = ["common_cover", "k_ary_rr", "optimal_ldp", "simplex_capt"]
     indexed = results.set_index("method").loc[order]
     colors = ["#777777", "#D97706", "#D97706", "#2563A6"]
@@ -102,7 +114,7 @@ def _plot_comparison(results: pd.DataFrame, path: Path) -> None:
         (
             axes[0],
             "utility_gain_over_common_cover",
-            "Utility gain over common cover",
+            "Utility gain over frozen mu cover",
             "utility difference (higher is better)",
         ),
         (
@@ -166,6 +178,7 @@ def _write_report(results: pd.DataFrame, diagnostics: dict[str, Any], path: Path
     dominance = bool(
         capt["utility"] + 1e-9 >= ldp["utility"] and ldp["utility"] + 1e-9 >= cover["utility"]
     )
+    matches_best_cover = bool(capt["matches_best_input_independent"])
     report = f"""# Criteo full-simplex completion: one-condition comparison
 
 ## Fixed condition
@@ -187,7 +200,9 @@ def _write_report(results: pd.DataFrame, diagnostics: dict[str, Any], path: Path
 
 ## Result
 
-Simplex-CAPT {"produced a non-input-independent channel" if escaped else "remained input-independent"} (`max_pairwise_row_tv={capt["max_pairwise_row_tv"]:.6g}`). Its utility gain over common cover is {capt["utility_gain_over_common_cover"]:.9g}. The same-class ordering `U_simplex-CAPT >= U_optimal-LDP >= U_common-cover` is {"satisfied" if dominance else "not satisfied"} within a 1e-9 numerical tolerance.
+Simplex-CAPT {"produced a non-input-independent channel" if escaped else "remained input-independent"} (`max_pairwise_row_tv={capt["max_pairwise_row_tv"]:.6g}`). Its utility gain over the frozen design-weight `mu` cover is {capt["utility_gain_over_common_cover"]:.9g}, but its gain over the best input-independent channel in the same fixed decoder class is {capt["utility_gain_over_best_input_independent"]:.9g}. It {"exactly matches" if matches_best_cover else "does not match"} that best constant-row channel within 1e-10. The same-class ordering `U_simplex-CAPT >= U_optimal-LDP >= U_frozen-mu-cover` is {"satisfied" if dominance else "not satisfied"} within a 1e-9 numerical tolerance.
+
+This is not a nontrivial CAPT privacy-utility improvement. The LP was executed and optimized, but selected an input-independent deterministic destination-block cover. Therefore this gate does not trigger the nested D_cert/epsilon/L expansion.
 
 All four saved channels were checked against the same mixed CP/full-simplex robust constraints. This establishes robust feasibility for the saved channels; it does not establish that a different partition, decoder, support definition, or objective would behave the same way.
 
@@ -275,6 +290,7 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
     weights = frozen["block_weights"]
     epsilon = float(config["epsilon"])
     cover_channel = common_cover(weights)
+    best_cover_channel, best_cover_destination = _best_input_independent_channel(cost, weights)
     rr_channel = k_ary_rr(int(config["L"]), epsilon)
     ldp_solution = solve_ldp_block_lp(
         cost,
@@ -345,6 +361,7 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
     rows: list[dict[str, Any]] = []
     certificate_paths: list[str] = []
     cover_utility = -_objective(cover_channel, cost, weights)
+    best_cover_utility = -_objective(best_cover_channel, cost, weights)
     for name, channel in channels.items():
         certificate = make_certificate(
             config=config,
@@ -384,6 +401,10 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
                 "method": name,
                 "utility": utility,
                 "utility_gain_over_common_cover": utility - cover_utility,
+                "utility_gain_over_best_input_independent": utility - best_cover_utility,
+                "matches_best_input_independent": bool(
+                    np.allclose(channel, best_cover_channel, atol=1e-10, rtol=0)
+                ),
                 "max_pairwise_row_tv": row_tv,
                 "nontrivial_channel": row_tv > 1e-10,
                 "is_universal_channel": row_tv <= 1e-10,
@@ -394,6 +415,10 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
                 "solver_primal_gap": solvers[name].primal_gap,
                 "solver_constraint_count": solvers[name].constraint_count,
                 "solver_cut_count": len(capt_solution.cuts) if name == "simplex_capt" else 0,
+                "lp_executed": name in {"optimal_ldp", "simplex_capt"},
+                "pre_lp_fallback": False,
+                "mechanism_fallback_share": 0.0,
+                "universal_cover_activated": False,
                 "ldp_max_violation": _ldp_max_violation(channel, epsilon),
                 "robust_valid": verifications[name].valid,
                 "robust_checked_constraints": verifications[name].checked_constraints,
@@ -408,7 +433,11 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
     results = pd.DataFrame(rows)
     results.to_csv(path / "tables" / "simplex_completion_comparison.csv", index=False)
     results.to_parquet(path / "simplex_completion_comparison.parquet", index=False)
-    np.savez_compressed(path / "mechanism" / "comparison_channels.npz", **channels)
+    np.savez_compressed(
+        path / "mechanism" / "comparison_channels.npz",
+        **channels,
+        best_input_independent_cover=best_cover_channel,
+    )
 
     group_rows = []
     for group in hist.groups:
@@ -443,6 +472,14 @@ def run_simplex_completion(config: dict[str, Any]) -> Path:
         "hybrid_connectivity_gaps": connectivity_gaps,
         "cp_box_count": sum(box.method == "cp_box" for box in boxes.values()),
         "full_simplex_box_count": sum(box.method == "full_simplex" for box in boxes.values()),
+        "frozen_mu_cover_utility": cover_utility,
+        "best_input_independent_utility": best_cover_utility,
+        "best_input_independent_destination_block": best_cover_destination,
+        "simplex_matches_best_input_independent": bool(
+            np.allclose(
+                channels["simplex_capt"], best_cover_channel, atol=1e-10, rtol=0
+            )
+        ),
         "source_git_sha": config["source_git_sha"],
         "wall_seconds": time.perf_counter() - started,
         "process_peak_rss_bytes": _peak_rss_bytes(),
