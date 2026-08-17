@@ -11,7 +11,11 @@ from typing import Any
 import numpy as np
 
 from capt12.certification.robust import VerificationResult, verify_robust_channel
-from capt12.confidence.boxes import CONFIDENCE_REGISTRY, ConfidenceBox
+from capt12.confidence.boxes import (
+    CONFIDENCE_REGISTRY,
+    ConfidenceBox,
+    confidence_box_from_counts,
+)
 from capt12.decoders.registry import validate_decoder
 from capt12.mechanisms.lp import lift_block_channel
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
@@ -349,13 +353,15 @@ def _verify_provenance_metadata(certificate: Certificate) -> str | None:
         return "group coverage counts are inconsistent"
     if len(missing_groups) != missing:
         return "missing-group list does not match coverage count"
+    missing_policy = config.get("missing_group_policy", "force_cover")
+    rare_policy = config.get("rare_group_policy", "force_cover")
     needs_cover = bool(
-        missing
-        or int(coverage.get("rare_group_count", 0))
+        (missing and missing_policy != "full_simplex")
+        or (int(coverage.get("rare_group_count", 0)) and rare_policy == "force_cover")
         or int(coverage.get("hybrid_connectivity_gaps", 0))
     )
-    if needs_cover and not coverage.get("requires_universal_cover"):
-        return "incomplete or rare group coverage must require universal cover"
+    if bool(coverage.get("requires_universal_cover")) != needs_cover:
+        return "universal-cover requirement does not match the configured coverage policy"
     return None
 
 
@@ -433,17 +439,33 @@ def _rebuild_boxes(
     if set(certificate.histogram_counts) != set(boxes):
         return None, "histogram-count keys do not match confidence-box keys"
     factory = CONFIDENCE_REGISTRY[confidence_name]
+    missing_policy = certificate.resolved_config.get("missing_group_policy", "force_cover")
+    missing_keys = set(certificate.coverage.get("missing_groups", []))
     rebuilt: dict[str, ConfidenceBox] = {}
     for key, raw_counts in certificate.histogram_counts.items():
         counts = np.asarray(raw_counts, dtype=int)
         try:
-            rebuilt[key] = factory(
-                counts,
-                alpha=float(certificate.resolved_config.get("alpha_cert", 0.05)),
-                group_count=len(certificate.histogram_counts),
-                comparisons=max(1, len(adjacency)),
-                tv_radius=float(certificate.resolved_config.get("shift_tv", 0.0)),
-            )
+            if counts.sum() == 0:
+                if missing_policy != "full_simplex" or key not in missing_keys:
+                    return None, (
+                        "zero-count confidence group is not authorized for "
+                        f"full-simplex completion: {key}"
+                    )
+                rebuilt[key] = confidence_box_from_counts(
+                    counts,
+                    confidence=confidence_name,
+                    missing_group_policy=missing_policy,
+                )
+            else:
+                if key in missing_keys:
+                    return None, f"listed missing group has positive histogram count: {key}"
+                rebuilt[key] = factory(
+                    counts,
+                    alpha=float(certificate.resolved_config.get("alpha_cert", 0.05)),
+                    group_count=len(certificate.histogram_counts),
+                    comparisons=max(1, len(adjacency)),
+                    tv_radius=float(certificate.resolved_config.get("shift_tv", 0.0)),
+                )
         except (TypeError, ValueError) as error:
             return None, f"confidence box reconstruction failed for {key}: {error}"
         if not _same_box(rebuilt[key], boxes[key]):

@@ -59,9 +59,14 @@ def build_group_histograms(
     token_to_block: np.ndarray | None = None,
     min_group_count: int = 1,
     rare_group_policy: str = "force_cover",
+    missing_group_policy: str | None = None,
     expected_frame: pd.DataFrame | None = None,
     include_fallback_levels: bool = False,
 ) -> GroupHistograms:
+    if missing_group_policy is None:
+        # Preserve the legacy API in which rare_group_policy governed both
+        # observed rare groups and unobserved expected groups.
+        missing_group_policy = rare_group_policy
     attributes = profile.split("+") if profile else []
     missing = set(attributes).union(context_columns) - set(frame.columns)
     if missing:
@@ -113,11 +118,11 @@ def build_group_histograms(
         Group(profile, tuple(item[: len(attributes)]), item[-1]).key()
         for item in missing_tuples
     )
-    if missing_groups and rare_group_policy == "fail":
+    if missing_groups and missing_group_policy == "fail":
         raise ValueError(
             f"{len(missing_groups)} expected groups are unobserved in the certificate split"
         )
-    if missing_groups and rare_group_policy == "merge_to_other":
+    if missing_groups and missing_group_policy == "merge_to_other":
         raise ValueError(
             "unobserved expected groups cannot be estimated by merge_to_other; "
             "use fail or force_cover"
@@ -126,9 +131,22 @@ def build_group_histograms(
     rare_row_indices = frozenset(
         index for _, _, _, indices in rare for index in indices
     )
+    if missing_groups and missing_group_policy == "full_simplex":
+        rows.extend(
+            (
+                Group(profile, tuple(item[: len(attributes)]), item[-1]),
+                np.zeros(alphabet_size, dtype=int),
+                0,
+                frozenset(),
+            )
+            for item in missing_tuples
+        )
     if rare and rare_group_policy == "fail":
         raise ValueError(f"{len(rare)} groups have fewer than min_group_count={min_group_count}")
-    force_cover = bool((rare or missing_groups) and rare_group_policy == "force_cover")
+    force_cover = bool(
+        (rare and rare_group_policy == "force_cover")
+        or (missing_groups and missing_group_policy == "force_cover")
+    )
     if rare and rare_group_policy == "merge_to_other":
         common = [row for row in rows if row[2] >= min_group_count]
         merged: dict[str, tuple[Group, np.ndarray, int, frozenset[object]]] = {}
@@ -195,6 +213,7 @@ def build_marginal_histograms(
     token_to_block: np.ndarray | None = None,
     min_group_count: int = 1,
     rare_group_policy: str = "force_cover",
+    missing_group_policy: str | None = None,
     expected_frame: pd.DataFrame | None = None,
     include_fallback_levels: bool = False,
 ) -> GroupHistograms:
@@ -209,6 +228,7 @@ def build_marginal_histograms(
             token_to_block=token_to_block,
             min_group_count=min_group_count,
             rare_group_policy=rare_group_policy,
+            missing_group_policy=missing_group_policy,
             expected_frame=expected_frame,
             include_fallback_levels=include_fallback_levels,
         )

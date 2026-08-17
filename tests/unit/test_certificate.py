@@ -7,8 +7,8 @@ import pytest
 
 from capt12.certification.artifact import hash_json, make_certificate, verify_certificate
 from capt12.certification.robust import verify_robust_channel
-from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box
-from capt12.mechanisms.baselines import common_cover
+from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box, full_simplex_box
+from capt12.mechanisms.baselines import common_cover, k_ary_rr
 from capt12.mechanisms.lp import SolverInfo
 from capt12.privacy.adjacency import Group, build_adjacency
 
@@ -268,3 +268,69 @@ def test_merge_to_other_is_rejected_by_writer_and_verifier(tmp_path) -> None:
     rejected = verify_certificate(path)
     assert not rejected.valid
     assert "merge_to_other" in rejected.worst_case["error"]
+
+
+def test_mixed_cp_and_full_simplex_certificate_reconstructs_zero_count_group(
+    tmp_path,
+) -> None:
+    groups = [Group("a", (0,)), Group("a", (1,))]
+    counts = {
+        groups[0].key(): np.array([60, 40]),
+        groups[1].key(): np.array([0, 0]),
+    }
+    adjacency = build_adjacency(groups, epsilon=1.0)
+    boxes = {
+        groups[0].key(): cp_box(
+            counts[groups[0].key()], group_count=2, comparisons=len(adjacency)
+        ),
+        groups[1].key(): full_simplex_box(counts[groups[1].key()]),
+    }
+    channel = k_ary_rr(2, 1.0)
+    verification = verify_robust_channel(channel, boxes, adjacency)
+    assert verification.valid
+    certificate = make_certificate(
+        config={
+            "dataset": "criteo",
+            "confidence": "cp_box",
+            "alpha_cert": 0.05,
+            "epsilon": 1.0,
+            "sampling_assumption": "user_day_iid",
+            "contribution_policy": "one-display-per-uuid-day",
+            "rare_group_policy": "confidence_box",
+            "missing_group_policy": "full_simplex",
+        },
+        channel=channel,
+        boxes=boxes,
+        adjacency=adjacency,
+        verification=verification,
+        solver=SolverInfo("optimal", 0, 0.0, 1, primal_gap=0),
+        histogram_counts=counts,
+        assignment=np.arange(2),
+        decoder=np.eye(2),
+        groups=groups,
+        dp_parameters={
+            "epsilon": None,
+            "delta": None,
+            "contribution_policy": "one-display-per-uuid-day",
+        },
+        coverage={
+            "expected_group_count": 2,
+            "observed_group_count": 1,
+            "missing_group_count": 1,
+            "missing_groups": [groups[1].key()],
+            "rare_group_count": 0,
+            "hybrid_connectivity_gaps": 0,
+            "requires_universal_cover": False,
+        },
+    )
+    path = tmp_path / "certificate.json"
+    certificate.write(path)
+    assert verify_certificate(path).valid
+
+    payload = json.loads(path.read_text())
+    payload["boxes"][groups[1].key()]["method"] = "cp_box"
+    payload["component_hashes"]["boxes"] = hash_json(payload["boxes"])
+    path.write_text(json.dumps(payload))
+    rejected = verify_certificate(path)
+    assert not rejected.valid
+    assert "does not match" in rejected.worst_case["error"]

@@ -107,12 +107,23 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         "fail",
         "merge_to_other",
         "force_cover",
+        "confidence_box",
     }:
-        raise ValueError("rare_group_policy must be fail, merge_to_other, or force_cover")
+        raise ValueError(
+            "rare_group_policy must be fail, merge_to_other, force_cover, or confidence_box"
+        )
     if rare_group_policy == "merge_to_other":
         raise ValueError(
             "merge_to_other is disabled until the same frozen coarsening map is "
             "applied at runtime; use fail or force_cover"
+        )
+    missing_group_policy = cfg.get("missing_group_policy", "force_cover")
+    if missing_group_policy not in {"fail", "force_cover", "full_simplex"}:
+        raise ValueError("missing_group_policy must be fail, force_cover, or full_simplex")
+    if missing_group_policy == "full_simplex" and rare_group_policy != "confidence_box":
+        raise ValueError(
+            "full-simplex completion requires rare_group_policy: confidence_box so "
+            "every observed group keeps its finite-sample confidence set"
         )
     if cfg.get("dataset", "synthetic") not in {
         "synthetic",

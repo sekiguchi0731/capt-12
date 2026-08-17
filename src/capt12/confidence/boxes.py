@@ -63,6 +63,23 @@ def point_box(counts: np.ndarray, **_: object) -> ConfidenceBox:
     return ConfidenceBox(nominal, nominal, nominal, "point", 1.0)
 
 
+def full_simplex_box(counts: np.ndarray, **_: object) -> ConfidenceBox:
+    """Represent complete uncertainty for an unobserved conditional group."""
+    counts = np.asarray(counts, dtype=float)
+    if counts.ndim != 1 or len(counts) == 0:
+        raise ValueError("full-simplex confidence requires a nonempty alphabet")
+    if np.any(counts != 0):
+        raise ValueError("full-simplex completion is only valid for a zero-count group")
+    nominal = np.ones(len(counts), dtype=float) / len(counts)
+    return ConfidenceBox(
+        np.zeros(len(counts), dtype=float),
+        np.ones(len(counts), dtype=float),
+        nominal,
+        "full_simplex",
+        1.0,
+    )
+
+
 def cp_box(
     counts: np.ndarray,
     *,
@@ -150,8 +167,39 @@ def dp_aware_box(
 
 CONFIDENCE_REGISTRY = {
     "point": point_box,
+    "full_simplex": full_simplex_box,
     "cp_box": cp_box,
     "hoeffding_box": hoeffding_box,
     "dp_aware_box": dp_aware_box,
 }
+
+
+def confidence_box_from_counts(
+    counts: np.ndarray,
+    *,
+    confidence: str,
+    missing_group_policy: str = "force_cover",
+    alpha: float = 0.05,
+    group_count: int = 1,
+    comparisons: int = 1,
+    tv_radius: float = 0.0,
+) -> ConfidenceBox:
+    """Construct the configured finite-sample or zero-count uncertainty set."""
+    values = np.asarray(counts)
+    if values.sum() == 0:
+        if missing_group_policy != "full_simplex":
+            raise ValueError("zero-count groups require missing_group_policy=full_simplex")
+        return full_simplex_box(values)
+    if confidence not in CONFIDENCE_REGISTRY:
+        raise ValueError(f"unknown confidence construction: {confidence}")
+    factory = CONFIDENCE_REGISTRY[confidence]
+    if confidence == "point":
+        return factory(values)
+    return factory(
+        values,
+        alpha=alpha,
+        group_count=group_count,
+        comparisons=comparisons,
+        tv_radius=tv_radius,
+    )
 

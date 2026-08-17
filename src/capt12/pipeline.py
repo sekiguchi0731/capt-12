@@ -17,7 +17,7 @@ from capt12.audit.lower import lower_audit
 from capt12.bounds.theorem4 import theorem4_envelope
 from capt12.certification.artifact import hash_json, make_certificate
 from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
-from capt12.confidence.boxes import CONFIDENCE_REGISTRY, ConfidenceBox
+from capt12.confidence.boxes import ConfidenceBox, confidence_box_from_counts
 from capt12.config import run_id, validate_config
 from capt12.data.contributions import apply_contribution_policy
 from capt12.data.inspect import day_from_path, discover_parquet
@@ -885,6 +885,9 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
             token_to_block=assignment,
             min_group_count=int(config.get("min_group_count", 20)),
             rare_group_policy=config.get("rare_group_policy", "force_cover"),
+            missing_group_policy=config.get(
+                "missing_group_policy", config.get("rare_group_policy", "force_cover")
+            ),
             expected_frame=expected_group_frame,
             include_fallback_levels=True,
         )
@@ -905,16 +908,19 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
                     "use force_cover or provide a full-support certificate split"
                 )
         confidence_name = config.get("confidence", "cp_box")
-        factory = CONFIDENCE_REGISTRY[confidence_name]
         boxes: dict[str, ConfidenceBox] = {}
         for key, counts in hist.counts.items():
-            kwargs = {
-                "alpha": float(config.get("alpha_cert", 0.05)),
-                "group_count": len(hist.counts),
-                "comparisons": max(1, len(adjacency)),
-                "tv_radius": float(config.get("shift_tv", 0.0)),
-            }
-            boxes[key] = factory(counts, **kwargs) if confidence_name != "point" else factory(counts)
+            boxes[key] = confidence_box_from_counts(
+                counts,
+                confidence=confidence_name,
+                missing_group_policy=config.get(
+                    "missing_group_policy", config.get("rare_group_policy", "force_cover")
+                ),
+                alpha=float(config.get("alpha_cert", 0.05)),
+                group_count=len(hist.counts),
+                comparisons=max(1, len(adjacency)),
+                tv_radius=float(config.get("shift_tv", 0.0)),
+            )
         mechanism_used_fallback = False
         if hist.force_cover or not adjacency:
             mechanism_used_fallback = True
@@ -1279,6 +1285,9 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
                     alphabet_size=k,
                     min_group_count=int(config.get("min_group_count", 20)),
                     rare_group_policy=config.get("rare_group_policy", "force_cover"),
+                    missing_group_policy=config.get(
+                        "missing_group_policy", config.get("rare_group_policy", "force_cover")
+                    ),
                     expected_frame=expected_group_frame,
                     include_fallback_levels=True,
                 )
@@ -1290,16 +1299,17 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
                 )
                 full_boxes = {}
                 for key, counts in full_hist.counts.items():
-                    kwargs = {
-                        "alpha": float(config.get("alpha_cert", 0.05)),
-                        "group_count": len(full_hist.counts),
-                        "comparisons": max(1, len(full_adjacency)),
-                        "tv_radius": float(config.get("shift_tv", 0.0)),
-                    }
-                    full_boxes[key] = (
-                        factory(counts, **kwargs)
-                        if confidence_name != "point"
-                        else factory(counts)
+                    full_boxes[key] = confidence_box_from_counts(
+                        counts,
+                        confidence=confidence_name,
+                        missing_group_policy=config.get(
+                            "missing_group_policy",
+                            config.get("rare_group_policy", "force_cover"),
+                        ),
+                        alpha=float(config.get("alpha_cert", 0.05)),
+                        group_count=len(full_hist.counts),
+                        comparisons=max(1, len(full_adjacency)),
+                        tv_radius=float(config.get("shift_tv", 0.0)),
                     )
                 if full_hist.force_cover or not full_adjacency:
                     full_used_fallback = True
@@ -1463,13 +1473,16 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
                 decoder=decoder,
                 coverage={
                     "expected_group_count": hist.expected_group_count,
-                    "observed_group_count": len(hist.groups),
+                    "observed_group_count": len(hist.groups) - hist.missing_group_count,
                     "missing_group_count": hist.missing_group_count,
                     "missing_groups": list(hist.missing_groups),
                     "rare_group_count": hist.rare_group_count,
                     "hybrid_connectivity_gaps": connectivity_gaps,
                     "requires_universal_cover": hist.force_cover,
-                    "policy": config.get("rare_group_policy", "force_cover"),
+                    "policy": {
+                        "rare": config.get("rare_group_policy", "force_cover"),
+                        "missing": config.get("missing_group_policy", "force_cover"),
+                    },
                     "profile": profile,
                     "bundle_profiles": list(profiles),
                 },

@@ -175,6 +175,26 @@ def solve_block_lp(
     return _solve_channel_lp(cost, block_weights, group_distributions, adjacency, **kwargs)
 
 
+def solve_ldp_block_lp(
+    cost: np.ndarray,
+    block_weights: np.ndarray,
+    epsilon: float,
+    **kwargs,
+) -> ChannelSolution:
+    """Solve the optimal row-wise epsilon-LDP channel in the same block class."""
+    n = int(np.asarray(cost).shape[0])
+    if epsilon < 0:
+        raise ValueError("epsilon must be nonnegative")
+    groups = {f"row-{row}": np.eye(n)[row] for row in range(n)}
+    adjacency = [
+        AdjacentPair(f"row-{left}", f"row-{right}", float(epsilon))
+        for left in range(n)
+        for right in range(n)
+        if left != right
+    ]
+    return _solve_channel_lp(cost, block_weights, groups, adjacency, **kwargs)
+
+
 def full_problem_size(k: int, adjacency_count: int) -> dict[str, int]:
     variables = k * k
     constraints = k + adjacency_count * k

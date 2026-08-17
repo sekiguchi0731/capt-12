@@ -5,7 +5,7 @@ from scipy.optimize import linprog
 
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
 from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
-from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box
+from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box, full_simplex_box
 from capt12.confidence.support import support
 from capt12.data.synthetic import theorem4_counterexample
 from capt12.decoders.registry import build_decoder
@@ -14,6 +14,7 @@ from capt12.mechanisms.lp import (
     lift_block_channel,
     solve_block_lp,
     solve_full_lp,
+    solve_ldp_block_lp,
     validate_channel,
 )
 from capt12.mechanisms.online import Sanitizer
@@ -151,6 +152,36 @@ def test_tv_shift_expands_sampling_confidence_set() -> None:
     assert shifted_min <= base_min
     assert np.isclose(shifted_max, min(1.0, base_max + 0.01), atol=1e-9)
     assert witness[0] > no_shift.nominal[0]
+
+
+def test_full_simplex_support_is_exact_coordinate_extremum() -> None:
+    coefficients = np.array([-2.0, 0.5, 3.0])
+    box = full_simplex_box(np.zeros(3, dtype=int))
+    maximum, max_witness = support(coefficients, box, maximize=True)
+    minimum, min_witness = support(coefficients, box, maximize=False)
+    assert maximum == 3.0
+    assert minimum == -2.0
+    np.testing.assert_array_equal(max_witness, [0.0, 0.0, 1.0])
+    np.testing.assert_array_equal(min_witness, [1.0, 0.0, 0.0])
+
+
+def test_optimal_ldp_dominates_rr_and_cover_in_same_block_class() -> None:
+    cost = np.array([[0.0, 2.0, 1.0], [1.0, 0.0, 3.0], [2.0, 1.0, 0.0]])
+    weights = np.array([0.2, 0.3, 0.5])
+    epsilon = 0.7
+    solution = solve_ldp_block_lp(cost, weights, epsilon)
+    assert solution.solver.status == "optimal"
+    assert solution.channel is not None
+    factor = np.exp(epsilon)
+    assert np.max(
+        solution.channel[:, None, :] - factor * solution.channel[None, :, :]
+    ) <= 1e-8
+
+    def objective(channel: np.ndarray) -> float:
+        return float(np.sum(weights[:, None] * channel * cost))
+
+    assert objective(solution.channel) <= objective(k_ary_rr(3, epsilon)) + 1e-9
+    assert objective(solution.channel) <= objective(common_cover(weights)) + 1e-9
 
 
 def test_online_sanitizer_memoization_and_fallback() -> None:

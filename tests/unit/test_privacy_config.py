@@ -159,6 +159,42 @@ def test_unobserved_expected_groups_force_cover_or_fail() -> None:
         )
 
 
+def test_unobserved_groups_can_be_completed_with_zero_count_simplexes() -> None:
+    domain = pd.DataFrame({"a": ["0", "1"], "b": ["0", "1"], "ctx": ["x", "x"]})
+    certificate = pd.DataFrame({"a": ["0", "1"], "b": ["0", "1"], "ctx": ["x", "x"]})
+    hist = build_group_histograms(
+        certificate,
+        np.array([0, 1]),
+        profile="a+b",
+        context_columns=["ctx"],
+        alphabet_size=2,
+        min_group_count=20,
+        rare_group_policy="confidence_box",
+        missing_group_policy="full_simplex",
+        expected_frame=domain,
+    )
+    assert not hist.force_cover
+    assert hist.missing_group_count == 2
+    assert len(hist.groups) == 4
+    assert sum(int(counts.sum() == 0) for counts in hist.counts.values()) == 2
+
+
+def test_full_simplex_policy_requires_observed_rare_confidence_boxes() -> None:
+    assert validate_config(
+        {
+            "rare_group_policy": "confidence_box",
+            "missing_group_policy": "full_simplex",
+        }
+    )
+    with pytest.raises(ValueError, match="confidence_box"):
+        validate_config(
+            {
+                "rare_group_policy": "force_cover",
+                "missing_group_policy": "full_simplex",
+            }
+        )
+
+
 def test_fixed_seed_reproducible_hash_encoder() -> None:
     frame = pd.DataFrame({"x": ["a", "b", "c"]})
     first = HashEncoder(16, seed=8).fit(frame, ["x"]).transform(frame)
