@@ -184,6 +184,23 @@ def test_optimal_ldp_dominates_rr_and_cover_in_same_block_class() -> None:
     assert objective(solution.channel) <= objective(common_cover(weights)) + 1e-9
 
 
+def test_lp_rescales_tiny_utility_coefficients_before_optimization() -> None:
+    cost = 1e-12 * (1 - np.eye(3))
+    weights = np.array([0.2, 0.3, 0.5])
+    solution = solve_ldp_block_lp(cost, weights, 1.0)
+    assert solution.channel is not None
+    constant = common_cover(np.array([0.0, 0.0, 1.0]))
+
+    def distortion(channel: np.ndarray) -> float:
+        return float(np.sum(weights[:, None] * channel * cost))
+
+    assert distortion(solution.channel) < distortion(constant) - 1e-14
+    row_difference = np.max(
+        np.abs(solution.channel[:, None, :] - solution.channel[None, :, :])
+    )
+    assert row_difference > 0.1
+
+
 def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
     boxes = {
         "g0": full_simplex_box(np.zeros(2, dtype=int)),

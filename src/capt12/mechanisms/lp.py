@@ -99,7 +99,20 @@ def _solve_channel_lp(
     if weights.shape != (n,) or weights.sum() <= 0:
         raise ValueError("input_weights must be nonnegative and have length n")
     weights = weights / weights.sum()
-    objective = (weights[:, None] * cost).reshape(-1)
+    raw_objective = (weights[:, None] * cost).reshape(-1)
+    # HiGHS' feasibility/duality tolerances are absolute.  Criteo distortion
+    # coefficients can be around 1e-10, in which case the unscaled objective is
+    # numerically indistinguishable from zero and an arbitrary feasible channel
+    # can be reported as optimal.  Row-wise centering changes the objective only
+    # by a constant because every channel row sums to one; positive scaling also
+    # preserves the argmin.
+    centered = weights[:, None] * (cost - np.min(cost, axis=1, keepdims=True))
+    objective_scale = float(np.max(np.abs(centered)))
+    objective = (
+        centered.reshape(-1) / objective_scale
+        if objective_scale > 0
+        else np.zeros_like(raw_objective)
+    )
     a_eq = sparse.lil_matrix((n, n * n), dtype=float)
     for row in range(n):
         a_eq[row, row * n : (row + 1) * n] = 1.0
@@ -155,7 +168,7 @@ def _solve_channel_lp(
         dual_gap = 0.0
     info = SolverInfo(
         status="optimal" if result.success else "solver_failure",
-        objective=float(result.fun) if result.success else None,
+        objective=float(raw_objective @ result.x) if result.success else None,
         runtime_seconds=runtime,
         iterations=getattr(result, "nit", None),
         primal_gap=primal_gap,
