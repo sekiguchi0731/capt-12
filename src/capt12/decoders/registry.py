@@ -65,11 +65,47 @@ def utility_medoid(
     return validate_decoder(decoder, assignment)
 
 
+def cost_medoid(
+    assignment: np.ndarray,
+    frequencies: np.ndarray,
+    *,
+    token_cost: np.ndarray,
+    token_weights: np.ndarray | None = None,
+    **_: object,
+) -> np.ndarray:
+    """Choose the minimum expected-distortion output token in each block."""
+    assignment = np.asarray(assignment, dtype=int)
+    cost = np.asarray(token_cost, dtype=float)
+    weights = np.asarray(
+        frequencies if token_weights is None else token_weights,
+        dtype=float,
+    )
+    if cost.shape != (len(assignment), len(assignment)):
+        raise ValueError("token_cost must be square and match the assignment")
+    if weights.shape != (len(assignment),) or np.any(weights < 0):
+        raise ValueError("token_weights must be nonnegative and match the assignment")
+    l_count = int(np.max(assignment)) + 1
+    decoder = np.zeros((l_count, len(assignment)))
+    for block in range(l_count):
+        members = np.flatnonzero(assignment == block)
+        conditional = weights[members]
+        conditional = (
+            conditional / conditional.sum()
+            if conditional.sum()
+            else np.ones(len(members)) / len(members)
+        )
+        within = cost[np.ix_(members, members)]
+        medoid = members[int(np.argmin(conditional @ within))]
+        decoder[block, medoid] = 1.0
+    return validate_decoder(decoder, assignment)
+
+
 DECODER_REGISTRY: dict[str, Callable] = {
     "uniform_within_block": uniform_within_block,
     "pi0_conditional": pi0_conditional,
     "design_frequency": design_frequency,
     "utility_medoid": utility_medoid,
+    "cost_medoid": cost_medoid,
     "point_mass": utility_medoid,
 }
 

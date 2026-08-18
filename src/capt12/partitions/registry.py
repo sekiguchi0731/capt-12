@@ -85,6 +85,73 @@ def random_balanced(frequencies: np.ndarray, l_count: int, *, seed: int = 0, **_
     return validate_partition(_balanced_from_order(order, l_count), len(frequencies), l_count)
 
 
+def weighted_cost_kmedoids(
+    frequencies: np.ndarray,
+    l_count: int,
+    *,
+    token_cost: np.ndarray,
+    token_weights: np.ndarray | None = None,
+    max_iterations: int = 100,
+    **_: object,
+) -> np.ndarray:
+    """Deterministic weighted k-medoids for a possibly asymmetric token cost."""
+    weights = np.asarray(
+        frequencies if token_weights is None else token_weights,
+        dtype=float,
+    )
+    cost = np.asarray(token_cost, dtype=float)
+    k = len(weights)
+    if not 1 <= l_count <= k:
+        raise ValueError("weighted k-medoids requires 1 <= L <= K")
+    if cost.shape != (k, k):
+        raise ValueError("token_cost must be square and match token weights")
+    if np.any(weights < 0) or weights.sum() <= 0:
+        raise ValueError("token_weights must be nonnegative with positive mass")
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be positive")
+    weights = weights / weights.sum()
+
+    # Greedy BUILD initialization: add the candidate giving the largest
+    # reduction in weighted source-to-medoid distortion.
+    medoids: list[int] = [int(np.argmin(weights @ cost))]
+    best = cost[:, medoids[0]].copy()
+    while len(medoids) < l_count:
+        candidates = [value for value in range(k) if value not in medoids]
+        objectives = [float(weights @ np.minimum(best, cost[:, value])) for value in candidates]
+        chosen = candidates[int(np.argmin(objectives))]
+        medoids.append(chosen)
+        best = np.minimum(best, cost[:, chosen])
+
+    for _ in range(max_iterations):
+        medoid_array = np.asarray(medoids, dtype=int)
+        assignment = np.argmin(cost[:, medoid_array], axis=1)
+        # Each medoid anchors its own nonempty cluster even under zero-cost ties.
+        assignment[medoid_array] = np.arange(l_count)
+        updated: list[int] = []
+        for block in range(l_count):
+            members = np.flatnonzero(assignment == block)
+            conditional = weights[members]
+            conditional = (
+                conditional / conditional.sum()
+                if conditional.sum()
+                else np.ones(len(members)) / len(members)
+            )
+            within = cost[np.ix_(members, members)]
+            updated.append(int(members[int(np.argmin(conditional @ within))]))
+        if updated == medoids:
+            break
+        medoids = updated
+
+    medoid_array = np.asarray(medoids, dtype=int)
+    assignment = np.argmin(cost[:, medoid_array], axis=1)
+    assignment[medoid_array] = np.arange(l_count)
+    # Stable labels make serialized partitions independent of update order.
+    label_order = np.argsort(medoid_array, kind="stable")
+    remap = np.empty(l_count, dtype=int)
+    remap[label_order] = np.arange(l_count)
+    return validate_partition(remap[assignment], k, l_count)
+
+
 PARTITION_REGISTRY: dict[str, Callable] = {
     "frequency_balanced": frequency_balanced,
     "score_quantile": score_quantile,
@@ -92,6 +159,7 @@ PARTITION_REGISTRY: dict[str, Callable] = {
     "risk_utility": risk_utility,
     "top_singleton_tail": top_singleton_tail,
     "random_balanced": random_balanced,
+    "weighted_cost_kmedoids": weighted_cost_kmedoids,
 }
 
 
