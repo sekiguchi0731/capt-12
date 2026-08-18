@@ -181,6 +181,13 @@ def _solve_channel_lp(
     if not result.success:
         return ChannelSolution(None, info)
     channel = np.clip(result.x.reshape(n, n), 0.0, 1.0)
+    # A finite-epsilon LDP solution can only leave an output unused in every
+    # row.  HiGHS may return ~1e-13 residue in one row of such a column, which
+    # is feasible under the additive solver tolerance but makes a ratio-based
+    # realized-epsilon diagnostic spuriously infinite.  Remove only columns
+    # that are uniformly below a much smaller cleanup threshold.
+    cleanup_threshold = max(tolerance * 1e-3, np.finfo(float).eps * 100)
+    channel[:, np.max(channel, axis=0) <= cleanup_threshold] = 0.0
     channel /= channel.sum(axis=1, keepdims=True)
     validate_channel(channel, max(tolerance * 10, 1e-7))
     return ChannelSolution(channel, info)

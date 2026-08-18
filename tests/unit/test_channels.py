@@ -199,6 +199,9 @@ def test_lp_rescales_tiny_utility_coefficients_before_optimization() -> None:
         np.abs(solution.channel[:, None, :] - solution.channel[None, :, :])
     )
     assert row_difference > 0.1
+    for output in range(solution.channel.shape[1]):
+        column = solution.channel[:, output]
+        assert np.all(column == 0) or np.all(column > 0)
 
 
 def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
