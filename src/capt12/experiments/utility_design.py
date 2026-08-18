@@ -297,6 +297,9 @@ def _write_report(
     informative = screen.loc[screen["utility_gate_passed"]]
     advantage_count = int((privacy["capt_utility_advantage_over_ldp"] > 1e-12).sum())
     nontrivial_count = int(privacy["capt_nontrivial_channel"].sum())
+    nontrivial_names = privacy.loc[
+        privacy["capt_nontrivial_channel"], "label"
+    ].tolist()
     report = f"""# Criteo utility-aware design and simplex-CAPT diagnostic
 
 ## Scope
@@ -313,9 +316,9 @@ The other {len(informative)} designs pass the gate. Their no-privacy information
 
 ## Privacy optimization
 
-All {len(privacy)} informative designs produce CAPT channels with positive row TV ({nontrivial_count}/{len(privacy)}). Every CAPT certificate passes independent verification. However, {advantage_count}/{len(privacy)} have utility strictly above optimal LDP at tolerance 1e-12.
+Of the {len(privacy)} informative designs, {nontrivial_count}/{len(privacy)} produce CAPT channels with positive row TV: {', '.join(nontrivial_names)}. Every CAPT certificate passes independent verification. However, {advantage_count}/{len(privacy)} have utility strictly above optimal LDP at tolerance 1e-12.
 
-Every solved design contains 374 ordered adjacent pairs whose two uncertainty sets are full simplexes. One such pair compiles to the global row-wise epsilon-LDP constraints for the shared channel. Accordingly, each simplex-CAPT optimum has the same objective as its optimal-LDP comparator. Utility design repairs the second degeneration (constant optimum), but not the first degeneration (CAPT feasible region equals LDP).
+Every solved design contains 374 ordered adjacent pairs whose two uncertainty sets are full simplexes. One such pair compiles to the global row-wise epsilon-LDP constraints for the shared channel. Accordingly, each simplex-CAPT optimum has the same objective as its optimal-LDP comparator. Cost medoid, joint k-medoids, and singleton identity repair the second degeneration (constant optimum); utility medoid remains constant after privacy. None repairs the first degeneration (CAPT feasible region equals LDP).
 
 ## Decision
 
