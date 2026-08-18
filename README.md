@@ -73,6 +73,21 @@ It compares common cover, k-ary randomized response, the optimal row-wise LDP
 block LP, and simplex-completed CAPT in the same fixed partition, common
 decoder, cost, and objective class.
 
+Before expanding that comparison, screen whether the fixed block class has any
+utility reason to use an input-dependent channel and compare utility-aware
+alternatives with:
+
+```bash
+uv run capt12 utility-design --config configs/criteo_utility_design.yaml
+```
+
+The diagnostic records the best constant and no-privacy row-wise distortions,
+their information gap, row argmins, and no-privacy row TV. A class with a
+zero information gap, one shared row argmin, or zero no-privacy row TV is not
+sent to the privacy LP. Informative classes compare utility medoid, cost
+medoid, joint weighted cost k-medoids, and the `L=K` singleton/identity positive
+control against optimal LDP and independently verified simplex-CAPT.
+
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and
 robust constraints using a verifier-owned tolerance. It is bundle-consistency

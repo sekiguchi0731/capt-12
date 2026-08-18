@@ -288,6 +288,17 @@ def simplex_completion(
     typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
 
 
+@app.command("utility-design")
+def utility_design(
+    config: Path = typer.Option(..., "--config", exists=True),
+) -> None:
+    """Screen utility-aware designs, then compare informative CAPT with LDP."""
+    from capt12.experiments.utility_design import run_utility_design_diagnostic
+
+    path = run_utility_design_diagnostic(_load(config))
+    typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),

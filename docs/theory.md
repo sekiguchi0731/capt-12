@@ -98,6 +98,41 @@ not be nested realization by realization, so ordinary sample-size curves do
 not automatically satisfy pointwise monotonicity without an explicitly nested
 confidence construction.
 
+A full-simplex/full-simplex ordered edge has a stronger structural
+consequence. For every output `o`, its robust inequality is exactly
+
+`max_l R(l,o) <= exp(epsilon) min_l R(l,o)`.
+
+Thus one such edge imposes global row-wise epsilon-LDP on the shared block
+channel. With several such edges, the smallest edge epsilon applies. The
+implementation solves this equivalent LDP LP directly for numerical and memory
+efficiency, then independently rechecks every original robust edge.
+
+## Utility informativeness gate
+
+For a fixed partition, common decoder, block cost `C`, and normalized input
+weights `w`, define
+
+`D_const = min_o sum_l w_l C(l,o)`,
+
+`D_free = sum_l w_l min_o C(l,o)`, and
+
+`G_info = D_const - D_free`.
+
+`G_info` is the largest distortion reduction that input dependence could offer
+before privacy constraints. The experiment gate rejects a channel class when
+`G_info` is at numerical zero, every input row has the same minimizing output,
+or the deterministic no-privacy row-wise minimizer has zero maximum row TV.
+This is an experiment-eligibility diagnostic, not a privacy theorem and not a
+certificate failure.
+
+The `cost_medoid` decoder chooses, inside each fixed output block, the token
+minimizing weighted expected token distortion. The deterministic weighted
+cost k-medoids design jointly changes the partition and uses cost medoids. The
+`L=K` singleton partition with identity decoder is a positive control that
+represents every token channel; it does not remove any LDP restriction caused
+by full-simplex edges.
+
 ## Sampling assumption
 
 Finite-sample CP/Hoeffding certificates and the held-out lower audit are

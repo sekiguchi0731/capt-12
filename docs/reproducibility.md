@@ -141,6 +141,33 @@ metadata, and a concise interpretation report. The first condition is a gate:
 expand nested `D_cert`, epsilon, and L only after checking whether the optimized
 simplex-CAPT channel is non-input-independent.
 
+## Utility-aware channel-class diagnostic
+
+If the fixed simplex-completion design is input-independent even without
+privacy, run the focused follow-up:
+
+```bash
+uv run capt12 utility-design \
+  --config configs/criteo_utility_design.yaml
+```
+
+The command freezes the same mapper, encoder, reference model, expected
+support, and full certificate population. It first screens five fixed channel
+classes using `D_const`, `D_free`, `G_info`, row argmins, and no-privacy row TV.
+The current L=16 design is retained as a negative control but is not re-solved
+when it fails the gate. Passing classes are solved once at epsilon 1 as both
+optimal row-wise LDP and full-simplex CAPT, followed by robust and independent
+certificate verification.
+
+Outputs include `utility_design_screen.csv`, `utility_design_privacy.csv`, a
+deterministic PDF/PNG diagnostic, per-design channels and design arrays, one
+certificate per solved class, resource metadata, and an interpretation report.
+Do not start an epsilon/L/sample grid unless CAPT has positive row TV, strictly
+better utility than optimal LDP, positive gain over the best constant channel,
+and a valid certificate. A full-simplex/full-simplex edge makes CAPT exactly
+row-wise LDP, so utility-aware design can repair constant-channel degeneration
+without by itself producing a CAPT-over-LDP advantage.
+
 ## Full-scale command
 
 ```bash

@@ -1,0 +1,4 @@
+base_config: criteo_simplex_completion.yaml
+output_dir: outputs/utility_design_runs
+utility_gate_tolerance: 1.0e-12
+max_cutting_plane_iterations: 100
