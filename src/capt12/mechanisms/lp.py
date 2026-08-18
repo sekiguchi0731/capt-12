@@ -89,6 +89,7 @@ def _solve_channel_lp(
     tolerance: float = 1e-9,
     time_limit: float | None = None,
     extra_cuts: Sequence[tuple[np.ndarray, np.ndarray, float, int]] = (),
+    precompiled_ub: sparse.spmatrix | None = None,
 ) -> ChannelSolution:
     cost = np.asarray(cost, dtype=float)
     n = cost.shape[0]
@@ -103,6 +104,8 @@ def _solve_channel_lp(
     for row in range(n):
         a_eq[row, row * n : (row + 1) * n] = 1.0
     b_eq = np.ones(n)
+    if precompiled_ub is not None and (adjacency or extra_cuts):
+        raise ValueError("precompiled constraints cannot be combined with edge rows or cuts")
     rows: list[sparse.csr_matrix] = []
     for pair in adjacency:
         left = np.asarray(group_distributions[pair.left], dtype=float)
@@ -117,8 +120,13 @@ def _solve_channel_lp(
         row = sparse.lil_matrix((1, n * n), dtype=float)
         row[0, np.arange(n) * n + output] = coefficient
         rows.append(row.tocsr())
-    a_ub = sparse.vstack(rows, format="csr") if rows else None
-    b_ub = np.zeros(len(rows)) if rows else None
+    a_ub = (
+        precompiled_ub.tocsr()
+        if precompiled_ub is not None
+        else (sparse.vstack(rows, format="csr") if rows else None)
+    )
+    inequality_count = int(a_ub.shape[0]) if a_ub is not None else 0
+    b_ub = np.zeros(inequality_count) if a_ub is not None else None
     options: dict[str, float] = {"dual_feasibility_tolerance": tolerance, "primal_feasibility_tolerance": tolerance}
     if time_limit is not None:
         options["time_limit"] = time_limit
@@ -154,7 +162,7 @@ def _solve_channel_lp(
         dual_gap=dual_gap,
         message=result.message,
         variable_count=n * n,
-        constraint_count=n + len(rows),
+        constraint_count=n + inequality_count,
         estimated_memory_bytes=int((objective.nbytes + a_eq.tocsr().data.nbytes + (a_ub.data.nbytes if a_ub is not None else 0)) * 2),
     )
     if not result.success:
@@ -185,14 +193,36 @@ def solve_ldp_block_lp(
     n = int(np.asarray(cost).shape[0])
     if epsilon < 0:
         raise ValueError("epsilon must be nonnegative")
-    groups = {f"row-{row}": np.eye(n)[row] for row in range(n)}
-    adjacency = [
-        AdjacentPair(f"row-{left}", f"row-{right}", float(epsilon))
+    pairs = [
+        (left, right)
         for left in range(n)
         for right in range(n)
         if left != right
     ]
-    return _solve_channel_lp(cost, block_weights, groups, adjacency, **kwargs)
+    pair_left = np.asarray([left for left, _ in pairs], dtype=int)
+    pair_right = np.asarray([right for _, right in pairs], dtype=int)
+    outputs = np.tile(np.arange(n, dtype=int), len(pairs))
+    left_rows = np.repeat(pair_left, n)
+    right_rows = np.repeat(pair_right, n)
+    row_indices = np.arange(len(outputs), dtype=int)
+    matrix = sparse.coo_matrix(
+        (
+            np.r_[np.ones(len(outputs)), -math.exp(epsilon) * np.ones(len(outputs))],
+            (
+                np.r_[row_indices, row_indices],
+                np.r_[left_rows * n + outputs, right_rows * n + outputs],
+            ),
+        ),
+        shape=(len(outputs), n * n),
+    ).tocsr()
+    return _solve_channel_lp(
+        cost,
+        block_weights,
+        {},
+        [],
+        precompiled_ub=matrix,
+        **kwargs,
+    )
 
 
 def full_problem_size(k: int, adjacency_count: int) -> dict[str, int]:

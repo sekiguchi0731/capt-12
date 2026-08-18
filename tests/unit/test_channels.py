@@ -184,6 +184,25 @@ def test_optimal_ldp_dominates_rr_and_cover_in_same_block_class() -> None:
     assert objective(solution.channel) <= objective(common_cover(weights)) + 1e-9
 
 
+def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
+    boxes = {
+        "g0": full_simplex_box(np.zeros(2, dtype=int)),
+        "g1": full_simplex_box(np.zeros(2, dtype=int)),
+    }
+    adjacency = [AdjacentPair("g0", "g1", 0.7)]
+    cost = 1 - np.eye(2)
+    weights = np.array([0.4, 0.6])
+    robust, verification = solve_robust_block_lp(cost, weights, boxes, adjacency)
+    ldp = solve_ldp_block_lp(cost, weights, 0.7)
+    assert robust.channel is not None and ldp.channel is not None
+    assert verification.valid
+    assert len(robust.cuts) == 1
+    assert {cut["source"] for cut in robust.cuts} == {"full_simplex_ldp_seed"}
+    assert robust.cuts[0]["constraint_count"] == 4
+    assert robust.solver.constraint_count == 6
+    np.testing.assert_allclose(robust.solver.objective, ldp.solver.objective, atol=1e-10)
+
+
 def test_online_sanitizer_memoization_and_fallback() -> None:
     assignment = np.array([0, 0, 1, 1])
     decoder = build_decoder("uniform_within_block", assignment, np.ones(4))
