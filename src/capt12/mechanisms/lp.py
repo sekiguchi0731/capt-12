@@ -117,8 +117,6 @@ def _solve_channel_lp(
     for row in range(n):
         a_eq[row, row * n : (row + 1) * n] = 1.0
     b_eq = np.ones(n)
-    if precompiled_ub is not None and (adjacency or extra_cuts):
-        raise ValueError("precompiled constraints cannot be combined with edge rows or cuts")
     rows: list[sparse.csr_matrix] = []
     for pair in adjacency:
         left = np.asarray(group_distributions[pair.left], dtype=float)
@@ -133,11 +131,12 @@ def _solve_channel_lp(
         row = sparse.lil_matrix((1, n * n), dtype=float)
         row[0, np.arange(n) * n + output] = coefficient
         rows.append(row.tocsr())
-    a_ub = (
-        precompiled_ub.tocsr()
-        if precompiled_ub is not None
-        else (sparse.vstack(rows, format="csr") if rows else None)
-    )
+    matrices = []
+    if precompiled_ub is not None:
+        matrices.append(precompiled_ub.tocsr())
+    if rows:
+        matrices.append(sparse.vstack(rows, format="csr"))
+    a_ub = sparse.vstack(matrices, format="csr") if matrices else None
     inequality_count = int(a_ub.shape[0]) if a_ub is not None else 0
     b_ub = np.zeros(inequality_count) if a_ub is not None else None
     options: dict[str, float] = {"dual_feasibility_tolerance": tolerance, "primal_feasibility_tolerance": tolerance}
@@ -213,6 +212,23 @@ def solve_ldp_block_lp(
     n = int(np.asarray(cost).shape[0])
     if epsilon < 0:
         raise ValueError("epsilon must be nonnegative")
+    matrix = ldp_constraint_matrix(n, epsilon)
+    return _solve_channel_lp(
+        cost,
+        block_weights,
+        {},
+        [],
+        precompiled_ub=matrix,
+        **kwargs,
+    )
+
+
+def ldp_constraint_matrix(n: int, epsilon: float) -> sparse.csr_matrix:
+    """Build all ordered row-wise epsilon-LDP inequalities."""
+    if n < 1:
+        raise ValueError("LDP dimension must be positive")
+    if epsilon < 0:
+        raise ValueError("epsilon must be nonnegative")
     pairs = [
         (left, right)
         for left in range(n)
@@ -235,14 +251,7 @@ def solve_ldp_block_lp(
         ),
         shape=(len(outputs), n * n),
     ).tocsr()
-    return _solve_channel_lp(
-        cost,
-        block_weights,
-        {},
-        [],
-        precompiled_ub=matrix,
-        **kwargs,
-    )
+    return matrix
 
 
 def full_problem_size(k: int, adjacency_count: int) -> dict[str, int]:

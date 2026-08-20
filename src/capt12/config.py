@@ -125,6 +125,22 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "full-simplex completion requires rare_group_policy: confidence_box so "
             "every observed group keeps its finite-sample confidence set"
         )
+    sensitive_fallback = cfg.get(
+        "sensitive_fallback_policy", "separate_missing_other"
+    )
+    if sensitive_fallback not in {"separate_missing_other", "unified_unknown"}:
+        raise ValueError(
+            "sensitive_fallback_policy must be separate_missing_other or unified_unknown"
+        )
+    if sensitive_fallback == "unified_unknown" and cfg.get(
+        "sensitive_unknown_value", "__UNKNOWN__"
+    ) != "__UNKNOWN__":
+        raise ValueError("unified sensitive fallback must use __UNKNOWN__")
+    public_context_policy = cfg.get("public_context_policy", "shared")
+    if public_context_policy not in {"shared", "stratified"}:
+        raise ValueError("public_context_policy must be shared or stratified")
+    if public_context_policy == "stratified" and len(cfg.get("context_cols", [])) != 1:
+        raise ValueError("stratified public-context CAPT currently requires one context column")
     if cfg.get("dataset", "synthetic") not in {
         "synthetic",
         "synthetic_theorem4",

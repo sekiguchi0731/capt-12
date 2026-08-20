@@ -257,6 +257,10 @@ def _verify_component_hashes(certificate: Certificate, path: Path) -> str | None
     external = {
         "encoder": path.parent / "models" / "encoder.joblib",
         "model": path.parent / "models" / "reference.joblib",
+        "mapper": path.parent / "models" / "category_mapper.joblib",
+        "context_channel_manifest": (
+            path.parent / "mechanism" / "context_channel_manifest.json"
+        ),
     }
     for name, expected in certificate.component_hashes.items():
         if name in embedded:
@@ -284,6 +288,11 @@ def _verify_component_hashes(certificate: Certificate, path: Path) -> str | None
     }
     if certificate.histogram_counts is not None:
         required.add("histogram_counts")
+    config = certificate.resolved_config
+    if config.get("sensitive_fallback_policy") == "unified_unknown":
+        required.add("mapper")
+    if config.get("public_context_policy") == "stratified":
+        required.add("context_channel_manifest")
     missing = required - set(certificate.component_hashes)
     if missing:
         return f"certificate is missing required component hashes: {sorted(missing)}"
@@ -309,6 +318,58 @@ def _verify_profile_bundle(certificate: Certificate, path: Path) -> str | None:
             return f"profile certificates do not share one partition: {sibling_path.name}"
         if sibling.component_hashes.get("config") != certificate.component_hashes.get("config"):
             return f"profile certificate config mismatch: {sibling_path.name}"
+    return None
+
+
+def _verify_context_channel_manifest(
+    certificate: Certificate, path: Path
+) -> str | None:
+    config = certificate.resolved_config
+    if config.get("public_context_policy") != "stratified":
+        return None
+    manifest_path = path.parent / "mechanism" / "context_channel_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        return f"context-channel manifest cannot be read: {error}"
+    contexts = list(config.get("context_cols", []))
+    if len(contexts) != 1:
+        return "context-channel manifest requires exactly one public context column"
+    context_column = contexts[0]
+    selector = ["Z", "profile", context_column]
+    if manifest.get("profile") != config.get("profiles", [None])[0]:
+        return "context-channel manifest profile does not match the certificate"
+    if manifest.get("public_context_column") != context_column:
+        return "context-channel manifest public context does not match the certificate"
+    if manifest.get("channel_selector_inputs") != selector:
+        return "context-channel manifest selector is not Z/profile/public context"
+    if manifest.get("protected_value_used_online") is not False:
+        return "context-channel manifest permits a protected online selector"
+    if manifest.get("runtime_mapper_hash") != certificate.component_hashes.get("mapper"):
+        return "context-channel manifest runtime mapper does not match the certificate"
+    if manifest.get("sensitive_coarsening") != {
+        "missing": "__UNKNOWN__",
+        "unseen": "__UNKNOWN__",
+    }:
+        return "context-channel manifest does not declare unified sensitive fallback"
+    design_name = config.get("context_design")
+    design = manifest.get("designs", {}).get(design_name)
+    if not isinstance(design, dict):
+        return "certificate design is missing from the context-channel manifest"
+    channel_hash = hash_array(np.asarray(certificate.channel, dtype=float))
+    context_value = str(config.get("public_context_value", ""))
+    if design.get("contexts", {}).get(context_value) != channel_hash:
+        return "context-channel manifest does not bind the certified context channel"
+    if design.get("assignment_hash") != certificate.component_hashes.get("partition"):
+        return "context-channel manifest partition does not match the certificate"
+    if design.get("decoder_hash") != certificate.component_hashes.get("decoder"):
+        return "context-channel manifest decoder does not match the certificate"
+    dimension = len(certificate.channel)
+    if int(design.get("L", -1)) != dimension:
+        return "context-channel manifest dimension does not match the certificate"
+    expected_entries = len(design.get("contexts", {})) * dimension**2
+    if int(design.get("table_entries", -1)) != expected_entries:
+        return "context-channel manifest table size is inconsistent"
     return None
 
 
@@ -345,6 +406,27 @@ def _verify_provenance_metadata(certificate: Certificate) -> str | None:
     if certificate.dp_parameters != expected_dp:
         return "DP/contribution metadata do not match resolved config"
     coverage = certificate.coverage
+    if config.get("public_context_policy") == "stratified":
+        contexts = list(config.get("context_cols", []))
+        selector = config.get("channel_selector_inputs", [])
+        expected_selector = ["Z", "profile", *contexts]
+        if selector != expected_selector:
+            return "context-stratified channel selector does not match Z/profile/public context"
+        protected = set(config.get("profiles", [""])[0].split("+"))
+        if protected.intersection(selector):
+            return "context-stratified channel selector uses a protected value"
+        context_value = str(config.get("public_context_value", ""))
+        if not context_value or str(coverage.get("public_context_value", "")) != context_value:
+            return "public-context certificate scope is missing or inconsistent"
+        group_contexts = {
+            str(group.get("context", "all")) for group in certificate.groups
+        }
+        if group_contexts != {context_value}:
+            return "protected groups do not match the declared public-context scope"
+        if config.get("sensitive_fallback_policy") != "unified_unknown":
+            return "context-stratified certificate requires unified sensitive fallback"
+        if config.get("sensitive_unknown_value") != "__UNKNOWN__":
+            return "context-stratified certificate has an unsupported unknown secret value"
     expected = int(coverage.get("expected_group_count", -1))
     observed = int(coverage.get("observed_group_count", -1))
     missing = int(coverage.get("missing_group_count", -1))
@@ -491,6 +573,9 @@ def _verify_certificate(path: str | Path, tolerance: float | None = None) -> Ver
     bundle_error = _verify_profile_bundle(certificate, path)
     if bundle_error:
         return _invalid(bundle_error)
+    context_bundle_error = _verify_context_channel_manifest(certificate, path)
+    if context_bundle_error:
+        return _invalid(context_bundle_error)
     metadata_error = _verify_provenance_metadata(certificate)
     if metadata_error:
         return _invalid(metadata_error)

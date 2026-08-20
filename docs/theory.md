@@ -103,10 +103,49 @@ consequence. For every output `o`, its robust inequality is exactly
 
 `max_l R(l,o) <= exp(epsilon) min_l R(l,o)`.
 
-Thus one such edge imposes global row-wise epsilon-LDP on the shared block
-channel. With several such edges, the smallest edge epsilon applies. The
-implementation solves this equivalent LDP LP directly for numerical and memory
-efficiency, then independently rechecks every original robust edge.
+Thus one such edge imposes global row-wise epsilon-LDP on the channel in its
+scope. With several such edges, the smallest full-simplex-edge epsilon applies.
+The implementation replaces the robust LP by the pure LDP LP only when that
+epsilon is no larger than every other edge budget. If a non-simplex edge has a
+smaller budget, the LDP inequalities are used as seed constraints and all
+remaining robust constraints are retained and separated by the support oracle.
+Every returned channel is independently rechecked against every original edge.
+
+## Public-context stratification and sensitive fallback coarsening
+
+When `B` is explicitly public and there is no privacy adjacency between
+different values of `B`, CAPT may use a separate block channel `R_b` for each
+public context. Online selection uses only `(Z, profile, B)`; the realized
+protected value is not an input. The guarantee is conditional:
+
+`P(O=o | A~=a, B=b) <= exp(epsilon) P(O=o | A~=a', B=b)`.
+
+It protects the additional disclosure in `O` to an attacker who already knows
+`B`. It does not protect attribute leakage through `B` itself.
+
+The frozen sensitive mapper coarsens both a missing value and any value outside
+its pre-certificate known domain to one secret value `__UNKNOWN__`. Therefore
+the certified secret is `A~=c(A)`, not the original uncoarsened `A`. Comparisons
+between distinct original values that both map to `__UNKNOWN__` are outside the
+declared secret domain. The runtime mapper artifact, exact online selector, and
+the complete context-to-channel table are hash-bound to every context
+certificate.
+
+For fixed partition, decoder, support, and objectives, absence of cross-context
+edges gives the product decomposition
+
+`F = product_b F_b` and `D({R_b}) = sum_b omega_b D_b(R_b)`.
+
+The shared-channel class is the restriction `R_b=R` for every `b`, hence the
+optimal context-stratified distortion cannot exceed the optimal shared-channel
+distortion. A full-simplex/full-simplex edge in context `b` makes only `R_b`
+row-wise LDP; it does not force dense contexts to pay the same restriction.
+This is context-local graceful degradation.
+
+One certificate is emitted for each public context and design. To obtain a
+simultaneous confidence statement across all `B` context tables within a
+design, each certificate uses `alpha_cert / |B|` (Bonferroni). The design-level
+statement is conditional on all these context confidence events holding.
 
 ## Utility informativeness gate
 

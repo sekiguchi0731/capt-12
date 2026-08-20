@@ -17,7 +17,7 @@ from capt12.mechanisms.lp import (
     solve_ldp_block_lp,
     validate_channel,
 )
-from capt12.mechanisms.online import Sanitizer
+from capt12.mechanisms.online import ContextualSanitizer, Sanitizer
 from capt12.privacy.adjacency import AdjacentPair
 
 
@@ -223,6 +223,46 @@ def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
     np.testing.assert_allclose(robust.solver.objective, ldp.solver.objective, atol=1e-10)
 
 
+def test_full_simplex_seed_keeps_smaller_non_simplex_edge() -> None:
+    boxes = {
+        "simplex-left": full_simplex_box(np.zeros(2, dtype=int)),
+        "simplex-right": full_simplex_box(np.zeros(2, dtype=int)),
+        "point-left": ConfidenceBox(
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            "point",
+            1.0,
+        ),
+        "point-right": ConfidenceBox(
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            "point",
+            1.0,
+        ),
+    }
+    adjacency = [
+        AdjacentPair("simplex-left", "simplex-right", 1.0),
+        AdjacentPair("point-left", "point-right", 0.0),
+        AdjacentPair("point-right", "point-left", 0.0),
+    ]
+    robust, verification = solve_robust_block_lp(
+        1 - np.eye(2),
+        np.array([0.4, 0.6]),
+        boxes,
+        adjacency,
+    )
+    assert robust.channel is not None
+    assert verification.valid
+    assert any(
+        cut.get("source") == "full_simplex_ldp_seed"
+        and cut.get("pure_ldp_replacement") is False
+        for cut in robust.cuts
+    )
+    np.testing.assert_allclose(robust.channel[0], robust.channel[1], atol=1e-8)
+
+
 def test_online_sanitizer_memoization_and_fallback() -> None:
     assignment = np.array([0, 0, 1, 1])
     decoder = build_decoder("uniform_within_block", assignment, np.ones(4))
@@ -238,3 +278,24 @@ def test_online_sanitizer_memoization_and_fallback() -> None:
     sanitizer.authenticated = False
     fallback = sanitizer.sanitize(1, "proxy", np.random.default_rng(2), "different-user-day")
     assert 0 <= fallback < 4
+
+
+def test_contextual_sanitizer_selects_channel_without_sensitive_value() -> None:
+    assignment = np.array([0, 1])
+    decoder = np.eye(2)
+    sanitizer = ContextualSanitizer(
+        channels={
+            ("secret", "morning"): np.eye(2),
+            ("secret", "evening"): np.array([[0.0, 1.0], [1.0, 0.0]]),
+        },
+        token_to_block=assignment,
+        decoder=decoder,
+    )
+    morning = sanitizer.sanitize(
+        0, "secret", "morning", np.random.default_rng(1), "u-day"
+    )
+    evening = sanitizer.sanitize(
+        0, "secret", "evening", np.random.default_rng(1), "u-day"
+    )
+    assert morning == 0
+    assert evening == 1

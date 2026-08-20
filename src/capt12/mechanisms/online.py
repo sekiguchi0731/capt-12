@@ -78,3 +78,69 @@ class Sanitizer:
             self._memo[memo_key] = output
         return output
 
+
+@dataclass
+class ContextualSanitizer:
+    """Select a certified block channel using only profile and public context."""
+
+    channels: dict[tuple[str, str], np.ndarray]
+    token_to_block: np.ndarray
+    decoder: np.ndarray
+    fallback_distribution: np.ndarray | None = None
+    authenticated: bool = True
+    expired: bool = False
+    memoize: bool = True
+    _memo: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.channels = {
+            (str(profile), str(context)): np.asarray(channel, dtype=float)
+            for (profile, context), channel in self.channels.items()
+        }
+        for channel in self.channels.values():
+            validate_channel(channel)
+        self.token_to_block = np.asarray(self.token_to_block, dtype=int)
+        self.decoder = np.asarray(self.decoder, dtype=float)
+
+    def _fallback_channel(self) -> np.ndarray:
+        distribution = self.fallback_distribution
+        if distribution is None:
+            distribution = np.ones(len(self.token_to_block)) / len(self.token_to_block)
+        return common_cover(distribution)
+
+    def sanitize(
+        self,
+        token: int,
+        profile: str,
+        public_context: str,
+        rng: Generator | RandomAdapter,
+        user_epoch_key: str | None = None,
+    ) -> int:
+        if not 0 <= token < len(self.token_to_block):
+            raise ValueError("raw token is outside [0,K)")
+        context = str(public_context)
+        memo_key = None
+        if self.memoize and user_epoch_key is not None:
+            memo_key = hashlib.sha256(
+                f"{user_epoch_key}|{profile}|{context}|{token}".encode()
+            ).hexdigest()
+            if memo_key in self._memo:
+                return self._memo[memo_key]
+        channel = self.channels.get((profile, context))
+        invalid = not self.authenticated or self.expired or channel is None
+        if invalid:
+            output = int(
+                rng.choice(
+                    len(self.token_to_block),
+                    p=self._fallback_channel()[token],
+                )
+            )
+        else:
+            source_block = int(self.token_to_block[token])
+            destination = int(rng.choice(channel.shape[1], p=channel[source_block]))
+            output = int(
+                rng.choice(len(self.token_to_block), p=self.decoder[destination])
+            )
+        if memo_key is not None:
+            self._memo[memo_key] = output
+        return output

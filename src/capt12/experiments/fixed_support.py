@@ -92,13 +92,19 @@ def cartesian_support_from_domains(
     *,
     profile: str,
     contexts: Sequence[str],
+    fallback_levels_by_column: dict[str, Sequence[str]] | None = None,
 ) -> set[tuple[str, ...]]:
     """Build the current Cartesian support without padding unequal domains."""
     attributes = profile.split("+") if profile else []
 
     def levels(column: str) -> list[str]:
         values = set(map(str, domains[column]))
-        values.update({"__OTHER__", "__MISSING__"})
+        fallback = (
+            fallback_levels_by_column.get(column, ())
+            if fallback_levels_by_column is not None
+            else ("__OTHER__", "__MISSING__")
+        )
+        values.update(map(str, fallback))
         return sorted(values)
 
     attribute_domains = [levels(column) for column in attributes]
@@ -142,9 +148,13 @@ def _fixed_design(
         columns=columns,
         days=config["splits"]["D_model"],
     )
-    mapper = FrozenCategoryMapper(int(config.get("max_context_cardinality", 32))).fit(
-        model_frame, [*profile_attributes, *contexts], split_id="D_model"
-    )
+    unified_unknown = config.get("sensitive_fallback_policy") == "unified_unknown"
+    unknown_value = str(config.get("sensitive_unknown_value", "__UNKNOWN__"))
+    mapper = FrozenCategoryMapper(
+        int(config.get("max_context_cardinality", 32)),
+        unknown_columns=(frozenset(profile_attributes) if unified_unknown else frozenset()),
+        unknown_value=unknown_value,
+    ).fit(model_frame, [*profile_attributes, *contexts], split_id="D_model")
     model_frame = mapper.transform(model_frame)
     encoder = make_encoder(
         config.get("phi", "hash"),
@@ -195,6 +205,10 @@ def _fixed_design(
     design_frame["__token__"] = design_tokens
     design_frame["__ref_probability__"] = reference.predict(design_frame)
     design_support = _tuple_counter(design_frame, profile=profile, contexts=contexts)
+    design_only_total = sum(design_support.values())
+    design_only_probability = {
+        group: count / design_only_total for group, count in design_support.items()
+    }
     for column in domains:
         domains[column].update(design_frame[column].astype(str).unique().tolist())
     combined_support = model_support + design_support
@@ -258,6 +272,17 @@ def _fixed_design(
         domains,
         profile=profile,
         contexts=contexts,
+        fallback_levels_by_column=(
+            {
+                **{column: (unknown_value,) for column in profile_attributes},
+                **{
+                    column: ("__OTHER__", "__MISSING__")
+                    for column in contexts
+                },
+            }
+            if unified_unknown
+            else None
+        ),
     )
     observed_design_support = set(combined_support)
     design_total = sum(combined_support.values())
@@ -289,10 +314,18 @@ def _fixed_design(
             "|".join(value): probability
             for value, probability in sorted(design_probability.items())
         },
+        "D_design_probability": {
+            "|".join(value): probability
+            for value, probability in sorted(design_only_probability.items())
+        },
         "G_design_adjacency_count": len(design_adjacency),
         "G_design_adjacency_hash": design_adjacency_hash,
         "G_cart_adjacency_count": len(cartesian_adjacency),
         "G_cart_adjacency_hash": cartesian_adjacency_hash,
+        "sensitive_fallback_policy": config.get(
+            "sensitive_fallback_policy", "separate_missing_other"
+        ),
+        "sensitive_unknown_value": unknown_value if unified_unknown else None,
     }
     support_path = path / "frozen_support.json"
     support_path.write_text(json.dumps(support_payload, indent=2, sort_keys=True) + "\n")
@@ -307,6 +340,9 @@ def _fixed_design(
         block_cost=block_cost,
         block_weights=block_weights,
         common_cover_distribution=block_weights / block_weights.sum(),
+        context_levels=np.asarray(context_levels, dtype=str),
+        token_context_scores=token_context_scores,
+        token_context_weights=token_context_weights,
     )
     design_rows = len(design_frame)
     del design_frame, design_tokens, design_probabilities, context_array
@@ -320,9 +356,14 @@ def _fixed_design(
         "decoder": decoder,
         "block_cost": block_cost,
         "block_weights": block_weights,
+        "frequencies": frequencies,
+        "context_levels": context_levels,
+        "token_context_scores": token_context_scores,
+        "token_context_weights": token_context_weights,
         "cartesian_support": cartesian_support,
         "design_support": observed_design_support,
         "design_probability": design_probability,
+        "design_only_probability": design_only_probability,
         "support_hash": sha256_file(support_path),
         "mapper_hash": sha256_file(path / "models" / "category_mapper.joblib"),
         "encoder_hash": sha256_file(path / "models" / "encoder.joblib"),

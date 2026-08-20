@@ -5,12 +5,18 @@ import json
 import numpy as np
 import pytest
 
-from capt12.certification.artifact import hash_json, make_certificate, verify_certificate
+from capt12.certification.artifact import (
+    hash_array,
+    hash_json,
+    make_certificate,
+    verify_certificate,
+)
 from capt12.certification.robust import verify_robust_channel
 from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box, full_simplex_box
 from capt12.mechanisms.baselines import common_cover, k_ary_rr
 from capt12.mechanisms.lp import SolverInfo
 from capt12.privacy.adjacency import Group, build_adjacency
+from capt12.utils.artifacts import sha256_file
 
 
 @pytest.fixture(autouse=True)
@@ -334,3 +340,113 @@ def test_mixed_cp_and_full_simplex_certificate_reconstructs_zero_count_group(
     rejected = verify_certificate(path)
     assert not rejected.valid
     assert "does not match" in rejected.worst_case["error"]
+
+
+def test_context_certificate_binds_mapper_and_manifest_semantics(tmp_path) -> None:
+    groups = [Group("a", ("known",), "public-b"), Group("a", ("__UNKNOWN__",), "public-b")]
+    counts = {
+        groups[0].key(): np.array([60, 40]),
+        groups[1].key(): np.array([0, 0]),
+    }
+    adjacency = build_adjacency(groups, epsilon=1.0)
+    boxes = {
+        groups[0].key(): cp_box(
+            counts[groups[0].key()], group_count=2, comparisons=len(adjacency)
+        ),
+        groups[1].key(): full_simplex_box(counts[groups[1].key()]),
+    }
+    channel = k_ary_rr(2, 1.0)
+    verification = verify_robust_channel(channel, boxes, adjacency)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "mechanism").mkdir()
+    mapper_path = tmp_path / "models" / "category_mapper.joblib"
+    mapper_path.write_bytes(b"frozen mapper")
+    mapper_hash = sha256_file(mapper_path)
+    manifest = {
+        "version": 1,
+        "profile": "a",
+        "public_context_column": "b",
+        "channel_selector_inputs": ["Z", "profile", "b"],
+        "protected_value_used_online": False,
+        "runtime_mapper_hash": mapper_hash,
+        "sensitive_coarsening": {
+            "missing": "__UNKNOWN__",
+            "unseen": "__UNKNOWN__",
+        },
+        "designs": {
+            "test-design": {
+                "L": 2,
+                "assignment_hash": hash_array(np.arange(2)),
+                "decoder_hash": hash_array(np.eye(2)),
+                "table_entries": 4,
+                "contexts": {
+                    "public-b": hash_array(channel)
+                },
+            }
+        },
+    }
+    manifest_path = tmp_path / "mechanism" / "context_channel_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    config = {
+        "dataset": "criteo",
+        "confidence": "cp_box",
+        "alpha_cert": 0.05,
+        "epsilon": 1.0,
+        "sampling_assumption": "user_day_iid",
+        "contribution_policy": "one-display-per-uuid-day",
+        "rare_group_policy": "confidence_box",
+        "missing_group_policy": "full_simplex",
+        "sensitive_fallback_policy": "unified_unknown",
+        "sensitive_unknown_value": "__UNKNOWN__",
+        "public_context_policy": "stratified",
+        "profiles": ["a"],
+        "context_cols": ["b"],
+        "channel_selector_inputs": ["Z", "profile", "b"],
+        "public_context_value": "public-b",
+        "context_design": "test-design",
+        "splits": {},
+    }
+    certificate = make_certificate(
+        config=config,
+        channel=channel,
+        boxes=boxes,
+        adjacency=adjacency,
+        verification=verification,
+        solver=SolverInfo("optimal", 0, 0, 1, primal_gap=0),
+        component_hashes={
+            "mapper": mapper_hash,
+            "context_channel_manifest": sha256_file(manifest_path),
+        },
+        split_identifiers={},
+        dp_parameters={
+            "epsilon": None,
+            "delta": None,
+            "contribution_policy": "one-display-per-uuid-day",
+        },
+        histogram_counts=counts,
+        assignment=np.arange(2),
+        decoder=np.eye(2),
+        groups=groups,
+        coverage={
+            "expected_group_count": 2,
+            "observed_group_count": 1,
+            "missing_group_count": 1,
+            "missing_groups": [groups[1].key()],
+            "rare_group_count": 0,
+            "hybrid_connectivity_gaps": 0,
+            "requires_universal_cover": False,
+            "public_context_value": "public-b",
+        },
+    )
+    certificate_path = tmp_path / "certificate.json"
+    certificate.write(certificate_path)
+    assert verify_certificate(certificate_path).valid
+
+    manifest["designs"]["test-design"]["contexts"]["public-b"] = "wrong"
+    manifest_path.write_text(json.dumps(manifest))
+    payload = json.loads(certificate_path.read_text())
+    payload["component_hashes"]["context_channel_manifest"] = sha256_file(manifest_path)
+    certificate_path.write_text(json.dumps(payload))
+    rejected = verify_certificate(certificate_path)
+    assert not rejected.valid
+    assert "certified context channel" in rejected.worst_case["error"]

@@ -11,6 +11,7 @@ from capt12.confidence.support import support
 from capt12.mechanisms.lp import (
     ChannelSolution,
     _solve_channel_lp,
+    ldp_constraint_matrix,
     solve_ldp_block_lp,
     validate_channel,
 )
@@ -108,7 +109,11 @@ def solve_robust_block_lp(
         raise ValueError("max_iterations must be positive")
     nominal = {key: box.nominal for key, box in boxes.items()}
     ldp_epsilon = _full_simplex_ldp_epsilon(boxes, adjacency)
-    if ldp_epsilon is not None:
+    pure_ldp = ldp_epsilon is not None and ldp_epsilon <= min(
+        (float(pair.epsilon) for pair in adjacency),
+        default=ldp_epsilon,
+    )
+    if pure_ldp:
         # A single full-simplex/full-simplex edge is exactly global row-wise
         # LDP.  The minimum such epsilon implies every other edge here, so solve
         # that equivalent LP directly and still verify every original robust
@@ -146,6 +151,12 @@ def solve_robust_block_lp(
         ]
         return solution, verification
 
+    dimension = int(np.asarray(cost).shape[0])
+    ldp_seed = (
+        ldp_constraint_matrix(dimension, ldp_epsilon)
+        if ldp_epsilon is not None
+        else None
+    )
     cuts: list[tuple[np.ndarray, np.ndarray, float, int]] = []
     cut_keys: set[tuple[bytes, bytes, float, int]] = set()
     solution: ChannelSolution | None = None
@@ -158,6 +169,7 @@ def solve_robust_block_lp(
             tolerance=tolerance,
             time_limit=time_limit,
             extra_cuts=cuts,
+            precompiled_ub=ldp_seed,
         )
         if solution.channel is None:
             return solution, VerificationResult(False, math.inf, math.inf, {"error": solution.solver.message}, 0)
@@ -183,7 +195,18 @@ def solve_robust_block_lp(
     verification = verify_robust_channel(solution.channel, boxes, adjacency, tolerance=tolerance)
     if not verification.valid:
         solution.solver.status = "verification_failed"
-    solution.cuts = [
+    solution.cuts = (
+        [
+            {
+                "source": "full_simplex_ldp_seed",
+                "epsilon": ldp_epsilon,
+                "constraint_count": dimension * (dimension - 1) * dimension,
+                "pure_ldp_replacement": False,
+            }
+        ]
+        if ldp_seed is not None
+        else []
+    ) + [
         {
             "source": "support_oracle",
             "left_witness": left.tolist(),

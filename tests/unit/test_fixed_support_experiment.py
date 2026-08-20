@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from capt12.data.preprocessing import FrozenCategoryMapper
 from capt12.experiments.fixed_support import (
     cartesian_support_from_domains,
     ordered_size_labels,
@@ -84,6 +85,35 @@ def test_cartesian_support_does_not_add_padding_nan_level() -> None:
     )
     assert len(support) == 5 * 4
     assert all("nan" not in value for group in support for value in group)
+
+
+def test_unified_sensitive_unknown_is_frozen_and_used_in_support() -> None:
+    model = pd.DataFrame({"secret": ["a", "b"], "context": ["x", "y"]})
+    mapper = FrozenCategoryMapper(
+        3,
+        unknown_columns=frozenset({"secret"}),
+    ).fit(model, ["secret", "context"])
+    transformed = mapper.transform(
+        pd.DataFrame(
+            {
+                "secret": ["a", None, "unseen"],
+                "context": ["x", None, "unseen"],
+            }
+        )
+    )
+    assert transformed["secret"].tolist() == ["a", "__UNKNOWN__", "__UNKNOWN__"]
+    assert transformed["context"].tolist() == ["x", "__OTHER__", "__OTHER__"]
+    support = cartesian_support_from_domains(
+        {"secret": {"a", "b"}, "context": {"x", "y"}},
+        profile="secret",
+        contexts=["context"],
+        fallback_levels_by_column={
+            "secret": ["__UNKNOWN__"],
+            "context": ["__OTHER__", "__MISSING__"],
+        },
+    )
+    assert any(group[0] == "__UNKNOWN__" for group in support)
+    assert all(group[0] not in {"__OTHER__", "__MISSING__"} for group in support)
 
 
 def test_plot_size_labels_match_cell_labels() -> None:

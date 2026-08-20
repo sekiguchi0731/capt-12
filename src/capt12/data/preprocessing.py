@@ -15,6 +15,8 @@ class FrozenCategoryMapper:
     max_cardinality: int = 32
     mappings: dict[str, set[object]] = field(default_factory=dict)
     fit_split: str | None = None
+    unknown_columns: frozenset[str] = frozenset()
+    unknown_value: str = "__UNKNOWN__"
 
     def fit(
         self, frame: pd.DataFrame, columns: Sequence[str], *, split_id: str = "D_model"
@@ -31,8 +33,14 @@ class FrozenCategoryMapper:
     def transform(self, frame: pd.DataFrame) -> pd.DataFrame:
         result = frame.copy()
         for column, allowed in self.mappings.items():
-            result[column] = result[column].where(result[column].isin(allowed), "__OTHER__")
-            result[column] = result[column].fillna("__MISSING__").astype(str)
+            if column in self.unknown_columns:
+                known = result[column].notna() & result[column].isin(allowed)
+                result[column] = result[column].where(known, self.unknown_value).astype(str)
+            else:
+                result[column] = result[column].where(
+                    result[column].isin(allowed), "__OTHER__"
+                )
+                result[column] = result[column].fillna("__MISSING__").astype(str)
         return result
 
 
