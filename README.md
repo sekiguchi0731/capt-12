@@ -88,6 +88,21 @@ sent to the privacy LP. Informative classes compare utility medoid, cost
 medoid, joint weighted cost k-medoids, and the `L=K` singleton/identity positive
 control against optimal LDP and independently verified simplex-CAPT.
 
+To isolate sparse public contexts instead of making one global channel pay for
+all of them, run the single prescribed context-stratified diagnostic:
+
+```bash
+uv run capt12 context-stratified --config configs/criteo_context_stratified.yaml
+```
+
+This maps missing and unseen sensitive values to one frozen `__UNKNOWN__`
+secret and indexes the channel only by token `Z`, profile, and public context
+`B`; the realized protected value is never an online selector. It compares
+context CAPT against the fair context-specific optimal-LDP and best-constant
+baselines for joint k-medoids `L=16` and singleton/identity `L=K=64`. The
+guarantee concerns the coarsened sensitive value conditional on an attacker
+already knowing `B`; leakage through `B` itself is outside scope.
+
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and
 robust constraints using a verifier-owned tolerance. It is bundle-consistency

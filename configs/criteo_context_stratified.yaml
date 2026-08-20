@@ -1,0 +1,9 @@
+base_config: criteo_utility_design.yaml
+output_dir: outputs/context_stratified_runs
+sensitive_fallback_policy: unified_unknown
+sensitive_unknown_value: __UNKNOWN__
+public_context_policy: stratified
+channel_selector_inputs:
+  - Z
+  - profile
+  - features_ctx_not_constrained_0

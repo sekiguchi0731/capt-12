@@ -168,6 +168,36 @@ and a valid certificate. A full-simplex/full-simplex edge makes CAPT exactly
 row-wise LDP, so utility-aware design can repair constant-channel degeneration
 without by itself producing a CAPT-over-LDP advantage.
 
+## Public-context stratified diagnostic
+
+Run the prescribed one-condition follow-up with:
+
+```bash
+uv run capt12 context-stratified \
+  --config configs/criteo_context_stratified.yaml
+```
+
+The run keeps `features_kv_bits_constrained_2`, epsilon 1, and the frozen
+partition/decoder family. It solves the joint weighted k-medoids `L=16`
+primary design and the singleton/identity `L=K=64` positive control. Missing
+and unseen sensitive values are mapped by the frozen runtime mapper to the one
+coarsened secret `__UNKNOWN__`. A separate channel is optimized for every
+frozen public-context value, using only `Z`, profile, and public `B` online.
+
+Required comparisons are the best context-specific constant, context-specific
+optimal LDP, and context-specific CAPT. Shared optimal LDP and shared CAPT are
+supplementary baselines. The output records full-simplex edge context count and
+design mass, strict CAPT-over-context-LDP count and mass, aggregate distortion,
+row TV, table size, resource use, and expected-randomized D_test log loss. AUC
+and calibration are calculated from the expected prediction under mechanism
+randomness; no downstream model is retrained.
+
+Each context gets an independently verified certificate with alpha divided by
+the frozen number of context values. Every certificate binds the unified
+sensitive mapper and the complete context-channel manifest. The experiment is
+a gate: expand epsilon or L only if context CAPT strictly improves on
+context-specific optimal LDP with valid certificates.
+
 ## Full-scale command
 
 ```bash

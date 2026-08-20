@@ -299,6 +299,19 @@ def utility_design(
     typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
 
 
+@app.command("context-stratified")
+def context_stratified(
+    config: Path = typer.Option(..., "--config", exists=True),
+) -> None:
+    """Run the one-condition public-context CAPT diagnostic."""
+    from capt12.experiments.context_stratified import (
+        run_context_stratified_diagnostic,
+    )
+
+    path = run_context_stratified_diagnostic(_load(config))
+    typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),
