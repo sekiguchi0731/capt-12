@@ -71,9 +71,7 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> di
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(config)
     if cfg.get("require_clean_worktree") is False:
-        raise ValueError(
-            "certificate-producing runs cannot disable the clean-worktree requirement"
-        )
+        raise ValueError("certificate-producing runs cannot disable the clean-worktree requirement")
     for key in ("K", "L"):
         if key in cfg:
             cfg[key] = int(cfg[key])
@@ -125,26 +123,29 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "full-simplex completion requires rare_group_policy: confidence_box so "
             "every observed group keeps its finite-sample confidence set"
         )
-    sensitive_fallback = cfg.get(
-        "sensitive_fallback_policy", "separate_missing_other"
-    )
+    sensitive_fallback = cfg.get("sensitive_fallback_policy", "separate_missing_other")
     if sensitive_fallback not in {"separate_missing_other", "unified_unknown"}:
         raise ValueError(
             "sensitive_fallback_policy must be separate_missing_other or unified_unknown"
         )
-    if sensitive_fallback == "unified_unknown" and cfg.get(
-        "sensitive_unknown_value", "__UNKNOWN__"
-    ) != "__UNKNOWN__":
+    if (
+        sensitive_fallback == "unified_unknown"
+        and cfg.get("sensitive_unknown_value", "__UNKNOWN__") != "__UNKNOWN__"
+    ):
         raise ValueError("unified sensitive fallback must use __UNKNOWN__")
     public_context_policy = cfg.get("public_context_policy", "shared")
     if public_context_policy not in {"shared", "stratified"}:
         raise ValueError("public_context_policy must be shared or stratified")
     if public_context_policy == "stratified" and len(cfg.get("context_cols", [])) != 1:
         raise ValueError("stratified public-context CAPT currently requires one context column")
-    if cfg.get("dataset", "synthetic") not in {
-        "synthetic",
-        "synthetic_theorem4",
-    } and cfg.get("confidence") == "point":
+    if (
+        cfg.get("dataset", "synthetic")
+        not in {
+            "synthetic",
+            "synthetic_theorem4",
+        }
+        and cfg.get("confidence") == "point"
+    ):
         raise ValueError(
             "point confidence is only valid for a known synthetic population; "
             "use cp_box or hoeffding_box for sampled data"
@@ -159,9 +160,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         "stationary",
         "covered_by_shift_set",
     }:
-        raise ValueError(
-            "audit_population_assumption must be stationary or covered_by_shift_set"
-        )
+        raise ValueError("audit_population_assumption must be stationary or covered_by_shift_set")
     if cfg.get("audit_population_assumption") and not cfg.get("audit_bridge_evidence"):
         raise ValueError(
             "audit_population_assumption requires audit_bridge_evidence; a config label "
@@ -185,6 +184,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     solver_tolerance = float(cfg.get("solver_tolerance", 1e-8))
     if not 0 < solver_tolerance <= 1e-8:
         raise ValueError("solver_tolerance for certificate runs must be in (0, 1e-8]")
+    heartbeat_seconds = float(cfg.get("solver_heartbeat_seconds", 60.0))
+    if heartbeat_seconds <= 0:
+        raise ValueError("solver_heartbeat_seconds must be positive")
+    if not isinstance(cfg.get("solver_verbose", False), bool):
+        raise ValueError("solver_verbose must be a boolean")
     return cfg
 
 

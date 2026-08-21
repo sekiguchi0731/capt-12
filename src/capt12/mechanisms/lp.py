@@ -1,15 +1,40 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from scipy import sparse
 from scipy.optimize import linprog
 
 from capt12.privacy.adjacency import AdjacentPair
+from capt12.utils.progress import process_memory_bytes
+
+ProgressCallback = Callable[[str, Mapping[str, Any]], None]
+
+
+def _emit_progress(
+    progress: ProgressCallback | None,
+    event: str,
+    **fields: Any,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress(event, fields)
+    except Exception as error:  # pragma: no cover - logging must never invalidate a solve
+        print(f"[progress_callback_error] event={event} error={error!r}", flush=True)
+
+
+def _sparse_memory_bytes(matrix: sparse.spmatrix | None) -> int:
+    if matrix is None:
+        return 0
+    csr = matrix.tocsr()
+    return int(csr.data.nbytes + csr.indices.nbytes + csr.indptr.nbytes)
 
 
 @dataclass
@@ -57,7 +82,10 @@ def lift_block_channel(
         raise ValueError("decoder shape does not match assignment")
     if set(assignment.tolist()) != set(range(l_count)):
         raise ValueError("blocks must be non-empty and numbered contiguously")
-    q = block_channel[assignment[:, None], assignment[None, :]] * decoder[assignment[None, :], np.arange(len(assignment))[None, :]]
+    q = (
+        block_channel[assignment[:, None], assignment[None, :]]
+        * decoder[assignment[None, :], np.arange(len(assignment))[None, :]]
+    )
     validate_channel(q)
     return q
 
@@ -75,7 +103,12 @@ def privacy_violations(
         for output, value in enumerate(diff):
             if value > 0:
                 violations.append(
-                    {"left": pair.left, "right": pair.right, "output": output, "violation": float(value)}
+                    {
+                        "left": pair.left,
+                        "right": pair.right,
+                        "output": output,
+                        "violation": float(value),
+                    }
                 )
     return violations
 
@@ -90,6 +123,10 @@ def _solve_channel_lp(
     time_limit: float | None = None,
     extra_cuts: Sequence[tuple[np.ndarray, np.ndarray, float, int]] = (),
     precompiled_ub: sparse.spmatrix | None = None,
+    progress: ProgressCallback | None = None,
+    progress_label: str = "channel_lp",
+    solver_verbose: bool = False,
+    heartbeat_seconds: float = 60.0,
 ) -> ChannelSolution:
     cost = np.asarray(cost, dtype=float)
     n = cost.shape[0]
@@ -99,6 +136,23 @@ def _solve_channel_lp(
     if weights.shape != (n,) or weights.sum() <= 0:
         raise ValueError("input_weights must be nonnegative and have length n")
     weights = weights / weights.sum()
+    _emit_progress(
+        progress,
+        "lp_problem_build_started",
+        label=progress_label,
+        dimension=n,
+        variable_count=n * n,
+        nominal_adjacency_count=len(adjacency),
+        extra_cut_count=len(extra_cuts),
+        precompiled_constraint_count=(
+            int(precompiled_ub.shape[0]) if precompiled_ub is not None else 0
+        ),
+        solver_verbose=solver_verbose,
+        heartbeat_seconds=heartbeat_seconds,
+        time_limit_seconds=time_limit,
+        **process_memory_bytes(),
+    )
+    build_started = time.perf_counter()
     raw_objective = (weights[:, None] * cost).reshape(-1)
     # HiGHS' feasibility/duality tolerances are absolute.  Criteo distortion
     # coefficients can be around 1e-10, in which case the unscaled objective is
@@ -139,28 +193,124 @@ def _solve_channel_lp(
     a_ub = sparse.vstack(matrices, format="csr") if matrices else None
     inequality_count = int(a_ub.shape[0]) if a_ub is not None else 0
     b_ub = np.zeros(inequality_count) if a_ub is not None else None
-    options: dict[str, float] = {"dual_feasibility_tolerance": tolerance, "primal_feasibility_tolerance": tolerance}
+    options: dict[str, float] = {
+        "dual_feasibility_tolerance": tolerance,
+        "primal_feasibility_tolerance": tolerance,
+    }
     if time_limit is not None:
         options["time_limit"] = time_limit
-    started = time.perf_counter()
-    result = linprog(
-        objective,
-        A_ub=a_ub,
-        b_ub=b_ub,
-        A_eq=a_eq.tocsr(),
-        b_eq=b_eq,
-        bounds=(0.0, 1.0),
-        method="highs",
-        options=options,
+    if solver_verbose:
+        options["disp"] = True
+    matrix_memory_bytes = (
+        objective.nbytes
+        + b_eq.nbytes
+        + (b_ub.nbytes if b_ub is not None else 0)
+        + _sparse_memory_bytes(a_eq)
+        + _sparse_memory_bytes(a_ub)
     )
+    _emit_progress(
+        progress,
+        "lp_problem_build_finished",
+        label=progress_label,
+        build_seconds=time.perf_counter() - build_started,
+        dimension=n,
+        variable_count=n * n,
+        equality_constraint_count=n,
+        inequality_constraint_count=inequality_count,
+        total_constraint_count=n + inequality_count,
+        matrix_nonzero_count=(int(a_eq.nnz) + (int(a_ub.nnz) if a_ub is not None else 0)),
+        matrix_memory_bytes=matrix_memory_bytes,
+        objective_scale=objective_scale,
+        raw_objective_min=float(np.min(raw_objective)),
+        raw_objective_max=float(np.max(raw_objective)),
+        **process_memory_bytes(),
+    )
+    started = time.perf_counter()
+    _emit_progress(
+        progress,
+        "lp_solver_started",
+        label=progress_label,
+        method="highs",
+        dimension=n,
+        variable_count=n * n,
+        total_constraint_count=n + inequality_count,
+        time_limit_seconds=time_limit,
+        **process_memory_bytes(),
+    )
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+    if progress is not None and heartbeat_seconds > 0:
+
+        def heartbeat() -> None:
+            sequence = 0
+            while not heartbeat_stop.wait(heartbeat_seconds):
+                sequence += 1
+                _emit_progress(
+                    progress,
+                    "lp_solver_heartbeat",
+                    label=progress_label,
+                    heartbeat_sequence=sequence,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    dimension=n,
+                    variable_count=n * n,
+                    total_constraint_count=n + inequality_count,
+                    **process_memory_bytes(),
+                )
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat,
+            name=f"capt12-heartbeat-{progress_label}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+    try:
+        result = linprog(
+            objective,
+            A_ub=a_ub,
+            b_ub=b_ub,
+            A_eq=a_eq.tocsr(),
+            b_eq=b_eq,
+            bounds=(0.0, 1.0),
+            method="highs",
+            options=options,
+        )
+    except BaseException as error:
+        _emit_progress(
+            progress,
+            "lp_solver_raised",
+            label=progress_label,
+            solver_elapsed_seconds=time.perf_counter() - started,
+            error_type=type(error).__name__,
+            error=str(error),
+            **process_memory_bytes(),
+        )
+        raise
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
     runtime = time.perf_counter() - started
+    _emit_progress(
+        progress,
+        "lp_solver_finished",
+        label=progress_label,
+        solver_elapsed_seconds=runtime,
+        dimension=n,
+        variable_count=n * n,
+        total_constraint_count=n + inequality_count,
+        success=bool(result.success),
+        scipy_status=int(result.status),
+        message=str(result.message),
+        iterations=getattr(result, "nit", None),
+        crossover_iterations=getattr(result, "crossover_nit", None),
+        objective_value=(float(raw_objective @ result.x) if result.success else None),
+        **process_memory_bytes(),
+    )
     primal_gap = None
     dual_gap = None
     if result.success:
         eq_gap = float(np.max(np.abs(a_eq.tocsr() @ result.x - b_eq)))
-        ub_gap = (
-            float(max(0.0, np.max(a_ub @ result.x - b_ub))) if a_ub is not None else 0.0
-        )
+        ub_gap = float(max(0.0, np.max(a_ub @ result.x - b_ub))) if a_ub is not None else 0.0
         primal_gap = max(eq_gap, ub_gap, float(max(0.0, -np.min(result.x))))
         # HiGHS reports an optimal primal/dual pair; scipy does not expose a
         # standalone LP duality-gap field, so record zero only on optimal exit.
@@ -175,7 +325,7 @@ def _solve_channel_lp(
         message=result.message,
         variable_count=n * n,
         constraint_count=n + inequality_count,
-        estimated_memory_bytes=int((objective.nbytes + a_eq.tocsr().data.nbytes + (a_ub.data.nbytes if a_ub is not None else 0)) * 2),
+        estimated_memory_bytes=int(matrix_memory_bytes * 2),
     )
     if not result.success:
         return ChannelSolution(None, info)
@@ -212,7 +362,31 @@ def solve_ldp_block_lp(
     n = int(np.asarray(cost).shape[0])
     if epsilon < 0:
         raise ValueError("epsilon must be nonnegative")
+    progress = kwargs.get("progress")
+    progress_label = str(kwargs.get("progress_label", "ldp_block_lp"))
+    _emit_progress(
+        progress,
+        "ldp_constraint_build_started",
+        label=progress_label,
+        dimension=n,
+        epsilon=epsilon,
+        expected_constraint_count=n * (n - 1) * n,
+        **process_memory_bytes(),
+    )
+    started = time.perf_counter()
     matrix = ldp_constraint_matrix(n, epsilon)
+    _emit_progress(
+        progress,
+        "ldp_constraint_build_finished",
+        label=progress_label,
+        dimension=n,
+        epsilon=epsilon,
+        constraint_count=int(matrix.shape[0]),
+        nonzero_count=int(matrix.nnz),
+        matrix_memory_bytes=_sparse_memory_bytes(matrix),
+        build_seconds=time.perf_counter() - started,
+        **process_memory_bytes(),
+    )
     return _solve_channel_lp(
         cost,
         block_weights,
@@ -229,12 +403,7 @@ def ldp_constraint_matrix(n: int, epsilon: float) -> sparse.csr_matrix:
         raise ValueError("LDP dimension must be positive")
     if epsilon < 0:
         raise ValueError("epsilon must be nonnegative")
-    pairs = [
-        (left, right)
-        for left in range(n)
-        for right in range(n)
-        if left != right
-    ]
+    pairs = [(left, right) for left in range(n) for right in range(n) if left != right]
     pair_left = np.asarray([left for left, _ in pairs], dtype=int)
     pair_right = np.asarray([right for _, right in pairs], dtype=int)
     outputs = np.tile(np.arange(n, dtype=int), len(pairs))
@@ -259,7 +428,11 @@ def full_problem_size(k: int, adjacency_count: int) -> dict[str, int]:
     constraints = k + adjacency_count * k
     # sparse coefficient, index, and solver work estimate; intentionally conservative
     estimated_memory = int((variables * 24) + (constraints * max(k, 1) * 24))
-    return {"variables": variables, "constraints": constraints, "estimated_memory_bytes": estimated_memory}
+    return {
+        "variables": variables,
+        "constraints": constraints,
+        "estimated_memory_bytes": estimated_memory,
+    }
 
 
 def solve_full_lp(

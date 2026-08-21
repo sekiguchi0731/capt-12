@@ -195,6 +195,16 @@ def test_full_simplex_policy_requires_observed_rare_confidence_boxes() -> None:
         )
 
 
+def test_solver_progress_config_requires_valid_types_and_interval() -> None:
+    assert validate_config(
+        {"solver_verbose": True, "solver_heartbeat_seconds": 30}
+    )
+    with pytest.raises(ValueError, match="solver_heartbeat_seconds"):
+        validate_config({"solver_heartbeat_seconds": 0})
+    with pytest.raises(ValueError, match="solver_verbose"):
+        validate_config({"solver_verbose": "yes"})
+
+
 def test_fixed_seed_reproducible_hash_encoder() -> None:
     frame = pd.DataFrame({"x": ["a", "b", "c"]})
     first = HashEncoder(16, seed=8).fit(frame, ["x"]).transform(frame)
