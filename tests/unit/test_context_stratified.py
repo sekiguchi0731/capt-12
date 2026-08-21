@@ -4,9 +4,14 @@ import numpy as np
 
 from capt12.experiments.context_stratified import (
     ContextObjective,
+    _solve_design,
     aggregate_context_objective,
 )
 from capt12.experiments.simplex_completion import _objective
+from capt12.experiments.utility_design import UtilityDesign
+from capt12.mechanisms.diagnostics import utility_informativeness
+from capt12.privacy.adjacency import Group
+from capt12.utils.progress import ProgressLogger
 
 
 def test_aggregate_context_objective_preserves_decomposed_objective() -> None:
@@ -31,3 +36,60 @@ def test_aggregate_context_objective_preserves_decomposed_objective() -> None:
         for item in [first, second]
     )
     assert np.isclose(_objective(channel, cost, weights), decomposed)
+
+
+def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
+    cost = np.array([[0.0, 1.0], [1.0, 0.0]])
+    weights = np.array([0.5, 0.5])
+    design = UtilityDesign(
+        name="tiny",
+        label="Tiny",
+        partition_method="singleton",
+        decoder_method="identity",
+        assignment=np.array([0, 1]),
+        decoder=np.eye(2),
+        block_cost=cost,
+        block_weights=weights,
+        diagnostic=utility_informativeness(cost, weights),
+    )
+    objectives = [
+        ContextObjective(context, 0.5, weights, cost, weights)
+        for context in ("morning", "evening")
+    ]
+    groups = [
+        Group("secret", (value,), context)
+        for context in ("morning", "evening")
+        for value in ("a", "b")
+    ]
+    counts = {
+        group.key(): np.array([80, 20]) if group.values == ("a",) else np.array([20, 80])
+        for group in groups
+    }
+    progress = ProgressLogger(tmp_path, name="tiny-context")
+
+    cells, shared_ldp, shared_capt, verification = _solve_design(
+        design,
+        objectives,
+        groups,
+        counts,
+        {
+            "epsilon": 1.0,
+            "alpha_cert": 0.05,
+            "confidence": "cp_box",
+            "missing_group_policy": "full_simplex",
+            "min_group_count": 20,
+            "solver_tolerance": 1e-8,
+            "max_cutting_plane_iterations": 10,
+            "solver_heartbeat_seconds": 1,
+        },
+        progress,
+    )
+
+    assert len(cells) == 2
+    assert shared_ldp.channel is not None
+    assert shared_capt.channel is not None
+    assert verification.valid
+    log = (tmp_path / "progress.log").read_text()
+    assert log.count("[context_started]") == 2
+    assert "[cutting_plane_iteration_started]" in log
+    assert "[shared_capt_finished]" in log

@@ -198,6 +198,15 @@ sensitive mapper and the complete context-channel manifest. The experiment is
 a gate: expand epsilon or L only if context CAPT strictly improves on
 context-specific optimal LDP with valid certificates.
 
+The command emits unbuffered progress suitable for a remote `nohup` log. Each
+line includes UTC time, run attempt, event name, design, public context, LP
+dimension, constraint counts, cutting-plane iteration, and memory where
+applicable. `lp_solver_heartbeat` is emitted every 30 seconds while SciPy is
+inside HiGHS, so a long solver call is distinguishable from stalled Python.
+HiGHS' own verbose iteration output is enabled for this prescribed config.
+The same messages are persisted as human-readable `progress.log` and
+structured `progress.jsonl` under the run directory.
+
 ## Full-scale command
 
 ```bash

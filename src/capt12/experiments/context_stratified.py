@@ -41,6 +41,7 @@ from capt12.mechanisms.lp import ChannelSolution, lift_block_channel, solve_ldp_
 from capt12.pipeline import record_source_provenance
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
 from capt12.utils.artifacts import environment, finish_run, prepare_run, sha256_file
+from capt12.utils.progress import ProgressLogger, process_memory_bytes
 
 
 @dataclass(frozen=True)
@@ -196,11 +197,7 @@ def _split_histogram_by_context(
     return {
         context: (
             [group for group in groups if str(group.context) == context],
-            {
-                group.key(): counts[group.key()]
-                for group in groups
-                if str(group.context) == context
-            },
+            {group.key(): counts[group.key()] for group in groups if str(group.context) == context},
         )
         for context in contexts
     }
@@ -212,13 +209,31 @@ def _solve_design(
     groups: list[Group],
     counts: dict[str, np.ndarray],
     config: dict[str, Any],
+    progress: ProgressLogger,
 ) -> tuple[list[ContextCell], ChannelSolution, ChannelSolution, Any]:
     by_context = _split_histogram_by_context(groups, counts)
     objective_by_context = {value.context: value for value in objectives}
     context_count = len(by_context)
     tolerance = float(config.get("solver_tolerance", 1e-8))
+    solver_verbose = bool(config.get("solver_verbose", False))
+    heartbeat_seconds = float(config.get("solver_heartbeat_seconds", 60.0))
     cells: list[ContextCell] = []
-    for context, (context_groups, context_counts) in by_context.items():
+    progress.emit(
+        "design_context_solve_started",
+        design=design.name,
+        dimension=len(design.block_weights),
+        context_count=context_count,
+        solver_verbose=solver_verbose,
+        heartbeat_seconds=heartbeat_seconds,
+        tolerance=tolerance,
+        time_limit_seconds=config.get("time_limit"),
+        max_cutting_plane_iterations=int(config.get("max_cutting_plane_iterations", 100)),
+        **process_memory_bytes(),
+    )
+    for context_index, (context, (context_groups, context_counts)) in enumerate(
+        by_context.items(), start=1
+    ):
+        context_started = time.perf_counter()
         adjacency = build_adjacency(
             context_groups,
             config.get("adjacency", config.get("privacy_scope", "tuple_adjacent")),
@@ -234,13 +249,59 @@ def _solve_design(
         )
         full_simplex = {key for key, box in boxes.items() if box.method == "full_simplex"}
         full_edges = sum(
-            pair.left in full_simplex and pair.right in full_simplex
-            for pair in adjacency
+            pair.left in full_simplex and pair.right in full_simplex for pair in adjacency
         )
         objective = objective_by_context[context]
+        group_totals = np.asarray(
+            [int(value.sum()) for value in context_counts.values()], dtype=int
+        )
+        positive_totals = group_totals[group_totals > 0]
+        progress.emit(
+            "context_started",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            context_count=context_count,
+            context_percent_complete=100.0 * (context_index - 1) / context_count,
+            design_mass=objective.design_mass,
+            dimension=len(design.block_weights),
+            variable_count=len(design.block_weights) ** 2,
+            group_count=len(context_groups),
+            observed_group_count=int(np.sum(group_totals > 0)),
+            missing_group_count=int(np.sum(group_totals == 0)),
+            rare_group_count=int(
+                np.sum((group_totals > 0) & (group_totals < int(config.get("min_group_count", 20))))
+            ),
+            min_positive_group_count=(
+                int(np.min(positive_totals)) if len(positive_totals) else None
+            ),
+            median_positive_group_count=(
+                float(np.median(positive_totals)) if len(positive_totals) else None
+            ),
+            max_group_count=int(np.max(group_totals)),
+            adjacency_count=len(adjacency),
+            full_simplex_box_count=len(full_simplex),
+            full_simplex_ordered_edge_count=int(full_edges),
+            nominal_robust_constraint_count=(len(adjacency) * len(design.block_weights)),
+            alpha_cert=cell_config["alpha_cert"],
+            **process_memory_bytes(),
+        )
         constant, _ = _best_input_independent_channel(
             objective.block_cost,
             objective.block_weights,
+        )
+        progress.emit(
+            "context_ldp_started",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            context_count=context_count,
+            dimension=len(design.block_weights),
+            expected_ldp_constraint_count=(
+                len(design.block_weights)
+                * (len(design.block_weights) - 1)
+                * len(design.block_weights)
+            ),
         )
         ldp = solve_ldp_block_lp(
             objective.block_cost,
@@ -248,6 +309,35 @@ def _solve_design(
             float(config["epsilon"]),
             tolerance=tolerance,
             time_limit=config.get("time_limit"),
+            progress=progress,
+            progress_label=f"{design.name}/context={context}/ldp",
+            solver_verbose=solver_verbose,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+        progress.emit(
+            "context_ldp_finished",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            status=ldp.solver.status,
+            runtime_seconds=ldp.solver.runtime_seconds,
+            iterations=ldp.solver.iterations,
+            objective=ldp.solver.objective,
+            variable_count=ldp.solver.variable_count,
+            constraint_count=ldp.solver.constraint_count,
+            primal_gap=ldp.solver.primal_gap,
+            dual_gap=ldp.solver.dual_gap,
+            **process_memory_bytes(),
+        )
+        progress.emit(
+            "context_capt_started",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            context_count=context_count,
+            adjacency_count=len(adjacency),
+            full_simplex_ordered_edge_count=int(full_edges),
+            pure_ldp_shortcut_expected=bool(full_edges),
         )
         capt, verification = solve_robust_block_lp(
             objective.block_cost,
@@ -257,6 +347,27 @@ def _solve_design(
             tolerance=tolerance,
             max_iterations=int(config.get("max_cutting_plane_iterations", 100)),
             time_limit=config.get("time_limit"),
+            progress=progress,
+            progress_label=f"{design.name}/context={context}/capt",
+            solver_verbose=solver_verbose,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+        progress.emit(
+            "context_capt_finished",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            status=capt.solver.status,
+            runtime_seconds=capt.solver.runtime_seconds,
+            iterations=capt.solver.iterations,
+            objective=capt.solver.objective,
+            variable_count=capt.solver.variable_count,
+            constraint_count=capt.solver.constraint_count,
+            support_cut_count=len(capt.cuts),
+            robust_valid=verification.valid,
+            robust_checked_constraints=verification.checked_constraints,
+            robust_max_violation=verification.max_violation,
+            **process_memory_bytes(),
         )
         if ldp.channel is None or capt.channel is None or not verification.valid:
             raise RuntimeError(f"context optimization failed: {design.name}/{context}")
@@ -287,16 +398,61 @@ def _solve_design(
                 ),
             )
         )
+        progress.emit(
+            "context_finished",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            context_count=context_count,
+            context_seconds=time.perf_counter() - context_started,
+            ldp_objective=ldp.solver.objective,
+            capt_objective=capt.solver.objective,
+            capt_advantage_over_ldp=(
+                float(ldp.solver.objective - capt.solver.objective)
+                if ldp.solver.objective is not None and capt.solver.objective is not None
+                else None
+            ),
+            capt_row_tv=_max_row_tv(capt.channel),
+            **process_memory_bytes(),
+        )
 
+    progress.emit(
+        "shared_objective_build_started",
+        design=design.name,
+        context_count=context_count,
+    )
     aggregate_cost, aggregate_weights = aggregate_context_objective(objectives)
     all_boxes = {key: value for cell in cells for key, value in cell.boxes.items()}
     all_adjacency = [pair for cell in cells for pair in cell.adjacency]
+    progress.emit(
+        "shared_baseline_started",
+        design=design.name,
+        dimension=len(design.block_weights),
+        box_count=len(all_boxes),
+        adjacency_count=len(all_adjacency),
+        nominal_robust_constraint_count=(len(all_adjacency) * len(design.block_weights)),
+        **process_memory_bytes(),
+    )
     shared_ldp = solve_ldp_block_lp(
         aggregate_cost,
         aggregate_weights,
         float(config["epsilon"]),
         tolerance=tolerance,
         time_limit=config.get("time_limit"),
+        progress=progress,
+        progress_label=f"{design.name}/shared/ldp",
+        solver_verbose=solver_verbose,
+        heartbeat_seconds=heartbeat_seconds,
+    )
+    progress.emit(
+        "shared_ldp_finished",
+        design=design.name,
+        status=shared_ldp.solver.status,
+        runtime_seconds=shared_ldp.solver.runtime_seconds,
+        iterations=shared_ldp.solver.iterations,
+        objective=shared_ldp.solver.objective,
+        constraint_count=shared_ldp.solver.constraint_count,
+        **process_memory_bytes(),
     )
     shared_capt, shared_verification = solve_robust_block_lp(
         aggregate_cost,
@@ -306,12 +462,25 @@ def _solve_design(
         tolerance=tolerance,
         max_iterations=int(config.get("max_cutting_plane_iterations", 100)),
         time_limit=config.get("time_limit"),
+        progress=progress,
+        progress_label=f"{design.name}/shared/capt",
+        solver_verbose=solver_verbose,
+        heartbeat_seconds=heartbeat_seconds,
     )
-    if (
-        shared_ldp.channel is None
-        or shared_capt.channel is None
-        or not shared_verification.valid
-    ):
+    progress.emit(
+        "shared_capt_finished",
+        design=design.name,
+        status=shared_capt.solver.status,
+        runtime_seconds=shared_capt.solver.runtime_seconds,
+        iterations=shared_capt.solver.iterations,
+        objective=shared_capt.solver.objective,
+        constraint_count=shared_capt.solver.constraint_count,
+        robust_valid=shared_verification.valid,
+        robust_checked_constraints=shared_verification.checked_constraints,
+        robust_max_violation=shared_verification.max_violation,
+        **process_memory_bytes(),
+    )
+    if shared_ldp.channel is None or shared_capt.channel is None or not shared_verification.valid:
         raise RuntimeError(f"shared baseline failed: {design.name}")
     return cells, shared_ldp, shared_capt, shared_verification
 
@@ -435,9 +604,7 @@ def _support_origin_rows(
                         "unified_unknown" if "__UNKNOWN__" in group.values else "known"
                     ),
                     "context_origin": (
-                        "sentinel"
-                        if context in {"__MISSING__", "__OTHER__"}
-                        else "known"
+                        "sentinel" if context in {"__MISSING__", "__OTHER__"} else "known"
                     ),
                     "design_mass": design_probability.get(
                         (*tuple(map(str, group.values)), context),
@@ -489,8 +656,7 @@ def _channel_manifest(
             "decoder_hash": hash_array(design.decoder),
             "table_entries": int(len(ordered) * len(design.block_weights) ** 2),
             "contexts": {
-                cell.objective.context: hash_array(cell.capt_solution.channel)
-                for cell in ordered
+                cell.objective.context: hash_array(cell.capt_solution.channel) for cell in ordered
             },
         }
     manifest_path = path / "mechanism" / "context_channel_manifest.json"
@@ -504,14 +670,32 @@ def _write_certificates(
     frozen: dict[str, Any],
     designs: list[UtilityDesign],
     cells_by_design: dict[str, list[ContextCell]],
+    progress: ProgressLogger,
 ) -> tuple[list[str], pd.DataFrame]:
     manifest_hash = sha256_file(path / "mechanism" / "context_channel_manifest.json")
     certificate_paths = []
     rows = []
+    total_certificates = sum(len(cells_by_design[design.name]) for design in designs)
+    completed = 0
+    progress.emit(
+        "certificate_batch_started",
+        certificate_count=total_certificates,
+        manifest_hash=manifest_hash,
+        **process_memory_bytes(),
+    )
     for design in designs:
         cells = sorted(cells_by_design[design.name], key=lambda cell: cell.objective.context)
         context_count = len(cells)
         for index, cell in enumerate(cells):
+            certificate_started = time.perf_counter()
+            progress.emit(
+                "certificate_started",
+                certificate_index=completed + 1,
+                certificate_count=total_certificates,
+                design=design.name,
+                context=cell.objective.context,
+                robust_constraint_count=len(cell.adjacency) * len(design.block_weights),
+            )
             missing = sorted(cell.full_simplex_keys)
             cell_config = dict(config)
             cell_config.update(
@@ -587,6 +771,26 @@ def _write_certificates(
                     "certificate_realized_epsilon": verification.realized_epsilon,
                 }
             )
+            completed += 1
+            progress.emit(
+                "certificate_finished",
+                certificate_index=completed,
+                certificate_count=total_certificates,
+                design=design.name,
+                context=cell.objective.context,
+                path=str(certificate_path),
+                certificate_seconds=time.perf_counter() - certificate_started,
+                valid=verification.valid,
+                checked_constraints=verification.checked_constraints,
+                max_violation=verification.max_violation,
+                realized_epsilon=verification.realized_epsilon,
+                **process_memory_bytes(),
+            )
+    progress.emit(
+        "certificate_batch_finished",
+        certificate_count=completed,
+        **process_memory_bytes(),
+    )
     return certificate_paths, pd.DataFrame(rows)
 
 
@@ -616,12 +820,8 @@ def _evaluate_test(
             "context_capt": {
                 context: cell.capt_solution.channel for context, cell in cell_by_context.items()
             },
-            "shared_ldp": {
-                context: shared_ldp.channel for context in cell_by_context
-            },
-            "shared_capt": {
-                context: shared_capt.channel for context in cell_by_context
-            },
+            "shared_ldp": {context: shared_ldp.channel for context in cell_by_context},
+            "shared_capt": {context: shared_capt.channel for context in cell_by_context},
         }
         for method, channels in methods.items():
             scores = np.empty(len(test_frame), dtype=float)
@@ -640,9 +840,7 @@ def _evaluate_test(
                 token_scores = token_channel @ probabilities
                 scores[mask] = token_scores[test_tokens[mask]]
                 loss_one = token_channel @ -np.log(np.clip(probabilities, 1e-6, 1))
-                loss_zero = token_channel @ -np.log(
-                    np.clip(1 - probabilities, 1e-6, 1)
-                )
+                loss_zero = token_channel @ -np.log(np.clip(1 - probabilities, 1e-6, 1))
                 context_labels = labels[mask]
                 context_tokens = test_tokens[mask]
                 expected_loss_sum += float(
@@ -713,9 +911,7 @@ def _plot_results(
             edgecolor="#222222",
             hatch="//" if "capt" in method else None,
         )
-    design_labels = (
-        aggregate.drop_duplicates("design").set_index("design").loc[designs, "label"]
-    )
+    design_labels = aggregate.drop_duplicates("design").set_index("design").loc[designs, "label"]
     axes[0].set_xticks(x, design_labels)
     axes[0].set_ylabel("distortion reduction from context constant")
     axes[0].set_title("Mass-weighted design objective")
@@ -733,9 +929,11 @@ def _plot_results(
             ["LDP-degraded", "CAPT > context LDP"],
             default="No advantage, no full edge",
         )
-        values = pd.DataFrame(
-            {"state": states, "mass": subset["design_mass"].to_numpy()}
-        ).groupby("state")["mass"].sum()
+        values = (
+            pd.DataFrame({"state": states, "mass": subset["design_mass"].to_numpy()})
+            .groupby("state")["mass"]
+            .sum()
+        )
         for state in ["CAPT > context LDP", "No advantage, no full edge", "LDP-degraded"]:
             state_rows.append(
                 {"design": design, "state": state, "mass": float(values.get(state, 0.0))}
@@ -770,9 +968,7 @@ def _plot_results(
     axes[1].legend(fontsize=8)
     for axis in axes:
         axis.grid(axis="y", alpha=0.2, color="#777777")
-    fig.suptitle(
-        "Criteo constrained_2 public-context CAPT; unified sensitive unknown, epsilon=1"
-    )
+    fig.suptitle("Criteo constrained_2 public-context CAPT; unified sensitive unknown, epsilon=1")
     fig.text(
         0.5,
         0.01,
@@ -889,15 +1085,70 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         raise ValueError("context diagnostic requires full-simplex completion")
 
     path = prepare_run(config)
+    progress = ProgressLogger(path, name=path.name)
     started = time.perf_counter()
+    progress.emit(
+        "run_started",
+        output_path=str(path.resolve()),
+        source_git_sha=config.get("source_git_sha"),
+        profile=config["profiles"][0],
+        public_context_columns=config.get("context_cols"),
+        epsilon=config.get("epsilon"),
+        confidence=config.get("confidence"),
+        alpha_cert=config.get("alpha_cert"),
+        missing_group_policy=config.get("missing_group_policy"),
+        sensitive_fallback_policy=config.get("sensitive_fallback_policy"),
+        solver=config.get("solver", "scipy-highs"),
+        solver_verbose=config.get("solver_verbose", False),
+        solver_heartbeat_seconds=config.get("solver_heartbeat_seconds", 60.0),
+        solver_tolerance=config.get("solver_tolerance"),
+        solver_time_limit_seconds=config.get("time_limit"),
+        max_cutting_plane_iterations=config.get("max_cutting_plane_iterations"),
+    )
+    progress.emit_environment()
+    progress.emit("fixed_design_started", **process_memory_bytes())
+    fixed_design_started = time.perf_counter()
     frozen, support_table = _fixed_design(config, path)
+    progress.emit(
+        "fixed_design_finished",
+        stage_seconds=time.perf_counter() - fixed_design_started,
+        cartesian_group_count=len(frozen["cartesian_support"]),
+        design_group_count=len(frozen["design_only_probability"]),
+        mapper_hash=frozen["mapper_hash"],
+        encoder_hash=frozen["encoder_hash"],
+        model_hash=frozen["model_hash"],
+        **process_memory_bytes(),
+    )
     support_table.to_csv(path / "tables" / "frozen_support.csv", index=False)
+    progress.emit(
+        "frozen_support_written",
+        path=str(path / "tables" / "frozen_support.csv"),
+        row_count=len(support_table),
+    )
+    progress.emit("utility_design_build_started", **process_memory_bytes())
+    design_build_started = time.perf_counter()
     frozen_arrays = np.load(path / "mechanism" / "frozen_design.npz")
     all_designs = _build_designs(frozen_arrays, config)
     wanted = {"joint_kmedoids_cost_medoid_L16", "singleton_identity_L64"}
     designs = [design for design in all_designs if design.name in wanted]
     if {design.name for design in designs} != wanted:
         raise RuntimeError("required utility-aware designs were not built")
+    progress.emit(
+        "utility_design_build_finished",
+        stage_seconds=time.perf_counter() - design_build_started,
+        selected_designs=[
+            {
+                "name": design.name,
+                "L": len(design.block_weights),
+                "variable_count": len(design.block_weights) ** 2,
+                "partition": design.partition_method,
+                "decoder": design.decoder_method,
+                "information_gap": design.diagnostic.information_gap,
+            }
+            for design in designs
+        ],
+        **process_memory_bytes(),
+    )
 
     profile = config["profiles"][0]
     context_column = config["context_cols"][0]
@@ -906,28 +1157,76 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     user_col = config.get("user_col", "user_id")
     label_col = config.get("label_col", "is_clicked")
     columns = list(
-        dict.fromkeys(
-            [id_col, user_col, label_col, *profile.split("+"), context_column, *source]
-        )
+        dict.fromkeys([id_col, user_col, label_col, *profile.split("+"), context_column, *source])
     )
+    progress.emit(
+        "certificate_data_load_started",
+        data_root=config["data_root"],
+        days=config["splits"]["D_cert"],
+        column_count=len(columns),
+        columns=columns,
+        **process_memory_bytes(),
+    )
+    cert_load_started = time.perf_counter()
     cert_source = load_parquet_sample(
         data_root=config["data_root"],
         columns=columns,
         days=config["splits"]["D_cert"],
     )
+    progress.emit(
+        "certificate_data_load_finished",
+        stage_seconds=time.perf_counter() - cert_load_started,
+        source_row_count=len(cert_source),
+        **process_memory_bytes(),
+    )
     assert_no_row_overlap({"D_cert": cert_source}, id_col)
+    progress.emit("certificate_mapper_transform_started", row_count=len(cert_source))
     cert_source = frozen["mapper"].transform(cert_source)
+    progress.emit(
+        "certificate_mapper_transform_finished",
+        row_count=len(cert_source),
+        **process_memory_bytes(),
+    )
+    progress.emit(
+        "certificate_contribution_filter_started",
+        source_row_count=len(cert_source),
+        policy="one-display-per-user-day",
+    )
     cert_frame = select_one_display_per_user_day(
         cert_source,
         user_col=user_col,
         day_col="day_int",
         id_col=id_col,
     )
+    progress.emit(
+        "certificate_contribution_filter_finished",
+        source_row_count=len(cert_source),
+        user_day_count=len(cert_frame),
+        retained_fraction=len(cert_frame) / len(cert_source),
+        **process_memory_bytes(),
+    )
+    progress.emit("certificate_encoding_started", row_count=len(cert_frame))
     cert_tokens = frozen["encoder"].transform(cert_frame)
+    token_counts = np.bincount(cert_tokens, minlength=int(config["K"]))
+    progress.emit(
+        "certificate_encoding_finished",
+        row_count=len(cert_tokens),
+        token_alphabet_size=len(token_counts),
+        observed_token_count=int(np.sum(token_counts > 0)),
+        min_positive_token_count=int(np.min(token_counts[token_counts > 0])),
+        max_token_count=int(np.max(token_counts)),
+        **process_memory_bytes(),
+    )
     expected_frame = _expected_frame_from_cartesian(
         frozen["cartesian_support"],
         profile=profile,
         context=context_column,
+    )
+    progress.emit(
+        "expected_support_frame_ready",
+        row_count=len(expected_frame),
+        context_count=int(expected_frame[context_column].nunique()),
+        **process_memory_bytes(),
     )
 
     cells_by_design: dict[str, list[ContextCell]] = {}
@@ -935,7 +1234,27 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     context_rows: list[dict[str, Any]] = []
     aggregate_rows: list[dict[str, Any]] = []
     support_rows: list[dict[str, Any]] = []
-    for design in designs:
+    for design_index, design in enumerate(designs, start=1):
+        design_started = time.perf_counter()
+        progress.emit(
+            "design_started",
+            design=design.name,
+            design_index=design_index,
+            design_count=len(designs),
+            label=design.label,
+            dimension=len(design.block_weights),
+            variable_count=len(design.block_weights) ** 2,
+            ldp_constraint_count=(
+                len(design.block_weights)
+                * (len(design.block_weights) - 1)
+                * len(design.block_weights)
+            ),
+            partition_method=design.partition_method,
+            decoder_method=design.decoder_method,
+            **process_memory_bytes(),
+        )
+        progress.emit("histogram_build_started", design=design.name)
+        histogram_started = time.perf_counter()
         hist = build_group_histograms(
             cert_frame,
             cert_tokens,
@@ -949,23 +1268,53 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             expected_frame=expected_frame,
             include_fallback_levels=False,
         )
+        histogram_totals = np.asarray(
+            [int(value.sum()) for value in hist.counts.values()], dtype=int
+        )
+        progress.emit(
+            "histogram_build_finished",
+            design=design.name,
+            stage_seconds=time.perf_counter() - histogram_started,
+            group_count=len(hist.groups),
+            observed_group_count=int(np.sum(histogram_totals > 0)),
+            missing_group_count=int(np.sum(histogram_totals == 0)),
+            rare_group_count=int(
+                np.sum(
+                    (histogram_totals > 0)
+                    & (histogram_totals < int(config.get("min_group_count", 20)))
+                )
+            ),
+            force_cover=hist.force_cover,
+            **process_memory_bytes(),
+        )
         if hist.force_cover:
             raise RuntimeError("context diagnostic unexpectedly requested universal cover")
+        progress.emit("context_objective_build_started", design=design.name)
+        objective_started = time.perf_counter()
         objectives = _context_objectives(frozen, design, config)
+        progress.emit(
+            "context_objective_build_finished",
+            design=design.name,
+            stage_seconds=time.perf_counter() - objective_started,
+            context_count=len(objectives),
+            mass_sum=sum(value.design_mass for value in objectives),
+            min_context_mass=min(value.design_mass for value in objectives),
+            max_context_mass=max(value.design_mass for value in objectives),
+            **process_memory_bytes(),
+        )
         cells, shared_ldp, shared_capt, _ = _solve_design(
             design,
             objectives,
             hist.groups,
             hist.counts,
             config,
+            progress,
         )
         cells_by_design[design.name] = cells
         shared_by_design[design.name] = (shared_ldp, shared_capt)
         context_rows.extend(_context_rows(cells))
         aggregate_rows.extend(_aggregate_rows(design, cells, shared_ldp, shared_capt))
-        support_rows.extend(
-            _support_origin_rows(cells, frozen["design_only_probability"])
-        )
+        support_rows.extend(_support_origin_rows(cells, frozen["design_only_probability"]))
         np.savez_compressed(
             path / "mechanism" / f"shared_channels-{design.name}.npz",
             shared_ldp=shared_ldp.channel,
@@ -973,7 +1322,16 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             assignment=design.assignment,
             decoder=design.decoder,
         )
+        progress.emit(
+            "design_checkpoint_written",
+            design=design.name,
+            path=str(path / "mechanism" / f"shared_channels-{design.name}.npz"),
+            completed_context_count=len(cells),
+            design_seconds=time.perf_counter() - design_started,
+            **process_memory_bytes(),
+        )
 
+    progress.emit("context_channel_manifest_started", **process_memory_bytes())
     _channel_manifest(
         path,
         profile,
@@ -982,22 +1340,49 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         designs,
         cells_by_design,
     )
+    progress.emit(
+        "context_channel_manifest_finished",
+        path=str(path / "mechanism" / "context_channel_manifest.json"),
+        **process_memory_bytes(),
+    )
     certificate_paths, certificate_summary = _write_certificates(
         path,
         config,
         frozen,
         designs,
         cells_by_design,
+        progress,
     )
 
+    progress.emit(
+        "test_data_load_started",
+        data_root=config["data_root"],
+        days=config["splits"]["D_test"],
+        **process_memory_bytes(),
+    )
+    test_load_started = time.perf_counter()
     test_frame = load_parquet_sample(
         data_root=config["data_root"],
         columns=columns,
         days=config["splits"]["D_test"],
     )
+    progress.emit(
+        "test_data_load_finished",
+        stage_seconds=time.perf_counter() - test_load_started,
+        test_row_count=len(test_frame),
+        **process_memory_bytes(),
+    )
     test_frame = frozen["mapper"].transform(test_frame)
     test_tokens = frozen["encoder"].transform(test_frame)
     labels = test_frame[label_col].to_numpy(dtype=int)
+    progress.emit(
+        "test_evaluation_started",
+        test_row_count=len(test_frame),
+        design_count=len(designs),
+        method_count=5,
+        **process_memory_bytes(),
+    )
+    evaluation_started = time.perf_counter()
     test_metrics = _evaluate_test(
         test_frame,
         test_tokens,
@@ -1007,7 +1392,14 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         shared_by_design,
         context_column=context_column,
     )
+    progress.emit(
+        "test_evaluation_finished",
+        stage_seconds=time.perf_counter() - evaluation_started,
+        metric_row_count=len(test_metrics),
+        **process_memory_bytes(),
+    )
 
+    progress.emit("result_table_write_started", **process_memory_bytes())
     context_frame = pd.DataFrame(context_rows).merge(
         certificate_summary,
         on=["design", "public_context"],
@@ -1024,7 +1416,25 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     context_frame.to_parquet(path / "context_results.parquet", index=False)
     aggregate_frame.to_parquet(path / "aggregate_results.parquet", index=False)
     test_metrics.to_parquet(path / "test_metrics.parquet", index=False)
+    progress.emit(
+        "result_table_write_finished",
+        context_result_rows=len(context_frame),
+        aggregate_result_rows=len(aggregate_frame),
+        support_result_rows=len(support_frame),
+        certificate_result_rows=len(certificate_summary),
+        test_metric_rows=len(test_metrics),
+        **process_memory_bytes(),
+    )
+    progress.emit("figure_render_started", **process_memory_bytes())
+    figure_started = time.perf_counter()
     _plot_results(aggregate_frame, context_frame, path)
+    progress.emit(
+        "figure_render_finished",
+        stage_seconds=time.perf_counter() - figure_started,
+        pdf_path=str(path / "figures" / "context_stratified_diagnostic.pdf"),
+        png_path=str(path / "figures" / "context_stratified_diagnostic.png"),
+        **process_memory_bytes(),
+    )
 
     metadata = {
         "experiment": "criteo_public_context_stratified_capt",
@@ -1038,8 +1448,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "designs": [design.name for design in designs],
         "table_entries": {
             design.name: int(
-                context_frame["public_context"].nunique()
-                * len(design.block_weights) ** 2
+                context_frame["public_context"].nunique() * len(design.block_weights) ** 2
             )
             for design in designs
         },
@@ -1047,9 +1456,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "certificate_checked_constraints": int(
             certificate_summary["certificate_checked_constraints"].sum()
         ),
-        "certificate_max_violation": float(
-            certificate_summary["certificate_max_violation"].max()
-        ),
+        "certificate_max_violation": float(certificate_summary["certificate_max_violation"].max()),
         "wall_seconds": time.perf_counter() - started,
         "process_peak_rss_bytes": _peak_rss_bytes(),
         "environment": environment(),
@@ -1065,6 +1472,12 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         metadata,
         path,
     )
+    progress.emit(
+        "report_written",
+        path=str(path / "context_stratified_report.md"),
+        wall_seconds=metadata["wall_seconds"],
+        **process_memory_bytes(),
+    )
     del cert_source, cert_frame, cert_tokens, test_frame, test_tokens, labels
     gc.collect()
     finish_run(
@@ -1078,5 +1491,13 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             "context_count": metadata["context_count"],
             "certificate_count": metadata["certificate_count"],
         },
+    )
+    progress.emit(
+        "run_finished",
+        status="complete",
+        wall_seconds=time.perf_counter() - started,
+        certificate_count=len(certificate_paths),
+        output_path=str(path.resolve()),
+        **process_memory_bytes(),
     )
     return path

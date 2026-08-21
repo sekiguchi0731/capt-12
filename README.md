@@ -103,6 +103,12 @@ baselines for joint k-medoids `L=16` and singleton/identity `L=K=64`. The
 guarantee concerns the coarsened sensitive value conditional on an attacker
 already knowing `B`; leakage through `B` itself is outside scope.
 
+This diagnostic is intentionally verbose. It flushes stage, design, context,
+LP-size, HiGHS, cutting-plane, support-oracle, verification, memory, and
+artifact events to the terminal and to `progress.log` and `progress.jsonl` in
+the run directory. While a HiGHS call is still running, a heartbeat identifies
+the exact solve label and elapsed time every 30 seconds.
+
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and
 robust constraints using a verifier-owned tolerance. It is bundle-consistency

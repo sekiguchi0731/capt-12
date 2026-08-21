@@ -3,6 +3,8 @@ output_dir: outputs/context_stratified_runs
 sensitive_fallback_policy: unified_unknown
 sensitive_unknown_value: __UNKNOWN__
 public_context_policy: stratified
+solver_verbose: true
+solver_heartbeat_seconds: 30
 channel_selector_inputs:
   - Z
   - profile
