@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy import sparse
 from scipy.optimize import linprog
 
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
@@ -11,6 +12,7 @@ from capt12.data.synthetic import theorem4_counterexample
 from capt12.decoders.registry import build_decoder
 from capt12.mechanisms.baselines import common_cover, k_ary_rr
 from capt12.mechanisms.lp import (
+    _solve_channel_lp,
     lift_block_channel,
     solve_block_lp,
     solve_full_lp,
@@ -278,6 +280,24 @@ def test_lp_rescales_tiny_utility_coefficients_before_optimization() -> None:
     for output in range(solution.channel.shape[1]):
         column = solution.channel[:, output]
         assert np.all(column == 0) or np.all(column > 0)
+
+
+def test_lp_preserves_probability_constraints_below_highs_default_cutoff() -> None:
+    # HiGHS normally drops matrix coefficients <= 1e-9. This constraint must
+    # remain present because a collection of tiny probabilities can exceed a
+    # 1e-8 certificate tolerance after summation and epsilon scaling.
+    constraint = sparse.csr_matrix([[5e-10, 0.0, -5e-10, 0.0]])
+    solution = _solve_channel_lp(
+        1 - np.eye(2),
+        np.ones(2) / 2,
+        {},
+        [],
+        precompiled_ub=constraint,
+        tolerance=1e-10,
+    )
+    assert solution.channel is not None
+    assert solution.channel[0, 0] <= solution.channel[1, 0] + 1e-10
+    assert np.isclose(solution.solver.objective, 0.5)
 
 
 def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:

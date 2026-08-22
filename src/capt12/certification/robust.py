@@ -82,7 +82,7 @@ def _support_problem_fingerprint(
     tolerance: float,
 ) -> str:
     digest = hashlib.sha256()
-    digest.update(b"capt12-shared-support-bounds-v1\0")
+    digest.update(b"capt12-shared-support-bounds-v2\0")
     for value in (cost, block_weights):
         array = np.ascontiguousarray(value, dtype=np.float64)
         digest.update(str(array.shape).encode())
@@ -241,6 +241,12 @@ def _solve_shared_support_bounds(
     dimension = int(np.asarray(cost).shape[0])
     group_keys = sorted(boxes)
     group_count = len(group_keys)
+    # A robust inequality composes two support approximations with one master
+    # inequality, and the right support error is multiplied by exp(epsilon).
+    # Solving the master at the public certificate tolerance can therefore
+    # produce up to several times that tolerance in the independent verifier.
+    # HiGHS supports feasibility tolerances down to 1e-10.
+    master_tolerance = max(1e-10, min(tolerance / 100, 1e-9))
     fingerprint = _support_problem_fingerprint(
         cost,
         block_weights,
@@ -284,6 +290,8 @@ def _solve_shared_support_bounds(
             iteration=iteration,
             local_iteration=local_iteration + 1,
             max_local_iterations=max_iterations,
+            certificate_tolerance=tolerance,
+            master_tolerance=master_tolerance,
             accumulated_support_cut_count=len(cuts),
             group_count=group_count,
             adjacency_bound_constraint_count=len(adjacency) * dimension,
@@ -304,7 +312,7 @@ def _solve_shared_support_bounds(
             block_weights,
             {},
             [],
-            tolerance=tolerance,
+            tolerance=master_tolerance,
             time_limit=time_limit,
             precompiled_ub=matrix,
             auxiliary_variable_count=2 * group_count * dimension,
@@ -349,7 +357,7 @@ def _solve_shared_support_bounds(
                     (True, p_max, max_violation),
                     (False, p_min, min_violation),
                 ):
-                    if violation <= tolerance:
+                    if violation <= master_tolerance:
                         continue
                     cut = (group_index, output, maximize, witness)
                     key_value = _support_cut_key(*cut)

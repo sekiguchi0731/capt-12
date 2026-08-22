@@ -3,13 +3,14 @@ from __future__ import annotations
 import math
 import threading
 import time
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 from scipy import sparse
-from scipy.optimize import linprog
+from scipy.optimize import OptimizeWarning, linprog
 
 from capt12.privacy.adjacency import AdjacentPair
 from capt12.utils.progress import process_memory_bytes
@@ -129,6 +130,7 @@ def _solve_channel_lp(
     progress_label: str = "channel_lp",
     solver_verbose: bool = False,
     heartbeat_seconds: float = 60.0,
+    small_matrix_value: float = 1e-12,
 ) -> ChannelSolution:
     cost = np.asarray(cost, dtype=float)
     n = cost.shape[0]
@@ -140,6 +142,8 @@ def _solve_channel_lp(
     weights = weights / weights.sum()
     if auxiliary_variable_count < 0:
         raise ValueError("auxiliary_variable_count must be nonnegative")
+    if not 1e-12 <= small_matrix_value < 1e-9:
+        raise ValueError("small_matrix_value must be in [1e-12, 1e-9)")
     channel_variable_count = n * n
     variable_count = channel_variable_count + auxiliary_variable_count
     _emit_progress(
@@ -158,6 +162,7 @@ def _solve_channel_lp(
         solver_verbose=solver_verbose,
         heartbeat_seconds=heartbeat_seconds,
         time_limit_seconds=time_limit,
+        small_matrix_value=small_matrix_value,
         **process_memory_bytes(),
     )
     build_started = time.perf_counter()
@@ -215,6 +220,7 @@ def _solve_channel_lp(
     options: dict[str, float] = {
         "dual_feasibility_tolerance": tolerance,
         "primal_feasibility_tolerance": tolerance,
+        "small_matrix_value": small_matrix_value,
     }
     if time_limit is not None:
         options["time_limit"] = time_limit
@@ -285,16 +291,26 @@ def _solve_channel_lp(
         )
         heartbeat_thread.start()
     try:
-        result = linprog(
-            objective,
-            A_ub=a_ub,
-            b_ub=b_ub,
-            A_eq=a_eq.tocsr(),
-            b_eq=b_eq,
-            bounds=(0.0, 1.0),
-            method="highs",
-            options=options,
-        )
+        with warnings.catch_warnings():
+            # SciPy forwards this supported HiGHS option but does not list it
+            # in linprog's public option schema, so suppress only that wrapper
+            # warning. Keeping small probability coefficients is essential for
+            # certificate-level feasibility at 1e-8.
+            warnings.filterwarnings(
+                "ignore",
+                message="Unrecognized options detected:.*small_matrix_value",
+                category=OptimizeWarning,
+            )
+            result = linprog(
+                objective,
+                A_ub=a_ub,
+                b_ub=b_ub,
+                A_eq=a_eq.tocsr(),
+                b_eq=b_eq,
+                bounds=(0.0, 1.0),
+                method="highs",
+                options=options,
+            )
     except BaseException as error:
         _emit_progress(
             progress,
