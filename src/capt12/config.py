@@ -189,6 +189,28 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("solver_heartbeat_seconds must be positive")
     if not isinstance(cfg.get("solver_verbose", False), bool):
         raise ValueError("solver_verbose must be a boolean")
+    cut_formulation = cfg.get("robust_cut_formulation", "paired_witness")
+    if cut_formulation not in {"paired_witness", "shared_support_bounds"}:
+        raise ValueError(
+            "robust_cut_formulation must be paired_witness or shared_support_bounds"
+        )
+    if not isinstance(cfg.get("resume_cutting_plane", False), bool):
+        raise ValueError("resume_cutting_plane must be a boolean")
+    checkpoint_every = int(cfg.get("cutting_plane_checkpoint_every", 1))
+    if checkpoint_every < 1:
+        raise ValueError("cutting_plane_checkpoint_every must be positive")
+    cfg["cutting_plane_checkpoint_every"] = checkpoint_every
+    if "context_designs" in cfg:
+        valid_context_designs = {
+            "joint_kmedoids_cost_medoid_L16",
+            "singleton_identity_L64",
+        }
+        context_designs = list(dict.fromkeys(map(str, cfg["context_designs"])))
+        if len(context_designs) != 1 or context_designs[0] not in valid_context_designs:
+            raise ValueError(
+                "context_designs must select exactly one prescribed L16 or L64 design"
+            )
+        cfg["context_designs"] = context_designs
     return cfg
 
 

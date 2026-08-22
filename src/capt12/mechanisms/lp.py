@@ -56,6 +56,7 @@ class ChannelSolution:
     channel: np.ndarray | None
     solver: SolverInfo
     cuts: list[dict] = field(default_factory=list)
+    auxiliary: np.ndarray | None = None
 
 
 def validate_channel(channel: np.ndarray, tolerance: float = 1e-8) -> None:
@@ -123,6 +124,7 @@ def _solve_channel_lp(
     time_limit: float | None = None,
     extra_cuts: Sequence[tuple[np.ndarray, np.ndarray, float, int]] = (),
     precompiled_ub: sparse.spmatrix | None = None,
+    auxiliary_variable_count: int = 0,
     progress: ProgressCallback | None = None,
     progress_label: str = "channel_lp",
     solver_verbose: bool = False,
@@ -136,12 +138,18 @@ def _solve_channel_lp(
     if weights.shape != (n,) or weights.sum() <= 0:
         raise ValueError("input_weights must be nonnegative and have length n")
     weights = weights / weights.sum()
+    if auxiliary_variable_count < 0:
+        raise ValueError("auxiliary_variable_count must be nonnegative")
+    channel_variable_count = n * n
+    variable_count = channel_variable_count + auxiliary_variable_count
     _emit_progress(
         progress,
         "lp_problem_build_started",
         label=progress_label,
         dimension=n,
-        variable_count=n * n,
+        variable_count=variable_count,
+        channel_variable_count=channel_variable_count,
+        auxiliary_variable_count=auxiliary_variable_count,
         nominal_adjacency_count=len(adjacency),
         extra_cut_count=len(extra_cuts),
         precompiled_constraint_count=(
@@ -162,12 +170,13 @@ def _solve_channel_lp(
     # preserves the argmin.
     centered = weights[:, None] * (cost - np.min(cost, axis=1, keepdims=True))
     objective_scale = float(np.max(np.abs(centered)))
-    objective = (
+    channel_objective = (
         centered.reshape(-1) / objective_scale
         if objective_scale > 0
         else np.zeros_like(raw_objective)
     )
-    a_eq = sparse.lil_matrix((n, n * n), dtype=float)
+    objective = np.r_[channel_objective, np.zeros(auxiliary_variable_count)]
+    a_eq = sparse.lil_matrix((n, variable_count), dtype=float)
     for row in range(n):
         a_eq[row, row * n : (row + 1) * n] = 1.0
     b_eq = np.ones(n)
@@ -177,17 +186,27 @@ def _solve_channel_lp(
         right = np.asarray(group_distributions[pair.right], dtype=float)
         coefficient = left - math.exp(pair.epsilon) * right
         for output in range(n):
-            row = sparse.lil_matrix((1, n * n), dtype=float)
+            row = sparse.lil_matrix((1, variable_count), dtype=float)
             row[0, np.arange(n) * n + output] = coefficient
             rows.append(row.tocsr())
     for left, right, epsilon, output in extra_cuts:
         coefficient = np.asarray(left) - math.exp(epsilon) * np.asarray(right)
-        row = sparse.lil_matrix((1, n * n), dtype=float)
+        row = sparse.lil_matrix((1, variable_count), dtype=float)
         row[0, np.arange(n) * n + output] = coefficient
         rows.append(row.tocsr())
     matrices = []
     if precompiled_ub is not None:
-        matrices.append(precompiled_ub.tocsr())
+        compiled = precompiled_ub.tocsr()
+        if compiled.shape[1] == channel_variable_count and auxiliary_variable_count:
+            compiled = sparse.hstack(
+                [compiled, sparse.csr_matrix((compiled.shape[0], auxiliary_variable_count))],
+                format="csr",
+            )
+        if compiled.shape[1] != variable_count:
+            raise ValueError(
+                "precompiled_ub column count must equal the channel or total variable count"
+            )
+        matrices.append(compiled)
     if rows:
         matrices.append(sparse.vstack(rows, format="csr"))
     a_ub = sparse.vstack(matrices, format="csr") if matrices else None
@@ -214,7 +233,9 @@ def _solve_channel_lp(
         label=progress_label,
         build_seconds=time.perf_counter() - build_started,
         dimension=n,
-        variable_count=n * n,
+        variable_count=variable_count,
+        channel_variable_count=channel_variable_count,
+        auxiliary_variable_count=auxiliary_variable_count,
         equality_constraint_count=n,
         inequality_constraint_count=inequality_count,
         total_constraint_count=n + inequality_count,
@@ -232,7 +253,7 @@ def _solve_channel_lp(
         label=progress_label,
         method="highs",
         dimension=n,
-        variable_count=n * n,
+        variable_count=variable_count,
         total_constraint_count=n + inequality_count,
         time_limit_seconds=time_limit,
         **process_memory_bytes(),
@@ -252,7 +273,7 @@ def _solve_channel_lp(
                     heartbeat_sequence=sequence,
                     solver_elapsed_seconds=time.perf_counter() - started,
                     dimension=n,
-                    variable_count=n * n,
+                    variable_count=variable_count,
                     total_constraint_count=n + inequality_count,
                     **process_memory_bytes(),
                 )
@@ -296,14 +317,18 @@ def _solve_channel_lp(
         label=progress_label,
         solver_elapsed_seconds=runtime,
         dimension=n,
-        variable_count=n * n,
+        variable_count=variable_count,
         total_constraint_count=n + inequality_count,
         success=bool(result.success),
         scipy_status=int(result.status),
         message=str(result.message),
         iterations=getattr(result, "nit", None),
         crossover_iterations=getattr(result, "crossover_nit", None),
-        objective_value=(float(raw_objective @ result.x) if result.success else None),
+        objective_value=(
+            float(raw_objective @ result.x[:channel_variable_count])
+            if result.success
+            else None
+        ),
         **process_memory_bytes(),
     )
     primal_gap = None
@@ -317,19 +342,23 @@ def _solve_channel_lp(
         dual_gap = 0.0
     info = SolverInfo(
         status="optimal" if result.success else "solver_failure",
-        objective=float(raw_objective @ result.x) if result.success else None,
+        objective=(
+            float(raw_objective @ result.x[:channel_variable_count])
+            if result.success
+            else None
+        ),
         runtime_seconds=runtime,
         iterations=getattr(result, "nit", None),
         primal_gap=primal_gap,
         dual_gap=dual_gap,
         message=result.message,
-        variable_count=n * n,
+        variable_count=variable_count,
         constraint_count=n + inequality_count,
         estimated_memory_bytes=int(matrix_memory_bytes * 2),
     )
     if not result.success:
         return ChannelSolution(None, info)
-    channel = np.clip(result.x.reshape(n, n), 0.0, 1.0)
+    channel = np.clip(result.x[:channel_variable_count].reshape(n, n), 0.0, 1.0)
     # A finite-epsilon LDP solution can only leave an output unused in every
     # row.  HiGHS may return ~1e-13 residue in one row of such a column, which
     # is feasible under the additive solver tolerance but makes a ratio-based
@@ -339,7 +368,12 @@ def _solve_channel_lp(
     channel[:, np.max(channel, axis=0) <= cleanup_threshold] = 0.0
     channel /= channel.sum(axis=1, keepdims=True)
     validate_channel(channel, max(tolerance * 10, 1e-7))
-    return ChannelSolution(channel, info)
+    auxiliary = (
+        np.asarray(result.x[channel_variable_count:], dtype=float)
+        if auxiliary_variable_count
+        else None
+    )
+    return ChannelSolution(channel, info, auxiliary=auxiliary)
 
 
 def solve_block_lp(

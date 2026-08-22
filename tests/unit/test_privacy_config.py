@@ -205,6 +205,29 @@ def test_solver_progress_config_requires_valid_types_and_interval() -> None:
         validate_config({"solver_verbose": "yes"})
 
 
+def test_resumable_robust_solver_config_is_strict() -> None:
+    config = validate_config(
+        {
+            "robust_cut_formulation": "shared_support_bounds",
+            "resume_cutting_plane": True,
+            "cutting_plane_checkpoint_every": 2,
+            "context_designs": ["singleton_identity_L64"],
+        }
+    )
+    assert config["cutting_plane_checkpoint_every"] == 2
+    with pytest.raises(ValueError, match="robust_cut_formulation"):
+        validate_config({"robust_cut_formulation": "unknown"})
+    with pytest.raises(ValueError, match="exactly one"):
+        validate_config(
+            {
+                "context_designs": [
+                    "joint_kmedoids_cost_medoid_L16",
+                    "singleton_identity_L64",
+                ]
+            }
+        )
+
+
 def test_fixed_seed_reproducible_hash_encoder() -> None:
     frame = pd.DataFrame({"x": ["a", "b", "c"]})
     first = HashEncoder(16, seed=8).fit(frame, ["x"]).transform(frame)

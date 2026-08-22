@@ -140,6 +140,82 @@ def test_robust_cutting_plane_and_experimental_dp_guard() -> None:
         solve_robust_block_lp(1 - np.eye(2), np.ones(2) / 2, experimental, adjacency)
 
 
+def test_shared_support_bounds_match_paired_witness_objective() -> None:
+    counts = {"g0": np.array([80, 20]), "g1": np.array([20, 80])}
+    boxes = {
+        key: cp_box(value, alpha=0.1, group_count=2, comparisons=2)
+        for key, value in counts.items()
+    }
+    adjacency = [AdjacentPair("g0", "g1", 0.2), AdjacentPair("g1", "g0", 0.2)]
+    cost = 1 - np.eye(2)
+    weights = np.ones(2) / 2
+    paired, paired_verification = solve_robust_block_lp(
+        cost,
+        weights,
+        boxes,
+        adjacency,
+        cut_formulation="paired_witness",
+    )
+    shared, shared_verification = solve_robust_block_lp(
+        cost,
+        weights,
+        boxes,
+        adjacency,
+        cut_formulation="shared_support_bounds",
+    )
+    assert paired_verification.valid and shared_verification.valid
+    assert paired.solver.status == shared.solver.status == "optimal"
+    np.testing.assert_allclose(shared.solver.objective, paired.solver.objective, atol=1e-10)
+    np.testing.assert_allclose(shared.channel, paired.channel, atol=1e-9)
+
+
+def test_shared_support_checkpoint_resumes_after_explicit_iteration_limit(tmp_path) -> None:
+    counts = {"g0": np.array([80, 20]), "g1": np.array([20, 80])}
+    boxes = {
+        key: cp_box(value, alpha=0.1, group_count=2, comparisons=2)
+        for key, value in counts.items()
+    }
+    adjacency = [AdjacentPair("g0", "g1", 0.2), AdjacentPair("g1", "g0", 0.2)]
+    checkpoint = tmp_path / "support-cuts.npz"
+    limited, limited_verification = solve_robust_block_lp(
+        1 - np.eye(2),
+        np.ones(2) / 2,
+        boxes,
+        adjacency,
+        cut_formulation="shared_support_bounds",
+        max_iterations=1,
+        checkpoint_path=checkpoint,
+        resume_checkpoint=True,
+    )
+    assert limited.channel is not None
+    assert limited.solver.status == "cutting_plane_limit"
+    assert not limited_verification.valid
+    assert checkpoint.exists()
+
+    resumed, resumed_verification = solve_robust_block_lp(
+        1 - np.eye(2),
+        np.ones(2) / 2,
+        boxes,
+        adjacency,
+        cut_formulation="shared_support_bounds",
+        max_iterations=10,
+        checkpoint_path=checkpoint,
+        resume_checkpoint=True,
+    )
+    assert resumed.solver.status == "optimal"
+    assert resumed_verification.valid
+    with np.testing.assert_raises_regex(ValueError, "checkpoint does not match"):
+        solve_robust_block_lp(
+            2 * (1 - np.eye(2)),
+            np.ones(2) / 2,
+            boxes,
+            adjacency,
+            cut_formulation="shared_support_bounds",
+            checkpoint_path=checkpoint,
+            resume_checkpoint=True,
+        )
+
+
 def test_tv_shift_expands_sampling_confidence_set() -> None:
     coefficients = np.array([1.0, 0.0])
     no_shift = cp_box(np.array([60, 40]), alpha=0.05, tv_radius=0.0)
