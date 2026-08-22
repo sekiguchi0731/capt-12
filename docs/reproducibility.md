@@ -170,16 +170,24 @@ without by itself producing a CAPT-over-LDP advantage.
 
 ## Public-context stratified diagnostic
 
-Run the prescribed one-condition follow-up with:
+Run the prescribed L=16 primary condition with:
 
 ```bash
 uv run capt12 context-stratified \
   --config configs/criteo_context_stratified.yaml
 ```
 
-The run keeps `features_kv_bits_constrained_2`, epsilon 1, and the frozen
-partition/decoder family. It solves the joint weighted k-medoids `L=16`
-primary design and the singleton/identity `L=K=64` positive control. Missing
+Only after the primary completes, run the isolated L=K=64 positive control:
+
+```bash
+uv run capt12 context-stratified \
+  --config configs/criteo_context_stratified_l64.yaml
+```
+
+Both runs keep `features_kv_bits_constrained_2`, epsilon 1, and the frozen
+partition/decoder family. The first solves the joint weighted k-medoids `L=16`
+primary design and the second solves the singleton/identity `L=K=64` positive
+control. Missing
 and unseen sensitive values are mapped by the frozen runtime mapper to the one
 coarsened secret `__UNKNOWN__`. A separate channel is optimized for every
 frozen public-context value, using only `Z`, profile, and public `B` online.
@@ -197,6 +205,16 @@ the frozen number of context values. Every certificate binds the unified
 sensitive mapper and the complete context-channel manifest. The experiment is
 a gate: expand epsilon or L only if context CAPT strictly improves on
 context-specific optimal LDP with valid certificates.
+
+The robust master LP uses group/output upper and lower support variables. An
+extremal witness is therefore shared by every adjacency that references the
+same group instead of being rediscovered for each ordered pair. Cutting-plane
+witnesses are saved after every iteration under the run's `checkpoints/`
+directory. A rerun with the identical config and source commit resumes them;
+the embedded problem fingerprint prevents reuse after any mathematical input
+changes. If the local iteration cap is reached before independent robust
+verification succeeds, the solve is reported as `cutting_plane_limit` and
+cannot emit a certificate.
 
 The command emits unbuffered progress suitable for a remote `nohup` log. Each
 line includes UTC time, run attempt, event name, design, public context, LP

@@ -89,17 +89,25 @@ medoid, joint weighted cost k-medoids, and the `L=K` singleton/identity positive
 control against optimal LDP and independently verified simplex-CAPT.
 
 To isolate sparse public contexts instead of making one global channel pay for
-all of them, run the single prescribed context-stratified diagnostic:
+all of them, run the prescribed L=16 primary diagnostic first:
 
 ```bash
 uv run capt12 context-stratified --config configs/criteo_context_stratified.yaml
+```
+
+Run the substantially larger L=K=64 positive control separately, so a stopped
+positive-control solve cannot discard the completed primary artifacts:
+
+```bash
+uv run capt12 context-stratified --config configs/criteo_context_stratified_l64.yaml
 ```
 
 This maps missing and unseen sensitive values to one frozen `__UNKNOWN__`
 secret and indexes the channel only by token `Z`, profile, and public context
 `B`; the realized protected value is never an online selector. It compares
 context CAPT against the fair context-specific optimal-LDP and best-constant
-baselines for joint k-medoids `L=16` and singleton/identity `L=K=64`. The
+baselines. The primary uses joint k-medoids `L=16`; the separate positive
+control uses singleton/identity `L=K=64`. The
 guarantee concerns the coarsened sensitive value conditional on an attacker
 already knowing `B`; leakage through `B` itself is outside scope.
 
@@ -107,7 +115,11 @@ This diagnostic is intentionally verbose. It flushes stage, design, context,
 LP-size, HiGHS, cutting-plane, support-oracle, verification, memory, and
 artifact events to the terminal and to `progress.log` and `progress.jsonl` in
 the run directory. While a HiGHS call is still running, a heartbeat identifies
-the exact solve label and elapsed time every 30 seconds.
+the exact solve label and elapsed time every 30 seconds. Robust optimization
+shares each group/output support bound across all adjacent pairs and writes a
+fingerprinted witness checkpoint after every cutting-plane iteration. Repeating
+the same command after an interruption resumes those cuts; a checkpoint from a
+different cost, confidence set, adjacency family, or tolerance is rejected.
 
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and

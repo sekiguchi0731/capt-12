@@ -210,6 +210,7 @@ def _solve_design(
     counts: dict[str, np.ndarray],
     config: dict[str, Any],
     progress: ProgressLogger,
+    checkpoint_dir: Path | None = None,
 ) -> tuple[list[ContextCell], ChannelSolution, ChannelSolution, Any]:
     by_context = _split_histogram_by_context(groups, counts)
     objective_by_context = {value.context: value for value in objectives}
@@ -217,6 +218,9 @@ def _solve_design(
     tolerance = float(config.get("solver_tolerance", 1e-8))
     solver_verbose = bool(config.get("solver_verbose", False))
     heartbeat_seconds = float(config.get("solver_heartbeat_seconds", 60.0))
+    cut_formulation = str(config.get("robust_cut_formulation", "paired_witness"))
+    resume_checkpoint = bool(config.get("resume_cutting_plane", False))
+    checkpoint_every = int(config.get("cutting_plane_checkpoint_every", 1))
     cells: list[ContextCell] = []
     progress.emit(
         "design_context_solve_started",
@@ -228,6 +232,9 @@ def _solve_design(
         tolerance=tolerance,
         time_limit_seconds=config.get("time_limit"),
         max_cutting_plane_iterations=int(config.get("max_cutting_plane_iterations", 100)),
+        robust_cut_formulation=cut_formulation,
+        resume_cutting_plane=resume_checkpoint,
+        cutting_plane_checkpoint_every=checkpoint_every,
         **process_memory_bytes(),
     )
     for context_index, (context, (context_groups, context_counts)) in enumerate(
@@ -351,6 +358,14 @@ def _solve_design(
             progress_label=f"{design.name}/context={context}/capt",
             solver_verbose=solver_verbose,
             heartbeat_seconds=heartbeat_seconds,
+            cut_formulation=cut_formulation,
+            checkpoint_path=(
+                checkpoint_dir / design.name / f"context-{context_index:02d}.npz"
+                if checkpoint_dir is not None
+                else None
+            ),
+            resume_checkpoint=resume_checkpoint,
+            checkpoint_every=checkpoint_every,
         )
         progress.emit(
             "context_capt_finished",
@@ -466,6 +481,14 @@ def _solve_design(
         progress_label=f"{design.name}/shared/capt",
         solver_verbose=solver_verbose,
         heartbeat_seconds=heartbeat_seconds,
+        cut_formulation=cut_formulation,
+        checkpoint_path=(
+            checkpoint_dir / design.name / "shared.npz"
+            if checkpoint_dir is not None
+            else None
+        ),
+        resume_checkpoint=resume_checkpoint,
+        checkpoint_every=checkpoint_every,
     )
     progress.emit(
         "shared_capt_finished",
@@ -1059,7 +1082,7 @@ def _write_report(
 
 
 def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
-    """Run one public-context CAPT condition and its L=K positive control."""
+    """Run one isolated public-context CAPT design."""
     config = validate_config(config)
     config = record_source_provenance(config)
     config = dict(config)
@@ -1104,6 +1127,9 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         solver_tolerance=config.get("solver_tolerance"),
         solver_time_limit_seconds=config.get("time_limit"),
         max_cutting_plane_iterations=config.get("max_cutting_plane_iterations"),
+        robust_cut_formulation=config.get("robust_cut_formulation", "paired_witness"),
+        resume_cutting_plane=config.get("resume_cutting_plane", False),
+        context_designs=config.get("context_designs"),
     )
     progress.emit_environment()
     progress.emit("fixed_design_started", **process_memory_bytes())
@@ -1129,7 +1155,14 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     design_build_started = time.perf_counter()
     frozen_arrays = np.load(path / "mechanism" / "frozen_design.npz")
     all_designs = _build_designs(frozen_arrays, config)
-    wanted = {"joint_kmedoids_cost_medoid_L16", "singleton_identity_L64"}
+    wanted = set(
+        config.get(
+            "context_designs",
+            ["joint_kmedoids_cost_medoid_L16", "singleton_identity_L64"],
+        )
+    )
+    if len(wanted) != 1:
+        raise ValueError("context diagnostic must isolate exactly one utility design")
     designs = [design for design in all_designs if design.name in wanted]
     if {design.name for design in designs} != wanted:
         raise RuntimeError("required utility-aware designs were not built")
@@ -1309,6 +1342,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             hist.counts,
             config,
             progress,
+            path / "checkpoints",
         )
         cells_by_design[design.name] = cells
         shared_by_design[design.name] = (shared_ldp, shared_capt)

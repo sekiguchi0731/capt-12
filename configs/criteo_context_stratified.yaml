@@ -3,6 +3,11 @@ output_dir: outputs/context_stratified_runs
 sensitive_fallback_policy: unified_unknown
 sensitive_unknown_value: __UNKNOWN__
 public_context_policy: stratified
+context_designs:
+  - joint_kmedoids_cost_medoid_L16
+robust_cut_formulation: shared_support_bounds
+resume_cutting_plane: true
+cutting_plane_checkpoint_every: 1
 solver_verbose: true
 solver_heartbeat_seconds: 30
 channel_selector_inputs:

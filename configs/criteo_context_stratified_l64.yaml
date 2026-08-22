@@ -1,0 +1,4 @@
+base_config: criteo_context_stratified.yaml
+output_dir: outputs/context_stratified_l64_runs
+context_designs:
+  - singleton_identity_L64

@@ -81,8 +81,11 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
             "solver_tolerance": 1e-8,
             "max_cutting_plane_iterations": 10,
             "solver_heartbeat_seconds": 1,
+            "robust_cut_formulation": "shared_support_bounds",
+            "resume_cutting_plane": True,
         },
         progress,
+        tmp_path / "checkpoints",
     )
 
     assert len(cells) == 2
@@ -92,4 +95,6 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
     log = (tmp_path / "progress.log").read_text()
     assert log.count("[context_started]") == 2
     assert "[cutting_plane_iteration_started]" in log
+    assert "[support_checkpoint_written]" in log
     assert "[shared_capt_finished]" in log
+    assert len(list((tmp_path / "checkpoints" / "tiny").glob("*.npz"))) == 3
