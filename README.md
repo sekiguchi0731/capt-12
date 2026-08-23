@@ -132,6 +132,13 @@ capt12 resolve-run-id a760ce9 \
 The revision is resolved to its full commit SHA before hashing. A commit alone
 is insufficient because the run ID also binds the complete resolved config.
 
+Every successfully completed context-stratified run also writes
+`sol_review_bundle.zip` in its run directory. The bundle contains the report,
+tables, figures, resolved config, manifests, models, mechanisms, and every
+context certificate. `sol_review_bundle_manifest.json` records the size and
+SHA-256 of each included file. Cutting-plane checkpoints and verbose progress
+logs are excluded because they are unnecessary for result review.
+
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and
 robust constraints using a verifier-owned tolerance. It is bundle-consistency

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -91,3 +93,38 @@ def test_source_root_rejects_package_without_git_attestation(
 
     with pytest.raises(RuntimeError, match="build attestation"):
         artifacts.capt12_source_root()
+
+
+def test_sol_review_bundle_is_deterministic_and_excludes_runtime_noise(tmp_path) -> None:
+    run_path = tmp_path / "run-123"
+    (run_path / "tables").mkdir(parents=True)
+    (run_path / "checkpoints").mkdir()
+    (run_path / "manifest.json").write_text('{"status":"complete"}\n')
+    (run_path / "tables" / "results.csv").write_text("metric,value\nU,1\n")
+    (run_path / "certificate-context-00.json").write_text('{"valid":true}\n')
+    (run_path / "progress.log").write_text("verbose runtime log\n")
+    (run_path / "progress.jsonl").write_text("{}\n")
+    (run_path / "checkpoints" / "cuts.npz").write_bytes(b"checkpoint")
+
+    bundle = artifacts.write_sol_review_bundle(run_path)
+    first_hash = artifacts.sha256_file(bundle)
+    bundle = artifacts.write_sol_review_bundle(run_path)
+    assert artifacts.sha256_file(bundle) == first_hash
+
+    with zipfile.ZipFile(bundle) as archive:
+        names = set(archive.namelist())
+    prefix = "run-123/"
+    assert prefix + "manifest.json" in names
+    assert prefix + "tables/results.csv" in names
+    assert prefix + "certificate-context-00.json" in names
+    assert prefix + "sol_review_bundle_manifest.json" in names
+    assert all("checkpoints" not in name for name in names)
+    assert all("progress." not in name for name in names)
+    bundle_manifest = json.loads(
+        (run_path / "sol_review_bundle_manifest.json").read_text()
+    )
+    assert {item["path"] for item in bundle_manifest["files"]} >= {
+        "manifest.json",
+        "tables/results.csv",
+        "certificate-context-00.json",
+    }

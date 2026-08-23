@@ -40,7 +40,13 @@ from capt12.experiments.utility_design import UtilityDesign, _build_designs
 from capt12.mechanisms.lp import ChannelSolution, lift_block_channel, solve_ldp_block_lp
 from capt12.pipeline import record_source_provenance
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
-from capt12.utils.artifacts import environment, finish_run, prepare_run, sha256_file
+from capt12.utils.artifacts import (
+    environment,
+    finish_run,
+    prepare_run,
+    sha256_file,
+    write_sol_review_bundle,
+)
 from capt12.utils.progress import ProgressLogger, process_memory_bytes
 
 
@@ -1524,7 +1530,17 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             "source_git_sha": config["source_git_sha"],
             "context_count": metadata["context_count"],
             "certificate_count": metadata["certificate_count"],
+            "sol_review_bundle": "sol_review_bundle.zip",
         },
+    )
+    progress.emit("sol_review_bundle_started", **process_memory_bytes())
+    bundle_path = write_sol_review_bundle(path)
+    progress.emit(
+        "sol_review_bundle_finished",
+        path=str(bundle_path),
+        size_bytes=bundle_path.stat().st_size,
+        sha256=sha256_file(bundle_path),
+        **process_memory_bytes(),
     )
     progress.emit(
         "run_finished",

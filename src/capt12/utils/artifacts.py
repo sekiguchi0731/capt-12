@@ -5,8 +5,10 @@ import importlib.metadata
 import importlib.util
 import json
 import platform
+import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -179,3 +181,74 @@ def finish_run(path: Path, extra: dict[str, Any] | None = None) -> None:
     manifest["status"] = "complete"
     manifest["completed_at"] = datetime.now(UTC).isoformat()
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
+def write_sol_review_bundle(
+    path: str | Path,
+    *,
+    bundle_name: str = "sol_review_bundle.zip",
+) -> Path:
+    """Create a deterministic, compact review bundle for a completed run."""
+    run_path = Path(path)
+    if not run_path.is_dir():
+        raise ValueError(f"run directory does not exist: {run_path}")
+    manifest_path = run_path / "sol_review_bundle_manifest.json"
+    bundle_path = run_path / bundle_name
+    temporary_path = run_path / f".{bundle_name}.tmp"
+    excluded_names = {
+        "progress.log",
+        "progress.jsonl",
+        bundle_name,
+        temporary_path.name,
+        manifest_path.name,
+    }
+
+    def included(candidate: Path) -> bool:
+        relative = candidate.relative_to(run_path)
+        return (
+            candidate.is_file()
+            and "checkpoints" not in relative.parts
+            and candidate.name not in excluded_names
+            and not candidate.name.endswith("_review_bundle.zip")
+        )
+
+    files = sorted(
+        (candidate for candidate in run_path.rglob("*") if included(candidate)),
+        key=lambda candidate: candidate.relative_to(run_path).as_posix(),
+    )
+    manifest = {
+        "version": 1,
+        "purpose": "ChatGPT Sol review of CAPT result, certificate, and deployment bundle",
+        "run_id": run_path.name,
+        "archive_root": run_path.name,
+        "excluded": ["checkpoints/**", "progress.log", "progress.jsonl", "*_review_bundle.zip"],
+        "files": [
+            {
+                "path": candidate.relative_to(run_path).as_posix(),
+                "size_bytes": candidate.stat().st_size,
+                "sha256": sha256_file(candidate),
+            }
+            for candidate in files
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    files.append(manifest_path)
+    fixed_timestamp = (2000, 1, 1, 0, 0, 0)
+    try:
+        with zipfile.ZipFile(
+            temporary_path,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+        ) as archive:
+            for candidate in files:
+                relative = candidate.relative_to(run_path).as_posix()
+                info = zipfile.ZipInfo(f"{run_path.name}/{relative}", fixed_timestamp)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o100644 << 16
+                with candidate.open("rb") as source, archive.open(info, "w") as target:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+        temporary_path.replace(bundle_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return bundle_path
