@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
 from capt12.cli import app
-from capt12.config import parse_csv_list, validate_config
+from capt12.config import load_config, parse_csv_list, run_id, validate_config
 from capt12.data.contributions import apply_contribution_policy
 from capt12.data.loader import assert_disjoint_splits, assert_no_row_overlap
 from capt12.data.preprocessing import (
@@ -79,6 +81,33 @@ def test_cli_accepts_hyphen_and_underscore_aliases(tmp_path) -> None:
         ["run-grid", "--config", "configs/smoke.yaml", "--output-dir", str(output), "--K-list", "3", "--L_list", "1", "--dry-run"],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_resolve_run_id_cli_reproduces_provenance_config_hash(monkeypatch) -> None:
+    full_sha = "a" * 40
+    monkeypatch.setattr("capt12.cli._resolve_git_commit", lambda revision: full_sha)
+    result = CliRunner().invoke(
+        app,
+        [
+            "resolve-run-id",
+            "abc1234",
+            "--config",
+            "configs/criteo_context_stratified.yaml",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    config = load_config("configs/criteo_context_stratified.yaml")
+    config.update(
+        {
+            "require_clean_worktree": True,
+            "source_worktree_clean": True,
+            "source_git_sha": full_sha,
+        }
+    )
+    assert payload["source_git_sha"] == full_sha
+    assert payload["run_id"] == run_id(config)
+    assert payload["output_path"].endswith(payload["run_id"])
 
 
 def test_splits_reject_day_and_row_overlap() -> None:

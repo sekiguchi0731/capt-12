@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import typer
 
 from capt12.certification.artifact import verify_certificate as verify_certificate_file
 from capt12.confidence.boxes import CONFIDENCE_REGISTRY
-from capt12.config import load_config, parse_csv_list, parse_profiles
+from capt12.config import load_config, parse_csv_list, parse_profiles, run_id
 from capt12.data.inspect import inspect_parquet, write_inspection_json
 from capt12.decoders.registry import DECODER_REGISTRY
 from capt12.distortions.registry import DISTORTION_REGISTRY
@@ -18,12 +19,61 @@ from capt12.mechanisms.baselines import BASELINES
 from capt12.models.reference import MODEL_REGISTRY
 from capt12.partitions.registry import PARTITION_REGISTRY
 from capt12.pipeline import run_pipeline
+from capt12.utils.artifacts import capt12_source_root
 
 app = typer.Typer(no_args_is_help=True, help="CAPT-12 reproducible research CLI")
 
 
 def _load(path: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     return load_config(path, {key: value for key, value in (overrides or {}).items() if value is not None})
+
+
+def _resolve_git_commit(revision: str) -> str:
+    try:
+        root = capt12_source_root()
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", f"{revision}^{{commit}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"cannot resolve Git commit: {revision}") from error
+    return result.stdout.strip()
+
+
+@app.command("resolve-run-id")
+def resolve_run_id(
+    revision: str = typer.Argument(..., help="Git commit, short SHA, tag, or HEAD"),
+    config: Path = typer.Option(..., "--config", exists=True),
+) -> None:
+    """Predict the deterministic output ID for a config and source commit."""
+    try:
+        source_git_sha = _resolve_git_commit(revision)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="revision") from error
+    resolved = _load(config)
+    # Match record_source_provenance() exactly without requiring the requested
+    # revision to be the currently checked-out HEAD.
+    resolved["require_clean_worktree"] = True
+    resolved["source_worktree_clean"] = True
+    resolved["source_git_sha"] = source_git_sha
+    identifier = run_id(resolved)
+    output_path = Path(resolved.get("output_dir", "outputs/runs")) / identifier
+    typer.echo(
+        json.dumps(
+            {
+                "config": str(config),
+                "requested_revision": revision,
+                "source_git_sha": source_git_sha,
+                "run_id": identifier,
+                "output_path": str(output_path),
+                "output_exists": output_path.exists(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 @app.command("inspect-data")

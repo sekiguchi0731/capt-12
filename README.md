@@ -121,6 +121,17 @@ fingerprinted witness checkpoint after every cutting-plane iteration. Repeating
 the same command after an interruption resumes those cuts; a checkpoint from a
 different cost, confidence set, adjacency family, or tolerance is rejected.
 
+To reproduce the deterministic output directory from a Git revision and the
+same config used for the run:
+
+```bash
+capt12 resolve-run-id a760ce9 \
+  --config configs/criteo_context_stratified.yaml
+```
+
+The revision is resolved to its full commit SHA before hashing. A commit alone
+is insufficient because the run ID also binds the complete resolved config.
+
 `verify-certificate` checks the self-contained confidence/count construction,
 adjacency, block channel, partition/common decoder lift, component hashes, and
 robust constraints using a verifier-owned tolerance. It is bundle-consistency
