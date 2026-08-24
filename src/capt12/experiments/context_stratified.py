@@ -1034,7 +1034,7 @@ def _write_certificates(
                     "certificate_conservative_realized_epsilon": (
                         cell.capt_repair.conservative_verification.realized_epsilon
                     ),
-                    "repair_lambda": cell.capt_repair.mixing_weight,
+                    "certificate_repair_lambda": cell.capt_repair.mixing_weight,
                 }
             )
             completed += 1
