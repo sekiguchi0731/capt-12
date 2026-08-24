@@ -143,6 +143,10 @@ shares each group/output support bound across all adjacent pairs and writes a
 fingerprinted witness checkpoint after every cutting-plane iteration. Repeating
 the same command after an interruption resumes those cuts; a checkpoint from a
 different cost, confidence set, adjacency family, or tolerance is rejected.
+If HiGHS dual simplex returns numerical status 4/Unknown, the identical LP is
+retried once with HiGHS IPM at the same feasibility tolerance. A retry result
+is never accepted without the usual support-oracle and independent certificate
+verification stages.
 
 To reproduce the deterministic output directory from a Git revision and the
 same config used for the run:

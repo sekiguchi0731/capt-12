@@ -264,6 +264,7 @@ def _solve_channel_lp(
         time_limit_seconds=time_limit,
         **process_memory_bytes(),
     )
+    solver_state: dict[str, Any] = {"method": "highs", "attempt": 1}
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
     if progress is not None and heartbeat_seconds > 0:
@@ -277,6 +278,8 @@ def _solve_channel_lp(
                     "lp_solver_heartbeat",
                     label=progress_label,
                     heartbeat_sequence=sequence,
+                    solver_method=solver_state["method"],
+                    solver_attempt=solver_state["attempt"],
                     solver_elapsed_seconds=time.perf_counter() - started,
                     dimension=n,
                     variable_count=variable_count,
@@ -301,16 +304,61 @@ def _solve_channel_lp(
                 message="Unrecognized options detected:.*small_matrix_value",
                 category=OptimizeWarning,
             )
-            result = linprog(
-                objective,
-                A_ub=a_ub,
-                b_ub=b_ub,
-                A_eq=a_eq.tocsr(),
-                b_eq=b_eq,
-                bounds=(0.0, 1.0),
-                method="highs",
-                options=options,
-            )
+            equality_matrix = a_eq.tocsr()
+
+            def solve_once(method: str, method_options: dict[str, float | bool]):
+                return linprog(
+                    objective,
+                    A_ub=a_ub,
+                    b_ub=b_ub,
+                    A_eq=equality_matrix,
+                    b_eq=b_eq,
+                    bounds=(0.0, 1.0),
+                    method=method,
+                    options=method_options,
+                )
+
+            result = solve_once("highs", options)
+            attempts = [("highs", result)]
+            # HiGHS' dual simplex may find an apparently optimal solution and
+            # then downgrade it to status 4/Unknown during its stricter final
+            # feasibility check on badly scaled robust masters.  Retrying the
+            # identical mathematical LP with the independent HiGHS IPM path is
+            # deterministic and does not relax any constraint or tolerance.
+            # The returned channel still has to pass the support oracle,
+            # independent robust verifier, and pure-epsilon post-solve repair.
+            if not result.success and int(result.status) == 4:
+                solver_state.update(method="highs-ipm", attempt=2)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="primary_numerical_status",
+                    failed_method="highs",
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ipm",
+                    retry_attempt=2,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ipm", options)
+                attempts.append(("highs-ipm", result))
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ipm",
+                    retry_attempt=2,
+                    success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    crossover_iterations=getattr(result, "crossover_nit", None),
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+            selected_method = attempts[-1][0]
     except BaseException as error:
         _emit_progress(
             progress,
@@ -336,6 +384,9 @@ def _solve_channel_lp(
         variable_count=variable_count,
         total_constraint_count=n + inequality_count,
         success=bool(result.success),
+        solver_method=selected_method,
+        solver_attempt_count=len(attempts),
+        fallback_used=len(attempts) > 1,
         scipy_status=int(result.status),
         message=str(result.message),
         iterations=getattr(result, "nit", None),
@@ -367,7 +418,10 @@ def _solve_channel_lp(
         iterations=getattr(result, "nit", None),
         primal_gap=primal_gap,
         dual_gap=dual_gap,
-        message=result.message,
+        message=" | ".join(
+            f"{method}(status={int(attempt.status)}): {attempt.message}"
+            for method, attempt in attempts
+        ),
         variable_count=variable_count,
         constraint_count=n + inequality_count,
         estimated_memory_bytes=int(matrix_memory_bytes * 2),

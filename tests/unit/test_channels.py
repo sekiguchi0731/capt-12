@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import sparse
-from scipy.optimize import linprog
+from scipy.optimize import OptimizeResult, linprog
 
+import capt12.mechanisms.lp as lp_module
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
 from capt12.certification.robust import (
     repair_robust_channel_uniform,
@@ -353,6 +354,49 @@ def test_lp_preserves_probability_constraints_below_highs_default_cutoff() -> No
     assert solution.channel is not None
     assert solution.channel[0, 0] <= solution.channel[1, 0] + 1e-10
     assert np.isclose(solution.solver.objective, 0.5)
+
+
+def test_lp_retries_numerical_unknown_with_ipm_without_relaxing_constraints(
+    monkeypatch,
+) -> None:
+    real_linprog = lp_module.linprog
+    methods: list[str] = []
+
+    def numerical_unknown_then_solve(*args, **kwargs):
+        methods.append(kwargs["method"])
+        if len(methods) == 1:
+            return OptimizeResult(
+                success=False,
+                status=4,
+                message="synthetic numerical Unknown",
+                nit=7,
+            )
+        return real_linprog(*args, **kwargs)
+
+    monkeypatch.setattr(lp_module, "linprog", numerical_unknown_then_solve)
+    events: list[tuple[str, dict]] = []
+    solution = solve_ldp_block_lp(
+        1 - np.eye(2),
+        np.array([0.4, 0.6]),
+        1.0,
+        tolerance=1e-10,
+        progress=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    assert methods == ["highs", "highs-ipm"]
+    assert solution.channel is not None
+    assert solution.solver.status == "optimal"
+    assert "highs(status=4)" in solution.solver.message
+    assert "highs-ipm(status=0)" in solution.solver.message
+    assert np.max(
+        solution.channel[:, None, :] - np.exp(1.0) * solution.channel[None, :, :]
+    ) <= 1e-10
+    assert [event for event, _ in events].count("lp_solver_retry_started") == 1
+    assert [event for event, _ in events].count("lp_solver_retry_finished") == 1
+    finished = next(fields for event, fields in events if event == "lp_solver_finished")
+    assert finished["fallback_used"] is True
+    assert finished["solver_method"] == "highs-ipm"
+    assert finished["solver_attempt_count"] == 2
 
 
 def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
