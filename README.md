@@ -111,6 +111,13 @@ control uses singleton/identity `L=K=64`. The
 guarantee concerns the coarsened sensitive value conditional on an attacker
 already knowing `B`; leakage through `B` itself is outside scope.
 
+The context CAPT channel is post-solve repaired with the minimum per-context
+mixture of a uniform input-independent channel needed for strict pure-epsilon
+feasibility. The released mechanism and all certificates contain the repaired
+channel. `tables/privacy_repair_offending_constraints.csv` records every
+pre-repair positive-over-zero constraint, and the result tables report the
+mixing weights plus ordinary and tolerance-free Decimal verification.
+
 This diagnostic is intentionally verbose. It flushes stage, design, context,
 LP-size, HiGHS, cutting-plane, support-oracle, verification, memory, and
 artifact events to the terminal and to `progress.log` and `progress.jsonl` in

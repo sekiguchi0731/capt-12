@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +17,14 @@ from capt12.certification.artifact import (
     make_certificate,
     verify_certificate,
 )
-from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
+from capt12.certification.robust import (
+    UniformMixRepair,
+    evaluate_robust_constraints,
+    repair_robust_channel_uniform,
+    robust_master_tolerance,
+    solve_robust_block_lp,
+    verify_robust_channel,
+)
 from capt12.confidence.boxes import ConfidenceBox
 from capt12.config import validate_config
 from capt12.data.loader import assert_disjoint_splits, assert_no_row_overlap, load_parquet_sample
@@ -71,6 +78,9 @@ class ContextCell:
     ldp_solution: ChannelSolution
     capt_solution: ChannelSolution
     capt_verification: Any
+    raw_capt_channel: np.ndarray
+    raw_capt_verification: Any
+    capt_repair: UniformMixRepair
     full_simplex_keys: set[str]
     full_full_edges: int
     rare_group_count: int
@@ -399,6 +409,83 @@ def _solve_design(
             tolerance=tolerance,
         ).valid:
             raise RuntimeError(f"context LDP verification failed: {design.name}/{context}")
+        raw_capt_channel = capt.channel.copy()
+        raw_capt_verification = verification
+        repair_margin = float(config.get("certificate_repair_margin", 1e-10))
+        progress.emit(
+            "context_certificate_repair_started",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            repair_method="uniform_full_support_mixing",
+            requested_additive_margin=repair_margin,
+            pre_repair_max_violation=raw_capt_verification.max_violation,
+            pre_repair_realized_epsilon=raw_capt_verification.realized_epsilon,
+        )
+        repair = repair_robust_channel_uniform(
+            raw_capt_channel,
+            boxes,
+            adjacency,
+            safety_margin=repair_margin,
+        )
+        repaired_objective = _objective(
+            repair.channel,
+            objective.block_cost,
+            objective.block_weights,
+        )
+        capt = ChannelSolution(
+            channel=repair.channel,
+            solver=replace(
+                capt.solver,
+                status="optimal_postsolve_repaired",
+                objective=repaired_objective,
+                message=(
+                    f"{capt.solver.message}; deterministic uniform full-support repair "
+                    f"lambda={repair.mixing_weight:.17g}, margin={repair.safety_margin:.17g}"
+                ),
+            ),
+            cuts=[
+                *capt.cuts,
+                {
+                    "source": "deterministic_uniform_full_support_repair",
+                    "mixing_weight": repair.mixing_weight,
+                    "safety_margin": repair.safety_margin,
+                    "released_channel": True,
+                },
+            ],
+            auxiliary=capt.auxiliary,
+        )
+        verification = repair.post_verification
+        target_epsilon = max((pair.epsilon for pair in adjacency), default=0.0)
+        if (
+            not repair.conservative_verification.valid
+            or not np.isfinite(repair.conservative_verification.realized_epsilon)
+            or repair.conservative_verification.realized_epsilon > target_epsilon
+        ):
+            raise RuntimeError(
+                f"conservative repaired-channel verification failed: {design.name}/{context}"
+            )
+        progress.emit(
+            "context_certificate_repair_finished",
+            design=design.name,
+            context=context,
+            context_index=context_index,
+            repair_method="uniform_full_support_mixing",
+            mixing_weight=repair.mixing_weight,
+            requested_additive_margin=repair.safety_margin,
+            pre_repair_infinite_constraint_count=repair.pre_infinite_constraint_count,
+            post_repair_zero_denominator_positive_numerator_count=(
+                repair.post_zero_denominator_positive_numerator_count
+            ),
+            post_repair_realized_epsilon=repair.post_verification.realized_epsilon,
+            post_repair_max_violation=repair.post_verification.max_violation,
+            conservative_realized_epsilon=(
+                repair.conservative_verification.realized_epsilon
+            ),
+            conservative_max_violation=repair.conservative_verification.max_violation,
+            min_channel_entry=repair.min_entry,
+            max_row_sum_error=repair.max_row_sum_error,
+        )
         cells.append(
             ContextCell(
                 design=design,
@@ -411,6 +498,9 @@ def _solve_design(
                 ldp_solution=ldp,
                 capt_solution=capt,
                 capt_verification=verification,
+                raw_capt_channel=raw_capt_channel,
+                raw_capt_verification=raw_capt_verification,
+                capt_repair=repair,
                 full_simplex_keys=full_simplex,
                 full_full_edges=full_edges,
                 rare_group_count=sum(
@@ -523,6 +613,7 @@ def _aggregate_rows(
     methods = {
         "context_constant": lambda cell: cell.constant_channel,
         "context_ldp": lambda cell: cell.ldp_solution.channel,
+        "context_capt_pre_repair": lambda cell: cell.raw_capt_channel,
         "context_capt": lambda cell: cell.capt_solution.channel,
         "shared_ldp": lambda cell: shared_ldp.channel,
         "shared_capt": lambda cell: shared_capt.channel,
@@ -573,6 +664,11 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
             cell.objective.block_cost,
             cell.objective.block_weights,
         )
+        raw_capt = _objective(
+            cell.raw_capt_channel,
+            cell.objective.block_cost,
+            cell.objective.block_weights,
+        )
         rows.append(
             {
                 "design": cell.design.name,
@@ -588,10 +684,13 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "D_context_constant": constant,
                 "D_context_ldp": ldp,
                 "D_context_capt": capt,
+                "D_context_capt_pre_repair": raw_capt,
                 "capt_gain_over_constant": constant - capt,
                 "capt_advantage_over_context_ldp": ldp - capt,
+                "capt_advantage_over_context_ldp_pre_repair": ldp - raw_capt,
                 "context_ldp_row_tv": _max_row_tv(cell.ldp_solution.channel),
                 "context_capt_row_tv": _max_row_tv(cell.capt_solution.channel),
+                "context_capt_row_tv_pre_repair": _max_row_tv(cell.raw_capt_channel),
                 "capt_equals_context_ldp_channel": bool(
                     np.allclose(
                         cell.capt_solution.channel,
@@ -603,10 +702,100 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "robust_valid": cell.capt_verification.valid,
                 "robust_checked_constraints": cell.capt_verification.checked_constraints,
                 "robust_max_violation": cell.capt_verification.max_violation,
+                "pre_repair_realized_epsilon": (
+                    cell.raw_capt_verification.realized_epsilon
+                ),
+                "pre_repair_max_violation": cell.raw_capt_verification.max_violation,
+                "pre_repair_infinite_constraint_count": (
+                    cell.capt_repair.pre_infinite_constraint_count
+                ),
+                "repair_method": "uniform_full_support_mixing",
+                "repair_lambda": cell.capt_repair.mixing_weight,
+                "repair_safety_margin": cell.capt_repair.safety_margin,
+                "post_repair_realized_epsilon": (
+                    cell.capt_repair.post_verification.realized_epsilon
+                ),
+                "post_repair_max_violation": (
+                    cell.capt_repair.post_verification.max_violation
+                ),
+                "conservative_realized_epsilon": (
+                    cell.capt_repair.conservative_verification.realized_epsilon
+                ),
+                "conservative_max_violation": (
+                    cell.capt_repair.conservative_verification.max_violation
+                ),
+                "post_repair_zero_denominator_positive_numerator_count": (
+                    cell.capt_repair.post_zero_denominator_positive_numerator_count
+                ),
+                "released_channel_min_entry": cell.capt_repair.min_entry,
+                "released_channel_max_row_sum_error": (
+                    cell.capt_repair.max_row_sum_error
+                ),
                 "capt_solver_runtime_seconds": cell.capt_solution.solver.runtime_seconds,
                 "ldp_solver_runtime_seconds": cell.ldp_solution.solver.runtime_seconds,
             }
         )
+    return rows
+
+
+def _privacy_repair_diagnostic_rows(
+    cells: list[ContextCell],
+    *,
+    certificate_tolerance: float,
+) -> list[dict[str, Any]]:
+    """Describe every pre-repair positive-over-zero robust constraint."""
+    rows: list[dict[str, Any]] = []
+    solver_tolerance = robust_master_tolerance(certificate_tolerance)
+    tiny_threshold = solver_tolerance
+    for cell in cells:
+        group_by_key = {group.key(): group for group in cell.groups}
+        evaluations = evaluate_robust_constraints(
+            cell.raw_capt_channel,
+            cell.boxes,
+            cell.adjacency,
+        )
+        for value in evaluations:
+            if value.realized_epsilon != float("inf"):
+                continue
+            column = cell.raw_capt_channel[:, value.output_block]
+            zero_indices = np.flatnonzero(column == 0)
+            tiny_indices = np.flatnonzero((column > 0) & (column <= tiny_threshold))
+            left = group_by_key[value.left]
+            right = group_by_key[value.right]
+            rows.append(
+                {
+                    "design": cell.design.name,
+                    "public_context": cell.objective.context,
+                    "left_group": value.left,
+                    "right_group": value.right,
+                    "left_sensitive_value": json.dumps(list(map(str, left.values))),
+                    "right_sensitive_value": json.dumps(list(map(str, right.values))),
+                    "output_block": value.output_block,
+                    "target_epsilon": value.target_epsilon,
+                    "robust_numerator": value.maximum,
+                    "robust_denominator": value.minimum,
+                    "additive_violation": value.additive_violation,
+                    "channel_column_exact_zero_count": len(zero_indices),
+                    "channel_column_exact_zero_row_indices": json.dumps(
+                        zero_indices.tolist()
+                    ),
+                    "channel_column_tiny_positive_count": len(tiny_indices),
+                    "channel_column_tiny_positive_entries": json.dumps(
+                        [
+                            {"input_block": int(index), "value": float(column[index])}
+                            for index in tiny_indices
+                        ],
+                        separators=(",", ":"),
+                    ),
+                    "channel_column_min": float(np.min(column)),
+                    "channel_column_max": float(np.max(column)),
+                    "tiny_positive_threshold": tiny_threshold,
+                    "solver_feasibility_tolerance": solver_tolerance,
+                    "certificate_tolerance": certificate_tolerance,
+                    "left_witness": json.dumps(value.left_witness.tolist()),
+                    "right_witness": json.dumps(value.right_witness.tolist()),
+                }
+            )
     return rows
 
 
@@ -656,7 +845,7 @@ def _channel_manifest(
     cells_by_design: dict[str, list[ContextCell]],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "profile": profile,
         "public_context_column": context_column,
         "channel_selector_inputs": ["Z", "profile", context_column],
@@ -666,6 +855,7 @@ def _channel_manifest(
             "missing": "__UNKNOWN__",
             "unseen": "__UNKNOWN__",
         },
+        "released_channel_policy": "uniform_full_support_postsolve_repair",
         "designs": {},
     }
     for design in designs:
@@ -686,6 +876,24 @@ def _channel_manifest(
             "table_entries": int(len(ordered) * len(design.block_weights) ** 2),
             "contexts": {
                 cell.objective.context: hash_array(cell.capt_solution.channel) for cell in ordered
+            },
+            "context_repairs": {
+                cell.objective.context: {
+                    "method": "uniform_full_support_mixing",
+                    "mixing_weight": cell.capt_repair.mixing_weight,
+                    "requested_additive_margin": cell.capt_repair.safety_margin,
+                    "pre_repair_objective": _objective(
+                        cell.raw_capt_channel,
+                        cell.objective.block_cost,
+                        cell.objective.block_weights,
+                    ),
+                    "released_channel_objective": _objective(
+                        cell.capt_solution.channel,
+                        cell.objective.block_cost,
+                        cell.objective.block_weights,
+                    ),
+                }
+                for cell in ordered
             },
         }
     manifest_path = path / "mechanism" / "context_channel_manifest.json"
@@ -754,6 +962,25 @@ def _write_certificates(
                 "full_simplex_group_count": len(missing),
                 "full_simplex_ordered_adjacency_count": cell.full_full_edges,
                 "design_mass": cell.objective.design_mass,
+                "post_solve_repair": {
+                    "method": "uniform_full_support_mixing",
+                    "uniform_output_probability": 1.0 / len(design.block_weights),
+                    "mixing_weight": cell.capt_repair.mixing_weight,
+                    "requested_additive_margin": cell.capt_repair.safety_margin,
+                    "pre_repair_infinite_constraint_count": (
+                        cell.capt_repair.pre_infinite_constraint_count
+                    ),
+                    "post_repair_zero_denominator_positive_numerator_count": (
+                        cell.capt_repair.post_zero_denominator_positive_numerator_count
+                    ),
+                    "released_channel_min_entry": cell.capt_repair.min_entry,
+                    "released_channel_max_row_sum_error": (
+                        cell.capt_repair.max_row_sum_error
+                    ),
+                    "conservative_decimal_verification": asdict(
+                        cell.capt_repair.conservative_verification
+                    ),
+                },
             }
             certificate = make_certificate(
                 config=cell_config,
@@ -798,6 +1025,16 @@ def _write_certificates(
                     "certificate_checked_constraints": verification.checked_constraints,
                     "certificate_max_violation": verification.max_violation,
                     "certificate_realized_epsilon": verification.realized_epsilon,
+                    "certificate_conservative_valid": (
+                        cell.capt_repair.conservative_verification.valid
+                    ),
+                    "certificate_conservative_max_violation": (
+                        cell.capt_repair.conservative_verification.max_violation
+                    ),
+                    "certificate_conservative_realized_epsilon": (
+                        cell.capt_repair.conservative_verification.realized_epsilon
+                    ),
+                    "repair_lambda": cell.capt_repair.mixing_weight,
                 }
             )
             completed += 1
@@ -845,6 +1082,9 @@ def _evaluate_test(
             },
             "context_ldp": {
                 context: cell.ldp_solution.channel for context, cell in cell_by_context.items()
+            },
+            "context_capt_pre_repair": {
+                context: cell.raw_capt_channel for context, cell in cell_by_context.items()
             },
             "context_capt": {
                 context: cell.capt_solution.channel for context, cell in cell_by_context.items()
@@ -1058,7 +1298,8 @@ def _write_report(
             [
                 f"### {aggregate_design.iloc[0]['label']}",
                 "",
-                f"- Context CAPT distortion: {aggregate_design.loc['context_capt', 'aggregate_distortion']:.9g}",
+                f"- Context CAPT distortion before repair: {aggregate_design.loc['context_capt_pre_repair', 'aggregate_distortion']:.9g}",
+                f"- Released context CAPT distortion after repair: {aggregate_design.loc['context_capt', 'aggregate_distortion']:.9g}",
                 f"- Context LDP distortion: {aggregate_design.loc['context_ldp', 'aggregate_distortion']:.9g}",
                 f"- CAPT utility advantage over context LDP: {aggregate_design.loc['context_ldp', 'aggregate_distortion'] - aggregate_design.loc['context_capt', 'aggregate_distortion']:.9g}",
                 f"- Contexts with strict CAPT advantage: {int(advantage.sum())}/{len(context_design)}, design mass {context_design.loc[advantage, 'design_mass'].sum():.9g}",
@@ -1071,7 +1312,13 @@ def _write_report(
         [
             "## Verification and interpretation",
             "",
-            f"All {len(certificate_summary)} context certificates are valid; they independently recheck {int(certificate_summary['certificate_checked_constraints'].sum()):,} robust constraints. The maximum violation is {certificate_summary['certificate_max_violation'].max():.3g}.",
+            f"Before repair, {metadata['pre_repair_infinite_context_count']}/{metadata['context_count']} contexts had positive-over-zero robust ratios ({metadata['pre_repair_infinite_constraint_count']:,} offending constraints). The maximum additive violation was {metadata['pre_repair_max_additive_violation']:.9g}; these values were previously accepted only because they were below the additive certificate tolerance.",
+            "",
+            "The released channel is `(1-lambda_b) R_b + lambda_b U`, where every row of `U` is uniform. Since every group distribution maps `U` to `1/L`, an original violation `v` becomes `(1-lambda_b)v - lambda_b(exp(epsilon)-1)/L`. The smallest per-context lambda satisfying every constraint with the configured strict margin is used.",
+            "",
+            f"The maximum lambda is {metadata['max_repair_lambda']:.9g} and its design-mass-weighted value is {metadata['mass_weighted_repair_lambda']:.9g}. After repair there are {metadata['post_repair_infinite_context_count']} infinite contexts and {metadata['post_repair_zero_denominator_positive_numerator_count']} positive-over-zero constraints. The high-precision maximum realized epsilon is {metadata['conservative_max_realized_epsilon']:.12g}; its maximum additive violation is {metadata['conservative_max_additive_violation']:.9g}.",
+            "",
+            f"All {len(certificate_summary)} context certificates are valid; they independently recheck {int(certificate_summary['certificate_checked_constraints'].sum()):,} robust constraints. The ordinary verifier maximum violation is {certificate_summary['certificate_max_violation'].max():.3g}. The Decimal verifier applies no privacy feasibility tolerance.",
             "",
             "The comparison that determines CAPT advantage is context CAPT versus context-specific optimal LDP under the same partition, decoder, context objective, and public-context table. Shared-channel methods are supplementary baselines.",
             "",
@@ -1084,6 +1331,22 @@ def _write_report(
         lines.append(
             f"The lowest expected randomized D_test log loss is {best['expected_randomized_log_loss']:.9g} for `{best['design']}/{best['method']}`."
         )
+        lines.extend(["", "## D_test comparison", ""])
+        for method in ["context_capt_pre_repair", "context_capt", "context_ldp"]:
+            row = test_metrics.loc[test_metrics["method"] == method].iloc[0]
+            lines.append(
+                f"- `{method}`: log loss {row['expected_randomized_log_loss']:.9g}; "
+                f"ROC-AUC {row['ROC_AUC']:.9g}; PR-AUC {row['PR_AUC']:.9g}; "
+                f"ECE {row['ECE']:.9g}; calibration ratio {row['calibration_ratio']:.9g}."
+            )
+    lines.extend(
+        [
+            "",
+            "## Remaining issues",
+            "",
+            "This is still the single prescribed L=16, epsilon=1, joint-k-medoids condition. It does not add epsilon/L grids, multiple seeds, Avazu, or the singleton-identity positive control.",
+        ]
+    )
     (path / "context_stratified_report.md").write_text("\n".join(lines) + "\n")
 
 
@@ -1112,6 +1375,10 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         raise ValueError("the first context diagnostic requires epsilon=1")
     if config.get("missing_group_policy") != "full_simplex":
         raise ValueError("context diagnostic requires full-simplex completion")
+    if config.get("certificate_channel_repair") != "uniform_full_support_mixing":
+        raise ValueError(
+            "context diagnostic requires certificate-safe uniform full-support repair"
+        )
 
     path = prepare_run(config)
     progress = ProgressLogger(path, name=path.name)
@@ -1273,6 +1540,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     context_rows: list[dict[str, Any]] = []
     aggregate_rows: list[dict[str, Any]] = []
     support_rows: list[dict[str, Any]] = []
+    repair_diagnostic_rows: list[dict[str, Any]] = []
     for design_index, design in enumerate(designs, start=1):
         design_started = time.perf_counter()
         progress.emit(
@@ -1355,6 +1623,12 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         context_rows.extend(_context_rows(cells))
         aggregate_rows.extend(_aggregate_rows(design, cells, shared_ldp, shared_capt))
         support_rows.extend(_support_origin_rows(cells, frozen["design_only_probability"]))
+        repair_diagnostic_rows.extend(
+            _privacy_repair_diagnostic_rows(
+                cells,
+                certificate_tolerance=float(config.get("solver_tolerance", 1e-8)),
+            )
+        )
         np.savez_compressed(
             path / "mechanism" / f"shared_channels-{design.name}.npz",
             shared_ldp=shared_ldp.channel,
@@ -1419,7 +1693,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "test_evaluation_started",
         test_row_count=len(test_frame),
         design_count=len(designs),
-        method_count=5,
+        method_count=6,
         **process_memory_bytes(),
     )
     evaluation_started = time.perf_counter()
@@ -1448,19 +1722,29 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     )
     aggregate_frame = pd.DataFrame(aggregate_rows)
     support_frame = pd.DataFrame(support_rows)
+    repair_diagnostic_frame = pd.DataFrame(repair_diagnostic_rows)
     context_frame.to_csv(path / "tables" / "context_results.csv", index=False)
     aggregate_frame.to_csv(path / "tables" / "aggregate_results.csv", index=False)
     support_frame.to_csv(path / "tables" / "support_origin.csv", index=False)
+    repair_diagnostic_frame.to_csv(
+        path / "tables" / "privacy_repair_offending_constraints.csv",
+        index=False,
+    )
     certificate_summary.to_csv(path / "tables" / "certificate_summary.csv", index=False)
     test_metrics.to_csv(path / "tables" / "test_metrics.csv", index=False)
     context_frame.to_parquet(path / "context_results.parquet", index=False)
     aggregate_frame.to_parquet(path / "aggregate_results.parquet", index=False)
     test_metrics.to_parquet(path / "test_metrics.parquet", index=False)
+    repair_diagnostic_frame.to_parquet(
+        path / "privacy_repair_offending_constraints.parquet",
+        index=False,
+    )
     progress.emit(
         "result_table_write_finished",
         context_result_rows=len(context_frame),
         aggregate_result_rows=len(aggregate_frame),
         support_result_rows=len(support_frame),
+        repair_offending_constraint_rows=len(repair_diagnostic_frame),
         certificate_result_rows=len(certificate_summary),
         test_metric_rows=len(test_metrics),
         **process_memory_bytes(),
@@ -1497,6 +1781,45 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             certificate_summary["certificate_checked_constraints"].sum()
         ),
         "certificate_max_violation": float(certificate_summary["certificate_max_violation"].max()),
+        "pre_repair_infinite_context_count": int(
+            (context_frame["pre_repair_infinite_constraint_count"] > 0).sum()
+        ),
+        "pre_repair_infinite_constraint_count": int(
+            context_frame["pre_repair_infinite_constraint_count"].sum()
+        ),
+        "pre_repair_max_additive_violation": float(
+            context_frame["pre_repair_max_violation"].max()
+        ),
+        "post_repair_infinite_context_count": int(
+            np.isinf(context_frame["post_repair_realized_epsilon"]).sum()
+        ),
+        "post_repair_max_realized_epsilon": float(
+            context_frame["post_repair_realized_epsilon"].max()
+        ),
+        "post_repair_max_additive_violation": float(
+            context_frame["post_repair_max_violation"].max()
+        ),
+        "conservative_max_realized_epsilon": float(
+            context_frame["conservative_realized_epsilon"].max()
+        ),
+        "conservative_max_additive_violation": float(
+            context_frame["conservative_max_violation"].max()
+        ),
+        "post_repair_zero_denominator_positive_numerator_count": int(
+            context_frame[
+                "post_repair_zero_denominator_positive_numerator_count"
+            ].sum()
+        ),
+        "max_repair_lambda": float(context_frame["repair_lambda"].max()),
+        "mass_weighted_repair_lambda": float(
+            np.sum(context_frame["design_mass"] * context_frame["repair_lambda"])
+        ),
+        "released_channel_min_entry": float(
+            context_frame["released_channel_min_entry"].min()
+        ),
+        "released_channel_max_row_sum_error": float(
+            context_frame["released_channel_max_row_sum_error"].max()
+        ),
         "wall_seconds": time.perf_counter() - started,
         "process_peak_rss_bytes": _peak_rss_bytes(),
         "environment": environment(),

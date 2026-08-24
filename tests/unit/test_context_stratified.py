@@ -92,6 +92,9 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
     assert shared_ldp.channel is not None
     assert shared_capt.channel is not None
     assert verification.valid
+    assert all(np.isfinite(cell.capt_verification.realized_epsilon) for cell in cells)
+    assert all(cell.capt_repair.conservative_verification.valid for cell in cells)
+    assert all(cell.capt_repair.mixing_weight > 0 for cell in cells)
     log = (tmp_path / "progress.log").read_text()
     assert log.count("[context_started]") == 2
     assert "[cutting_plane_iteration_started]" in log
