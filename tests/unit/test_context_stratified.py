@@ -4,6 +4,7 @@ import numpy as np
 
 from capt12.experiments.context_stratified import (
     ContextObjective,
+    _context_objectives,
     _solve_design,
     aggregate_context_objective,
 )
@@ -36,6 +37,67 @@ def test_aggregate_context_objective_preserves_decomposed_objective() -> None:
         for item in [first, second]
     )
     assert np.isclose(_objective(channel, cost, weights), decomposed)
+
+
+def test_context_objective_switches_to_empirical_design_log_loss() -> None:
+    class Reference:
+        def predict(self, frame):
+            return np.where(frame["__token__"].to_numpy() == 0, 0.2, 0.8)
+
+    cost = np.array([[0.0, 1.0], [1.0, 0.0]])
+    weights = np.array([0.5, 0.5])
+    design = UtilityDesign(
+        name="identity",
+        label="Identity",
+        partition_method="singleton",
+        decoder_method="identity",
+        assignment=np.array([0, 1]),
+        decoder=np.eye(2),
+        block_cost=cost,
+        block_weights=weights,
+        diagnostic=utility_informativeness(cost, weights),
+    )
+    frozen = {
+        "reference": Reference(),
+        "cartesian_support": {("a", "morning")},
+        "assignment": np.array([0, 1]),
+        "context_levels": ["morning"],
+        "token_context_weights": np.array([[10.0], [10.0]]),
+        "token_context_label_count": np.array([[10.0], [10.0]]),
+        "token_context_label_sum": np.array([[0.0], [10.0]]),
+        "frequencies": weights,
+        "design_only_probability": {("a", "morning"): 1.0},
+    }
+    empirical = _context_objectives(
+        frozen,
+        design,
+        {
+            "context_cols": ["context"],
+            "context_utility_objective": "empirical_logloss",
+            "distortion_clip": 1e-6,
+        },
+    )[0]
+    expected = np.array(
+        [
+            [-np.log(0.8), -np.log(0.2)],
+            [-np.log(0.2), -np.log(0.8)],
+        ]
+    )
+    np.testing.assert_allclose(empirical.block_cost, expected)
+    assert empirical.empirical_label_count == 20
+    assert empirical.utility_objective == "empirical_logloss"
+
+    teacher = _context_objectives(
+        frozen,
+        design,
+        {
+            "context_cols": ["context"],
+            "context_utility_objective": "teacher_kl",
+            "distortion_clip": 1e-6,
+        },
+    )[0]
+    assert np.allclose(np.diag(teacher.block_cost), 0)
+    assert not np.allclose(teacher.block_cost, empirical.block_cost)
 
 
 def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:

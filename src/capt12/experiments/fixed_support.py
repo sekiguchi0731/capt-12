@@ -246,6 +246,7 @@ def _fixed_design(
     context_index = {value: idx for idx, value in enumerate(context_levels)}
     token_context_scores = np.tile(token_scores[:, None], (1, len(context_levels)))
     token_context_weights = np.zeros_like(token_context_scores)
+    token_context_label_sum = np.zeros_like(token_context_scores)
     design_probabilities = design_frame["__ref_probability__"].to_numpy()
     context_array = design_context.to_numpy()
     for token in range(k):
@@ -255,6 +256,10 @@ def _fixed_design(
             token_context_weights[token, context_idx] = int(mask.sum())
             if mask.any():
                 token_context_scores[token, context_idx] = design_probabilities[mask].mean()
+                token_context_label_sum[token, context_idx] = float(
+                    design_frame.loc[mask, label].sum()
+                )
+    token_context_label_count = token_context_weights.copy()
     token_context_weights[token_context_weights.sum(axis=1) == 0] = 1.0
     token_cost = token_cost_matrix(
         token_context_scores,
@@ -343,6 +348,8 @@ def _fixed_design(
         context_levels=np.asarray(context_levels, dtype=str),
         token_context_scores=token_context_scores,
         token_context_weights=token_context_weights,
+        token_context_label_count=token_context_label_count,
+        token_context_label_sum=token_context_label_sum,
     )
     design_rows = len(design_frame)
     del design_frame, design_tokens, design_probabilities, context_array
@@ -360,6 +367,8 @@ def _fixed_design(
         "context_levels": context_levels,
         "token_context_scores": token_context_scores,
         "token_context_weights": token_context_weights,
+        "token_context_label_count": token_context_label_count,
+        "token_context_label_sum": token_context_label_sum,
         "cartesian_support": cartesian_support,
         "design_support": observed_design_support,
         "design_probability": design_probability,

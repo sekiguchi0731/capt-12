@@ -52,13 +52,32 @@ def resolve_run_id(
         min=0,
         help="Override the frozen encoder/partition design seed.",
     ),
+    utility_objective: str | None = typer.Option(
+        None,
+        "--utility-objective",
+        help="Context LP objective: teacher_kl, empirical_logloss, or hybrid_logloss_kl.",
+    ),
+    hybrid_empirical_weight: float | None = typer.Option(
+        None,
+        "--hybrid-empirical-weight",
+        min=0,
+        max=1,
+        help="Empirical-label weight for hybrid_logloss_kl.",
+    ),
 ) -> None:
     """Predict the deterministic output ID for a config and source commit."""
     try:
         source_git_sha = _resolve_git_commit(revision)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="revision") from error
-    resolved = _load(config, {"frozen_design_seed": frozen_design_seed})
+    resolved = _load(
+        config,
+        {
+            "frozen_design_seed": frozen_design_seed,
+            "context_utility_objective": utility_objective,
+            "hybrid_empirical_weight": hybrid_empirical_weight,
+        },
+    )
     # Match record_source_provenance() exactly without requiring the requested
     # revision to be the currently checked-out HEAD.
     resolved["require_clean_worktree"] = True
@@ -364,6 +383,18 @@ def context_stratified(
         min=0,
         help="Override frozen_design_seed while keeping the prescribed epsilon/L condition.",
     ),
+    utility_objective: str | None = typer.Option(
+        None,
+        "--utility-objective",
+        help="LP objective: teacher_kl, empirical_logloss, or hybrid_logloss_kl.",
+    ),
+    hybrid_empirical_weight: float | None = typer.Option(
+        None,
+        "--hybrid-empirical-weight",
+        min=0,
+        max=1,
+        help="Empirical-label weight for hybrid_logloss_kl.",
+    ),
 ) -> None:
     """Run one prescribed public-context CAPT condition for one design seed."""
     from capt12.experiments.context_stratified import (
@@ -371,7 +402,14 @@ def context_stratified(
     )
 
     path = run_context_stratified_diagnostic(
-        _load(config, {"frozen_design_seed": frozen_design_seed})
+        _load(
+            config,
+            {
+                "frozen_design_seed": frozen_design_seed,
+                "context_utility_objective": utility_objective,
+                "hybrid_empirical_weight": hybrid_empirical_weight,
+            },
+        )
     )
     typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
 
@@ -384,6 +422,18 @@ def context_seed_stability(
         "--frozen-design-seeds",
         help="Comma-separated frozen design seeds; runs are sequential and then aggregated.",
     ),
+    utility_objective: str | None = typer.Option(
+        None,
+        "--utility-objective",
+        help="LP objective used by every seed.",
+    ),
+    hybrid_empirical_weight: float | None = typer.Option(
+        None,
+        "--hybrid-empirical-weight",
+        min=0,
+        max=1,
+        help="Empirical-label weight for hybrid_logloss_kl.",
+    ),
 ) -> None:
     """Run/reuse L16 epsilon=1 seeds and create one Sol review bundle."""
     from capt12.experiments.context_seed_stability import run_context_seed_stability
@@ -392,7 +442,16 @@ def context_seed_stability(
         seeds = parse_csv_list(frozen_design_seeds, int, minimum=0)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
-    path = run_context_seed_stability(_load(config), seeds)
+    path = run_context_seed_stability(
+        _load(
+            config,
+            {
+                "context_utility_objective": utility_objective,
+                "hybrid_empirical_weight": hybrid_empirical_weight,
+            },
+        ),
+        seeds,
+    )
     typer.echo(
         json.dumps(
             {

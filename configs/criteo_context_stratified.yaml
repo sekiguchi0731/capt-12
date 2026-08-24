@@ -3,6 +3,10 @@ output_dir: outputs/context_stratified_runs
 sensitive_fallback_policy: unified_unknown
 sensitive_unknown_value: __UNKNOWN__
 public_context_policy: stratified
+context_utility_objective: teacher_kl
+hybrid_empirical_weight: 0.5
+alpha_audit: 0.05
+audit_seed: 2026
 context_designs:
   - joint_kmedoids_cost_medoid_L16
 certificate_channel_repair: uniform_full_support_mixing

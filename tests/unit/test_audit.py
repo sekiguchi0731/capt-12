@@ -73,6 +73,37 @@ def test_lower_audit_family_does_not_grow_from_test_only_values() -> None:
     assert repeated.candidate_contexts == original.candidate_contexts
 
 
+def test_lower_audit_uses_exact_aggregated_counts_for_multigroup_family() -> None:
+    attack = pd.DataFrame(
+        {
+            "group": [("a",), ("b",), ("c",)] * 2,
+            "context": ["x"] * 6,
+            "output": [0, 0, 0, 1, 1, 1],
+        }
+    )
+    test = pd.DataFrame(
+        {
+            "group": [("a",)] * 20 + [("b",)] * 20 + [("c",)] * 20,
+            "context": ["x"] * 60,
+            "output": [1] * 15 + [0] * 5 + [1] * 10 + [0] * 10 + [1] * 5 + [0] * 15,
+        }
+    )
+    result = lower_audit(
+        attack,
+        test,
+        group_col="group",
+        output_col="output",
+        context_cols=["context"],
+        alpha=0.05,
+    )
+    assert result.candidate_groups == 3
+    assert result.candidate_events == 2
+    assert result.events_tested == 12
+    assert result.bounds_tested == 24
+    assert np.isclose(result.bounds_tested * result.per_bound_alpha, 0.05)
+    assert result.epsilon_lower >= 0
+
+
 def test_witness_comparison_requires_witness_path_and_bridge() -> None:
     groups = [
         Group("a+b", ("0", "0")),

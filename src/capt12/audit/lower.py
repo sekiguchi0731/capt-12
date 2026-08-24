@@ -102,27 +102,63 @@ def lower_audit(
     best = 0.0
     witness = None
     tested = 0
+    singleton_only = all(event_type == "singleton" for event_type, _ in events)
+    if singleton_only:
+        # The Criteo audit normally has more than two protected groups, hence
+        # singleton output events only.  Aggregate once so a large D_test is
+        # not rescanned for every ordered pair and output value.  This computes
+        # exactly the same successes/trials and CP bounds as the row-wise path.
+        audit_table = pd.DataFrame(
+            {
+                "__context__": test_context.astype(str).to_numpy(),
+                "__group__": test[group_col].to_numpy(),
+                "__output__": test[output_col].to_numpy(),
+            }
+        )
+        trial_counts = audit_table.groupby(
+            ["__context__", "__group__"], dropna=False, sort=False
+        ).size()
+        event_counts = audit_table.groupby(
+            ["__context__", "__group__", "__output__"], dropna=False, sort=False
+        ).size()
     for context_value in context_values:
-        stratum_mask = test_context == context_value
+        stratum_mask = None if singleton_only else test_context == context_value
         groups = groups_by_context[context_value]
         for left, right in permutations(groups, 2):
-            left_mask = stratum_mask & (test[group_col] == left)
-            right_mask = stratum_mask & (test[group_col] == right)
+            if singleton_only:
+                left_trials = int(trial_counts.get((str(context_value), left), 0))
+                right_trials = int(trial_counts.get((str(context_value), right), 0))
+            else:
+                assert stratum_mask is not None
+                left_mask = stratum_mask & (test[group_col] == left)
+                right_mask = stratum_mask & (test[group_col] == right)
+                left_trials = int(left_mask.sum())
+                right_trials = int(right_mask.sum())
             for event_type, value in events:
                 if event_type == "singleton":
-                    event = test[output_col].to_numpy() == value
                     event_description = {"type": event_type, "output": str(value)}
+                    if singleton_only:
+                        left_success = int(
+                            event_counts.get((str(context_value), left, value), 0)
+                        )
+                        right_success = int(
+                            event_counts.get((str(context_value), right, value), 0)
+                        )
+                    else:
+                        event = test[output_col].to_numpy() == value
+                        left_success = int(np.sum(event & left_mask.to_numpy()))
+                        right_success = int(np.sum(event & right_mask.to_numpy()))
                 else:
                     threshold, scores = value
                     event = scores >= threshold
                     event_description = {"type": event_type, "threshold": threshold}
-                left_success = int(np.sum(event & left_mask.to_numpy()))
-                right_success = int(np.sum(event & right_mask.to_numpy()))
+                    left_success = int(np.sum(event & left_mask.to_numpy()))
+                    right_success = int(np.sum(event & right_mask.to_numpy()))
                 lcb = _one_sided_cp(
-                    left_success, int(left_mask.sum()), per_bound_alpha, True
+                    left_success, left_trials, per_bound_alpha, True
                 )
                 ucb = _one_sided_cp(
-                    right_success, int(right_mask.sum()), per_bound_alpha, False
+                    right_success, right_trials, per_bound_alpha, False
                 )
                 epsilon = (
                     math.log(lcb / ucb)

@@ -142,6 +142,16 @@ distortion. A full-simplex/full-simplex edge in context `b` makes only `R_b`
 row-wise LDP; it does not force dense contexts to pay the same restriction.
 This is context-local graceful degradation.
 
+The decomposition and certificate arguments require only a fixed linear cost;
+they do not require Bernoulli KL specifically. The implementation therefore
+supports teacher KL, D_design empirical randomized log loss, and a predeclared
+linear blend. With a fixed decoder and output-token CTR probabilities, the
+empirical cost is the D_design average of
+`-y log(q_o) - (1-y) log(1-q_o)` for each input/output token pair, so the
+mechanism optimization remains an LP. D_model fits the teacher, D_design fixes
+the cost, D_cert constructs the privacy confidence sets, and D_test is reserved
+for final evaluation.
+
 One certificate is emitted for each public context and design. To obtain a
 simultaneous confidence statement across all `B` context tables within a
 design, each certificate uses `alpha_cert / |B|` (Bonferroni). The design-level

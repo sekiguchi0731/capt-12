@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from capt12.audit.lower import lower_audit
 from capt12.certification.artifact import (
     hash_array,
     make_certificate,
@@ -45,7 +46,7 @@ from capt12.experiments.simplex_completion import (
 )
 from capt12.experiments.utility_design import UtilityDesign, _build_designs
 from capt12.mechanisms.lp import ChannelSolution, lift_block_channel, solve_ldp_block_lp
-from capt12.pipeline import record_source_provenance
+from capt12.pipeline import _audit_certificate_comparison, record_source_provenance
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
 from capt12.utils.artifacts import (
     environment,
@@ -64,6 +65,8 @@ class ContextObjective:
     token_probabilities: np.ndarray
     block_cost: np.ndarray
     block_weights: np.ndarray
+    utility_objective: str = "teacher_kl"
+    empirical_label_count: int = 0
 
 
 @dataclass
@@ -150,6 +153,8 @@ def _context_objectives(
     stored_contexts = list(map(str, frozen["context_levels"]))
     stored_index = {value: index for index, value in enumerate(stored_contexts)}
     stored_weights = np.asarray(frozen["token_context_weights"], dtype=float)
+    stored_label_counts = np.asarray(frozen["token_context_label_count"], dtype=float)
+    stored_label_sums = np.asarray(frozen["token_context_label_sum"], dtype=float)
     global_weights = np.asarray(frozen["frequencies"], dtype=float)
     context_mass = {
         context: sum(
@@ -159,20 +164,48 @@ def _context_objectives(
         )
         for context in contexts
     }
-    distortion = config.get("distortion", "bernoulli_kl")
-    function = DISTORTION_REGISTRY[distortion]
+    utility_objective = str(config.get("context_utility_objective", "teacher_kl"))
+    empirical_weight = float(config.get("hybrid_empirical_weight", 0.5))
+    function = DISTORTION_REGISTRY["bernoulli_kl"]
     eta = float(config.get("distortion_clip", 1e-6))
     objectives: list[ContextObjective] = []
     for context in contexts:
         probabilities = probability_grid[context]
-        if distortion == "retention":
-            token_cost = 1 - np.eye(k)
-        else:
-            token_cost = function(
-                probabilities[:, None],
-                probabilities[None, :],
-                eta,
+        teacher_cost = function(
+            probabilities[:, None],
+            probabilities[None, :],
+            eta,
+        )
+        empirical_count = 0
+        if context in stored_index:
+            index = stored_index[context]
+            label_counts = stored_label_counts[:, index]
+            label_sums = stored_label_sums[:, index]
+            empirical_rate = np.divide(
+                label_sums,
+                label_counts,
+                out=probabilities.copy(),
+                where=label_counts > 0,
             )
+            empirical_count = int(label_counts.sum())
+        else:
+            empirical_rate = probabilities.copy()
+        clipped_output = np.clip(probabilities, eta, 1 - eta)
+        empirical_cost = (
+            empirical_rate[:, None] * -np.log(clipped_output[None, :])
+            + (1 - empirical_rate[:, None]) * -np.log(1 - clipped_output[None, :])
+        )
+        if utility_objective == "teacher_kl":
+            token_cost = teacher_cost
+        elif utility_objective == "empirical_logloss":
+            token_cost = empirical_cost
+        elif utility_objective == "hybrid_logloss_kl":
+            token_cost = (
+                empirical_weight * empirical_cost
+                + (1 - empirical_weight) * teacher_cost
+            )
+        else:  # validate_config normally makes this unreachable.
+            raise ValueError(f"unsupported context utility objective: {utility_objective}")
         if context in stored_index and context_mass[context] > 0:
             token_weights = stored_weights[:, stored_index[context]].copy()
             token_weights /= token_weights.sum()
@@ -197,6 +230,8 @@ def _context_objectives(
                 token_probabilities=probabilities,
                 block_cost=block_cost,
                 block_weights=block_weights,
+                utility_objective=utility_objective,
+                empirical_label_count=empirical_count,
             )
         )
     total_mass = sum(value.design_mass for value in objectives)
@@ -635,7 +670,9 @@ def _aggregate_rows(
                 "label": design.label,
                 "L": len(design.block_weights),
                 "method": method,
+                "utility_objective": cells[0].objective.utility_objective,
                 "aggregate_distortion": distortion,
+                "aggregate_objective_value": distortion,
             }
         )
     constant = next(
@@ -676,6 +713,8 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "L": len(cell.design.block_weights),
                 "public_context": cell.objective.context,
                 "design_mass": cell.objective.design_mass,
+                "utility_objective": cell.objective.utility_objective,
+                "empirical_design_label_count": cell.objective.empirical_label_count,
                 "expected_group_count": len(cell.groups),
                 "missing_group_count": len(cell.full_simplex_keys),
                 "rare_group_count": cell.rare_group_count,
@@ -1131,6 +1170,7 @@ def _evaluate_test(
                     "label": design.label,
                     "L": len(design.block_weights),
                     "method": method,
+                    "utility_objective": cells[0].objective.utility_objective,
                     "test_rows": len(test_frame),
                     "expected_randomized_log_loss": expected_loss_sum / len(test_frame),
                     "mixture_mean_log_loss": metrics["unweighted_log_loss"],
@@ -1138,6 +1178,180 @@ def _evaluate_test(
                     "PR_AUC": metrics["PR_AUC"],
                     "ECE": metrics["ECE"],
                     "calibration_ratio": metrics["calibration_ratio"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _sample_context_token_outputs(
+    frame: pd.DataFrame,
+    tokens: np.ndarray,
+    design: UtilityDesign,
+    cells: list[ContextCell],
+    *,
+    method: str,
+    context_column: str,
+    uniforms: np.ndarray,
+) -> np.ndarray:
+    """Sample the actually released token using fixed common random numbers."""
+    if len(frame) != len(tokens) or len(frame) != len(uniforms):
+        raise ValueError("audit frame, tokens, and uniforms must have equal length")
+    if method not in {"context_capt", "context_ldp"}:
+        raise ValueError(f"unsupported lower-audit method: {method}")
+    contexts = frame[context_column].astype(str).to_numpy()
+    outputs = np.empty(len(frame), dtype=int)
+    covered = np.zeros(len(frame), dtype=bool)
+    for cell in cells:
+        mask = contexts == cell.objective.context
+        if not mask.any():
+            continue
+        block_channel = (
+            cell.capt_solution.channel
+            if method == "context_capt"
+            else cell.ldp_solution.channel
+        )
+        token_channel = lift_block_channel(
+            block_channel,
+            design.assignment,
+            design.decoder,
+        )
+        positions = np.flatnonzero(mask)
+        context_tokens = tokens[positions]
+        # Group by the 64 possible input tokens.  Materializing an
+        # |D| x K probability/cumulative array can consume gigabytes on the
+        # full user-day audit; a 64-row CDF gives exactly the same samples.
+        cumulative = np.cumsum(token_channel, axis=1)
+        cumulative[:, -1] = 1.0
+        for token in np.unique(context_tokens):
+            token_positions = positions[context_tokens == token]
+            outputs[token_positions] = np.searchsorted(
+                cumulative[int(token)],
+                uniforms[token_positions],
+                side="left",
+            )
+        covered[mask] = True
+    if not covered.all():
+        missing = sorted(set(contexts[~covered]))
+        raise RuntimeError(f"audit contexts are missing from channel table: {missing}")
+    return outputs
+
+
+def _lower_audit_rows(
+    attack_frame: pd.DataFrame,
+    attack_tokens: np.ndarray,
+    test_frame: pd.DataFrame,
+    test_tokens: np.ndarray,
+    designs: list[UtilityDesign],
+    cells_by_design: dict[str, list[ContextCell]],
+    *,
+    profile: str,
+    context_column: str,
+    config: dict[str, Any],
+) -> pd.DataFrame:
+    """Audit CAPT and its matched context-LDP baseline on one fixed family.
+
+    Candidate contexts, protected groups, and singleton output events are fixed
+    exclusively on D_attack_train.  The configured alpha is split across the
+    two mechanism families; lower_audit then allocates its share across every
+    ordered comparison, event, stratum, and one-sided CP bound.
+    """
+    methods = ["context_capt", "context_ldp"]
+    family_alpha = float(config.get("alpha_audit", 0.05))
+    method_alpha = family_alpha / len(methods)
+    audit_seed = int(config.get("audit_seed", 2026))
+    random = np.random.default_rng(audit_seed)
+    attack_uniforms = random.random(len(attack_frame))
+    test_uniforms = random.random(len(test_frame))
+    group_column = "__audit_group__"
+    attributes = profile.split("+")
+    audit_columns = list(dict.fromkeys([*attributes, context_column]))
+    attack_base = attack_frame[audit_columns].copy()
+    test_base = test_frame[audit_columns].copy()
+    attack_base[group_column] = pd.Series(
+        list(map(tuple, attack_base[attributes].astype(str).to_numpy())),
+        index=attack_base.index,
+    )
+    test_base[group_column] = pd.Series(
+        list(map(tuple, test_base[attributes].astype(str).to_numpy())),
+        index=test_base.index,
+    )
+    rows: list[dict[str, Any]] = []
+    for design in designs:
+        cells = cells_by_design[design.name]
+        all_groups = [group for cell in cells for group in cell.groups]
+        all_adjacency = [pair for cell in cells for pair in cell.adjacency]
+        for method in methods:
+            attack = attack_base.copy()
+            test = test_base.copy()
+            attack["__audit_output__"] = _sample_context_token_outputs(
+                attack,
+                attack_tokens,
+                design,
+                cells,
+                method=method,
+                context_column=context_column,
+                uniforms=attack_uniforms,
+            )
+            test["__audit_output__"] = _sample_context_token_outputs(
+                test,
+                test_tokens,
+                design,
+                cells,
+                method=method,
+                context_column=context_column,
+                uniforms=test_uniforms,
+            )
+            audit = lower_audit(
+                attack,
+                test,
+                group_col=group_column,
+                output_col="__audit_output__",
+                context_cols=[context_column],
+                alpha=method_alpha,
+            )
+            gap, upper, comparable = _audit_certificate_comparison(
+                audit,
+                profile=profile,
+                groups=all_groups,
+                adjacency=all_adjacency,
+                config=config,
+                universal_upper=None,
+            )
+            path_exists = bool(audit.witness is not None and np.isfinite(upper))
+            if audit.witness is None:
+                comparison_reason = "no_positive_lower_witness"
+            elif not path_exists:
+                comparison_reason = "witness_endpoint_or_hybrid_path_missing"
+            elif comparable:
+                comparison_reason = "explicit_D_cert_to_D_test_population_bridge"
+            else:
+                comparison_reason = "no_D_cert_to_D_test_population_bridge"
+            rows.append(
+                {
+                    "design": design.name,
+                    "L": len(design.block_weights),
+                    "method": method,
+                    "utility_objective": cells[0].objective.utility_objective,
+                    "audit_seed": audit_seed,
+                    "attack_user_days": len(attack),
+                    "test_user_days": len(test),
+                    "audit_familywise_alpha": family_alpha,
+                    "audit_method_count": len(methods),
+                    "audit_method_alpha": method_alpha,
+                    "lower_epsilon": audit.epsilon_lower,
+                    "witness_json": json.dumps(audit.witness, sort_keys=True),
+                    "events_tested": audit.events_tested,
+                    "bounds_tested": audit.bounds_tested,
+                    "per_bound_alpha": audit.per_bound_alpha,
+                    "candidate_events": audit.candidate_events,
+                    "candidate_groups": audit.candidate_groups,
+                    "candidate_contexts": audit.candidate_contexts,
+                    "interpretation": audit.interpretation,
+                    "witness_path_exists": path_exists,
+                    "numeric_path_upper": upper,
+                    "certificate_comparable": comparable,
+                    "certificate_audit_gap": gap,
+                    "comparison_reason": comparison_reason,
                 }
             )
     return pd.DataFrame(rows)
@@ -1182,7 +1396,7 @@ def _plot_results(
         )
     design_labels = aggregate.drop_duplicates("design").set_index("design").loc[designs, "label"]
     axes[0].set_xticks(x, design_labels)
-    axes[0].set_ylabel("distortion reduction from context constant")
+    axes[0].set_ylabel("LP objective reduction from context constant")
     axes[0].set_title("Mass-weighted design objective")
     axes[0].axhline(0, color="#222222", linewidth=0.8)
     axes[0].legend(fontsize=8)
@@ -1235,9 +1449,30 @@ def _plot_results(
     axes[1].set_ylabel("D_design context mass")
     axes[1].set_title("Where context CAPT improves or degrades")
     axes[1].legend(fontsize=8)
+    for index, design in enumerate(designs):
+        degraded_mass = float(
+            state_frame.loc[
+                (state_frame["design"] == design)
+                & (state_frame["state"] == "LDP-degraded"),
+                "mass",
+            ].iloc[0]
+        )
+        axes[1].text(
+            index,
+            1.005,
+            f"LDP-degraded {100 * degraded_mass:.4f}%",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#6B7280",
+        )
     for axis in axes:
         axis.grid(axis="y", alpha=0.2, color="#777777")
-    fig.suptitle("Criteo constrained_2 public-context CAPT; unified sensitive unknown, epsilon=1")
+    objective = str(aggregate["utility_objective"].iloc[0])
+    fig.suptitle(
+        "Criteo constrained_2 public-context CAPT; "
+        f"unified sensitive unknown, epsilon=1; objective={objective}"
+    )
     fig.text(
         0.5,
         0.01,
@@ -1271,6 +1506,7 @@ def _write_report(
     aggregate: pd.DataFrame,
     contexts: pd.DataFrame,
     test_metrics: pd.DataFrame,
+    lower_audit_frame: pd.DataFrame,
     certificate_summary: pd.DataFrame,
     metadata: dict[str, Any],
     path: Path,
@@ -1282,6 +1518,7 @@ def _write_report(
         "",
         f"- Profile: `features_kv_bits_constrained_2`; epsilon=1; {metadata['context_count']} frozen public-context values.",
         f"- D_cert: {metadata['cert_user_days']:,} one-display-per-user-day contributions; D_test: {metadata['test_rows']:,} displays.",
+        f"- LP utility objective: `{metadata['context_utility_objective']}`; hybrid empirical weight: {metadata['hybrid_empirical_weight']:.6g}.",
         "- Online selector: Z, profile, and public context B only. The protected value A is not an online input.",
         "- `__MISSING__` and unseen sensitive values are coarsened to one `__UNKNOWN__` secret.",
         "- Each design allocates alpha/B to its context certificates, giving a Bonferroni simultaneous level of at least 95% across contexts.",
@@ -1298,10 +1535,10 @@ def _write_report(
             [
                 f"### {aggregate_design.iloc[0]['label']}",
                 "",
-                f"- Context CAPT distortion before repair: {aggregate_design.loc['context_capt_pre_repair', 'aggregate_distortion']:.9g}",
-                f"- Released context CAPT distortion after repair: {aggregate_design.loc['context_capt', 'aggregate_distortion']:.9g}",
-                f"- Context LDP distortion: {aggregate_design.loc['context_ldp', 'aggregate_distortion']:.9g}",
-                f"- CAPT utility advantage over context LDP: {aggregate_design.loc['context_ldp', 'aggregate_distortion'] - aggregate_design.loc['context_capt', 'aggregate_distortion']:.9g}",
+                f"- Context CAPT LP objective before repair: {aggregate_design.loc['context_capt_pre_repair', 'aggregate_objective_value']:.9g}",
+                f"- Released context CAPT LP objective after repair: {aggregate_design.loc['context_capt', 'aggregate_objective_value']:.9g}",
+                f"- Context LDP LP objective: {aggregate_design.loc['context_ldp', 'aggregate_objective_value']:.9g}",
+                f"- CAPT objective reduction versus context LDP: {aggregate_design.loc['context_ldp', 'aggregate_objective_value'] - aggregate_design.loc['context_capt', 'aggregate_objective_value']:.9g}",
                 f"- Contexts with strict CAPT advantage: {int(advantage.sum())}/{len(context_design)}, design mass {context_design.loc[advantage, 'design_mass'].sum():.9g}",
                 f"- Contexts with a full-simplex edge and exact LDP degradation: {int(degraded.sum())}/{len(context_design)}, design mass {context_design.loc[degraded, 'design_mass'].sum():.9g}",
                 f"- Channel table entries: {metadata['table_entries'][design]:,}",
@@ -1339,6 +1576,35 @@ def _write_report(
                 f"ROC-AUC {row['ROC_AUC']:.9g}; PR-AUC {row['PR_AUC']:.9g}; "
                 f"ECE {row['ECE']:.9g}; calibration ratio {row['calibration_ratio']:.9g}."
             )
+    if not lower_audit_frame.empty:
+        lines.extend(
+            [
+                "",
+                "## Privacy lower audit",
+                "",
+                f"The D_attack_train-fixed audit uses one sampled released token per user-day and reserves a familywise alpha of {metadata['audit_familywise_alpha']:.6g} across CAPT and matched context-LDP. Each method receives alpha={metadata['audit_method_alpha']:.6g}, which is further Bonferroni-allocated over all context strata, attack-fixed singleton events, ordered group comparisons, and both one-sided CP bounds.",
+                "",
+                "| method | epsilon lower | tests | bounds | path upper | comparable to D_cert upper? |",
+                "|:---|---:|---:|---:|---:|:---:|",
+            ]
+        )
+        for _, row in lower_audit_frame.iterrows():
+            upper = (
+                f"{row['numeric_path_upper']:.9g}"
+                if np.isfinite(row["numeric_path_upper"])
+                else "N/A"
+            )
+            lines.append(
+                f"| `{row['method']}` | {row['lower_epsilon']:.9g} | "
+                f"{int(row['events_tested']):,} | {int(row['bounds_tested']):,} | "
+                f"{upper} | {bool(row['certificate_comparable'])} |"
+            )
+        lines.extend(
+            [
+                "",
+                "These are lower leakage witnesses, not safety certificates. Without an explicit stationarity or shift-coverage bridge, the D_test lower and D_cert upper are reported side by side but are not subtracted into a certificate-audit gap.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -1403,6 +1669,8 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         robust_cut_formulation=config.get("robust_cut_formulation", "paired_witness"),
         resume_cutting_plane=config.get("resume_cutting_plane", False),
         context_designs=config.get("context_designs"),
+        context_utility_objective=config.get("context_utility_objective"),
+        hybrid_empirical_weight=config.get("hybrid_empirical_weight"),
     )
     progress.emit_environment()
     progress.emit("fixed_design_started", **process_memory_bytes())
@@ -1607,6 +1875,8 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             mass_sum=sum(value.design_mass for value in objectives),
             min_context_mass=min(value.design_mass for value in objectives),
             max_context_mass=max(value.design_mass for value in objectives),
+            utility_objective=config["context_utility_objective"],
+            empirical_design_label_count=sum(value.empirical_label_count for value in objectives),
             **process_memory_bytes(),
         )
         cells, shared_ldp, shared_capt, _ = _solve_design(
@@ -1713,6 +1983,72 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         **process_memory_bytes(),
     )
 
+    progress.emit(
+        "lower_audit_data_load_started",
+        days=config["splits"]["D_attack_train"],
+        alpha_audit=config["alpha_audit"],
+        audit_seed=config["audit_seed"],
+        **process_memory_bytes(),
+    )
+    audit_started = time.perf_counter()
+    attack_source = load_parquet_sample(
+        data_root=config["data_root"],
+        columns=columns,
+        days=config["splits"]["D_attack_train"],
+    )
+    attack_source = frozen["mapper"].transform(attack_source)
+    attack_audit = select_one_display_per_user_day(
+        attack_source,
+        user_col=user_col,
+        day_col="day_int",
+        id_col=id_col,
+    )
+    test_audit = select_one_display_per_user_day(
+        test_frame,
+        user_col=user_col,
+        day_col="day_int",
+        id_col=id_col,
+    )
+    attack_audit_tokens = frozen["encoder"].transform(attack_audit)
+    test_audit_tokens = frozen["encoder"].transform(test_audit)
+    attack_source_rows = len(attack_source)
+    del attack_source
+    gc.collect()
+    progress.emit(
+        "lower_audit_started",
+        attack_source_rows=attack_source_rows,
+        attack_user_days=len(attack_audit),
+        test_source_rows=len(test_frame),
+        test_user_days=len(test_audit),
+        method_count=2,
+        familywise_alpha=config["alpha_audit"],
+        method_alpha=float(config["alpha_audit"]) / 2,
+        **process_memory_bytes(),
+    )
+    lower_audit_frame = _lower_audit_rows(
+        attack_audit,
+        attack_audit_tokens,
+        test_audit,
+        test_audit_tokens,
+        designs,
+        cells_by_design,
+        profile=profile,
+        context_column=context_column,
+        config=config,
+    )
+    progress.emit(
+        "lower_audit_finished",
+        stage_seconds=time.perf_counter() - audit_started,
+        result_rows=len(lower_audit_frame),
+        max_lower_epsilon=float(lower_audit_frame["lower_epsilon"].max()),
+        total_tests=int(lower_audit_frame["events_tested"].sum()),
+        total_bounds=int(lower_audit_frame["bounds_tested"].sum()),
+        comparable_rows=int(lower_audit_frame["certificate_comparable"].sum()),
+        **process_memory_bytes(),
+    )
+    del attack_audit, test_audit, attack_audit_tokens, test_audit_tokens
+    gc.collect()
+
     progress.emit("result_table_write_started", **process_memory_bytes())
     context_frame = pd.DataFrame(context_rows).merge(
         certificate_summary,
@@ -1732,9 +2068,11 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     )
     certificate_summary.to_csv(path / "tables" / "certificate_summary.csv", index=False)
     test_metrics.to_csv(path / "tables" / "test_metrics.csv", index=False)
+    lower_audit_frame.to_csv(path / "tables" / "lower_audit.csv", index=False)
     context_frame.to_parquet(path / "context_results.parquet", index=False)
     aggregate_frame.to_parquet(path / "aggregate_results.parquet", index=False)
     test_metrics.to_parquet(path / "test_metrics.parquet", index=False)
+    lower_audit_frame.to_parquet(path / "lower_audit.parquet", index=False)
     repair_diagnostic_frame.to_parquet(
         path / "privacy_repair_offending_constraints.parquet",
         index=False,
@@ -1747,6 +2085,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         repair_offending_constraint_rows=len(repair_diagnostic_frame),
         certificate_result_rows=len(certificate_summary),
         test_metric_rows=len(test_metrics),
+        lower_audit_rows=len(lower_audit_frame),
         **process_memory_bytes(),
     )
     progress.emit("figure_render_started", **process_memory_bytes())
@@ -1765,10 +2104,20 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "source_git_sha": config["source_git_sha"],
         "profile": profile,
         "public_context_column": context_column,
+        "context_utility_objective": config["context_utility_objective"],
+        "hybrid_empirical_weight": config["hybrid_empirical_weight"],
         "context_count": int(context_frame["public_context"].nunique()),
         "cert_source_rows": len(cert_source),
         "cert_user_days": len(cert_frame),
         "test_rows": len(test_frame),
+        "audit_attack_user_days": int(lower_audit_frame["attack_user_days"].max()),
+        "audit_test_user_days": int(lower_audit_frame["test_user_days"].max()),
+        "audit_familywise_alpha": config["alpha_audit"],
+        "audit_method_alpha": float(config["alpha_audit"]) / 2,
+        "audit_seed": config["audit_seed"],
+        "max_lower_audit_epsilon": float(lower_audit_frame["lower_epsilon"].max()),
+        "lower_audit_tests": int(lower_audit_frame["events_tested"].sum()),
+        "lower_audit_bounds": int(lower_audit_frame["bounds_tested"].sum()),
         "designs": [design.name for design in designs],
         "table_entries": {
             design.name: int(
@@ -1831,6 +2180,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         aggregate_frame,
         context_frame,
         test_metrics,
+        lower_audit_frame,
         certificate_summary,
         metadata,
         path,

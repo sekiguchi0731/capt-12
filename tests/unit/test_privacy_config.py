@@ -129,12 +129,15 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
             "configs/criteo_context_stratified.yaml",
             "--frozen-design-seed",
             "7",
+            "--utility-objective",
+            "empirical_logloss",
         ],
     )
     assert result.exit_code == 0, result.output
     assert captured["frozen_design_seed"] == 7
     assert captured["epsilon"] == 1.0
     assert captured["context_designs"] == ["joint_kmedoids_cost_medoid_L16"]
+    assert captured["context_utility_objective"] == "empirical_logloss"
 
 
 def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
@@ -157,11 +160,17 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "configs/criteo_context_stratified.yaml",
             "--frozen-design-seeds",
             "7,2,7,4",
+            "--utility-objective",
+            "hybrid_logloss_kl",
+            "--hybrid-empirical-weight",
+            "0.75",
         ],
     )
     assert result.exit_code == 0, result.output
     assert captured["seeds"] == [2, 4, 7]
     assert captured["config"]["epsilon"] == 1.0
+    assert captured["config"]["context_utility_objective"] == "hybrid_logloss_kl"
+    assert captured["config"]["hybrid_empirical_weight"] == 0.75
     assert "sol_seed_stability_review_bundle.zip" in result.output
 
 
@@ -184,6 +193,15 @@ def test_resolve_run_id_changes_with_frozen_design_seed(monkeypatch) -> None:
         assert result.exit_code == 0, result.output
         payloads.append(json.loads(result.output))
     assert payloads[0]["run_id"] != payloads[1]["run_id"]
+
+
+def test_context_utility_objective_validation() -> None:
+    base = load_config("configs/criteo_context_stratified.yaml")
+    assert base["context_utility_objective"] == "teacher_kl"
+    with pytest.raises(ValueError, match="context_utility_objective"):
+        validate_config({**base, "context_utility_objective": "maximize_ctr"})
+    with pytest.raises(ValueError, match="hybrid_empirical_weight"):
+        validate_config({**base, "hybrid_empirical_weight": 1.1})
 
 
 def test_splits_reject_day_and_row_overlap() -> None:

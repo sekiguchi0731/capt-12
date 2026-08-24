@@ -225,6 +225,40 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if frozen_design_seed < 0:
             raise ValueError("frozen_design_seed must be nonnegative")
         cfg["frozen_design_seed"] = frozen_design_seed
+    context_experiment = public_context_policy == "stratified" or any(
+        key in cfg
+        for key in (
+            "context_utility_objective",
+            "hybrid_empirical_weight",
+            "alpha_audit",
+            "audit_seed",
+        )
+    )
+    if context_experiment:
+        utility_objective = str(cfg.get("context_utility_objective", "teacher_kl"))
+        valid_utility_objectives = {
+            "teacher_kl",
+            "empirical_logloss",
+            "hybrid_logloss_kl",
+        }
+        if utility_objective not in valid_utility_objectives:
+            raise ValueError(
+                "context_utility_objective must be teacher_kl, empirical_logloss, "
+                "or hybrid_logloss_kl"
+            )
+        empirical_weight = float(cfg.get("hybrid_empirical_weight", 0.5))
+        if not 0 <= empirical_weight <= 1:
+            raise ValueError("hybrid_empirical_weight must be in [0, 1]")
+        cfg["context_utility_objective"] = utility_objective
+        cfg["hybrid_empirical_weight"] = empirical_weight
+        alpha_audit = float(cfg.get("alpha_audit", cfg.get("alpha_cert", 0.05)))
+        if not 0 < alpha_audit < 1:
+            raise ValueError("alpha_audit must be in (0, 1)")
+        cfg["alpha_audit"] = alpha_audit
+        audit_seed = int(cfg.get("audit_seed", 2026))
+        if audit_seed < 0:
+            raise ValueError("audit_seed must be nonnegative")
+        cfg["audit_seed"] = audit_seed
     return cfg
 
 
