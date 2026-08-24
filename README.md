@@ -103,15 +103,28 @@ run the seeds sequentially and aggregate them in one command:
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
   --frozen-design-seeds 0,1,2,3,4 \
-  --utility-objective teacher_kl
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
 ```
 
-The LP objective can be changed without changing the frozen support,
-partition/decoder, privacy constraints, or certificate definition. Supported
-values are `teacher_kl`, `empirical_logloss` (D_design click labels only), and
-`hybrid_logloss_kl`; the hybrid additionally accepts
-`--hybrid-empirical-weight 0.5`. Never select the objective or hybrid weight
-from D_test.
+The R LP objective supports `teacher_kl`, `empirical_logloss` (D_design click
+labels only), and `hybrid_logloss_kl`; the hybrid additionally accepts
+`--hybrid-empirical-weight 0.5`. Partition/decoder construction is selected
+independently with `--representation-mode`:
+
+- `teacher_kl_fixed` preserves the original teacher-KL partition/decoder. It
+  is the R-objective-only ablation when paired with an empirical or hybrid R.
+- `objective_aligned` builds the common partition/decoder from
+  `C_repr(z,o)=sum_b P(b|z) C_b(z,o)`, using the same selected utility estimand
+  that each public-context R LP uses.
+
+Thus the cost-matched empirical main condition is
+`--utility-objective empirical_logloss --representation-mode
+objective_aligned`; the corresponding hybrid condition uses
+`--utility-objective hybrid_logloss_kl --representation-mode
+objective_aligned`. Support, adjacency, confidence sets, and certificate
+definitions do not change between these modes. Never select the objective,
+representation mode, or hybrid weight from D_test.
 
 The stability command keeps epsilon=1 and L=16 fixed. It reuses completed runs
 from the same source commit, writes per-seed and across-seed CSVs plus one
@@ -119,6 +132,12 @@ stability figure/report and D_attack_train-fixed privacy lower audits under
 `outputs/context_stratified_seed_summaries/`, and
 creates `sol_seed_stability_review_bundle.zip` containing all constituent
 mechanisms and certificates for one-file review.
+
+For empirical and hybrid objectives, plots normalize the CAPT-LDP gain by the
+excess objective after subtracting the channel-invariant empirical entropy
+floor. Exact raw objective, floor, excess objective, and absolute gain in
+micro-objective-units per display are all retained in the CSVs; this reporting
+normalization does not alter the LP.
 
 Run the substantially larger L=K=64 positive control separately, so a stopped
 positive-control solve cannot discard the completed primary artifacts:

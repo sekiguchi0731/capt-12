@@ -4,6 +4,7 @@ sensitive_fallback_policy: unified_unknown
 sensitive_unknown_value: __UNKNOWN__
 public_context_policy: stratified
 context_utility_objective: teacher_kl
+context_representation_mode: teacher_kl_fixed
 hybrid_empirical_weight: 0.5
 alpha_audit: 0.05
 audit_seed: 2026

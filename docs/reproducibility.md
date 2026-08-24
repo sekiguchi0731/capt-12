@@ -184,7 +184,8 @@ condition, use:
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
   --frozen-design-seeds 0,1,2,3,4 \
-  --utility-objective teacher_kl
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
 ```
 
 The seeds run sequentially to avoid multiplying local memory use. The complete
@@ -195,12 +196,28 @@ expands every per-seed review bundle. This experiment changes only
 `frozen_design_seed`; it is a design-sensitivity check, not a resampling or
 temporal-split uncertainty estimate.
 
-Use `--utility-objective empirical_logloss` to build the fixed linear LP cost
+Use `--utility-objective empirical_logloss` to build the fixed linear R LP cost
 from D_design click labels, or `--utility-objective hybrid_logloss_kl
---hybrid-empirical-weight 0.5` for a predeclared blend with teacher KL. The
-partition, decoder, support, adjacency, D_cert confidence problem, and D_test
-evaluation remain unchanged. D_test must not be used to choose the objective
-or hybrid weight.
+--hybrid-empirical-weight 0.5` for a predeclared blend with teacher KL.
+`--representation-mode teacher_kl_fixed` deliberately leaves partition and
+decoder at the teacher-KL design, giving an R-only ablation.
+`--representation-mode objective_aligned` instead constructs the common
+partition/decoder using the context-aggregated form of the same objective.
+For example, the cost-matched empirical condition is:
+
+```bash
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified.yaml \
+  --frozen-design-seeds 0,1,2,3,4 \
+  --utility-objective empirical_logloss \
+  --representation-mode objective_aligned
+```
+
+Support, adjacency, D_cert confidence problem, and D_test evaluation remain
+unchanged. D_test must not be used to choose the objective, representation
+mode, or hybrid weight. For empirical/hybrid reporting, the stability figure
+uses the excess objective after subtracting its channel-invariant entropy
+floor; raw values and absolute micro-unit differences remain in the tables.
 
 Every constituent run also samples the released context CAPT and matched
 context-LDP mechanisms once per D_attack_train/D_test user-day and writes

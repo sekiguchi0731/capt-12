@@ -191,9 +191,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("solver_verbose must be a boolean")
     cut_formulation = cfg.get("robust_cut_formulation", "paired_witness")
     if cut_formulation not in {"paired_witness", "shared_support_bounds"}:
-        raise ValueError(
-            "robust_cut_formulation must be paired_witness or shared_support_bounds"
-        )
+        raise ValueError("robust_cut_formulation must be paired_witness or shared_support_bounds")
     if not isinstance(cfg.get("resume_cutting_plane", False), bool):
         raise ValueError("resume_cutting_plane must be a boolean")
     checkpoint_every = int(cfg.get("cutting_plane_checkpoint_every", 1))
@@ -207,15 +205,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         }
         context_designs = list(dict.fromkeys(map(str, cfg["context_designs"])))
         if len(context_designs) != 1 or context_designs[0] not in valid_context_designs:
-            raise ValueError(
-                "context_designs must select exactly one prescribed L16 or L64 design"
-            )
+            raise ValueError("context_designs must select exactly one prescribed L16 or L64 design")
         cfg["context_designs"] = context_designs
     if "certificate_channel_repair" in cfg:
         if cfg["certificate_channel_repair"] != "uniform_full_support_mixing":
-            raise ValueError(
-                "certificate_channel_repair must be uniform_full_support_mixing"
-            )
+            raise ValueError("certificate_channel_repair must be uniform_full_support_mixing")
         repair_margin = float(cfg.get("certificate_repair_margin", 1e-10))
         if not 0 < repair_margin <= 1e-8:
             raise ValueError("certificate_repair_margin must be in (0, 1e-8]")
@@ -229,6 +223,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         key in cfg
         for key in (
             "context_utility_objective",
+            "context_representation_mode",
             "hybrid_empirical_weight",
             "alpha_audit",
             "audit_seed",
@@ -251,6 +246,12 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("hybrid_empirical_weight must be in [0, 1]")
         cfg["context_utility_objective"] = utility_objective
         cfg["hybrid_empirical_weight"] = empirical_weight
+        representation_mode = str(cfg.get("context_representation_mode", "teacher_kl_fixed"))
+        if representation_mode not in {"teacher_kl_fixed", "objective_aligned"}:
+            raise ValueError(
+                "context_representation_mode must be teacher_kl_fixed or objective_aligned"
+            )
+        cfg["context_representation_mode"] = representation_mode
         alpha_audit = float(cfg.get("alpha_audit", cfg.get("alpha_cert", 0.05)))
         if not 0 < alpha_audit < 1:
             raise ValueError("alpha_audit must be in (0, 1)")

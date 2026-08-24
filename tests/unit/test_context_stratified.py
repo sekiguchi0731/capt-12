@@ -9,7 +9,7 @@ from capt12.experiments.context_stratified import (
     aggregate_context_objective,
 )
 from capt12.experiments.simplex_completion import _objective
-from capt12.experiments.utility_design import UtilityDesign
+from capt12.experiments.utility_design import UtilityDesign, _build_designs
 from capt12.mechanisms.diagnostics import utility_informativeness
 from capt12.privacy.adjacency import Group
 from capt12.utils.progress import ProgressLogger
@@ -100,6 +100,46 @@ def test_context_objective_switches_to_empirical_design_log_loss() -> None:
     assert not np.allclose(teacher.block_cost, empirical.block_cost)
 
 
+def test_objective_aligned_mode_changes_joint_partition_or_decoder() -> None:
+    token_count = 32
+    positions = np.arange(token_count, dtype=float)
+    teacher_cost = np.abs(positions[:, None] - positions[None, :])
+    permutation = np.ravel(np.column_stack((np.arange(16), np.arange(16, 32))))
+    aligned_positions = np.empty(token_count, dtype=float)
+    aligned_positions[permutation] = positions
+    aligned_cost = np.abs(aligned_positions[:, None] - aligned_positions[None, :])
+    frozen = {
+        "frequencies": np.full(token_count, 1 / token_count),
+        "objective_weights": np.full(token_count, 1 / token_count),
+        "token_scores": np.linspace(0.01, 0.99, token_count),
+        "token_cost": teacher_cost,
+        "representation_token_cost": aligned_cost,
+        "assignment": np.repeat(np.arange(16), 2),
+        "decoder": np.repeat(np.eye(16), 2, axis=1) / 2,
+    }
+    fixed = _build_designs(
+        frozen,
+        {"context_representation_mode": "teacher_kl_fixed"},
+    )
+    aligned = _build_designs(
+        frozen,
+        {
+            "context_representation_mode": "objective_aligned",
+            "context_utility_objective": "empirical_logloss",
+        },
+    )
+    fixed_joint = next(item for item in fixed if item.name == "joint_kmedoids_cost_medoid_L16")
+    aligned_joint = next(item for item in aligned if item.name == "joint_kmedoids_cost_medoid_L16")
+    assert aligned_joint.representation_objective == "empirical_logloss"
+    assert aligned_joint.representation_token_cost_hash != (
+        fixed_joint.representation_token_cost_hash
+    )
+    assert not (
+        np.array_equal(aligned_joint.assignment, fixed_joint.assignment)
+        and np.array_equal(aligned_joint.decoder, fixed_joint.decoder)
+    )
+
+
 def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
     cost = np.array([[0.0, 1.0], [1.0, 0.0]])
     weights = np.array([0.5, 0.5])
@@ -115,8 +155,7 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
         diagnostic=utility_informativeness(cost, weights),
     )
     objectives = [
-        ContextObjective(context, 0.5, weights, cost, weights)
-        for context in ("morning", "evening")
+        ContextObjective(context, 0.5, weights, cost, weights) for context in ("morning", "evening")
     ]
     groups = [
         Group("secret", (value,), context)

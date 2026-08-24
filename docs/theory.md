@@ -152,6 +152,23 @@ mechanism optimization remains an LP. D_model fits the teacher, D_design fixes
 the cost, D_cert constructs the privacy confidence sets, and D_test is reserved
 for final evaluation.
 
+Because the partition and decoder are common across public contexts, an
+objective-aligned representation uses
+
+`C_repr(z,o) = sum_b P_Ddesign(b | z) C_b(z,o)`.
+
+Partition and common decoder are constructed from `C_repr`, while each
+context-indexed channel `R_b` is optimized with its own `C_b`. Thus all three
+stages target the same utility estimand without allowing `B`-specific decoders
+or using the protected value online. The legacy `teacher_kl_fixed` mode is a
+strictly defined ablation in which only R's objective changes.
+
+For empirical log loss, `C_b(z,o)` decomposes into the empirical binary entropy
+of the input cell plus `KL(Ber(q_hat_zb) || Ber(p_ob))`. The entropy term is
+independent of the channel. It may be subtracted when normalizing reported
+relative improvements, but is retained in the LP cost; absolute optimizer and
+certificate results are unchanged.
+
 One certificate is emitted for each public context and design. To obtain a
 simultaneous confidence statement across all `B` context tables within a
 design, each certificate uses `alpha_cert / |B|` (Bonferroni). The design-level

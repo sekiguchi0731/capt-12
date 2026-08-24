@@ -30,7 +30,7 @@ from capt12.confidence.boxes import ConfidenceBox
 from capt12.config import validate_config
 from capt12.data.loader import assert_disjoint_splits, assert_no_row_overlap, load_parquet_sample
 from capt12.data.preprocessing import build_group_histograms
-from capt12.distortions.registry import DISTORTION_REGISTRY, block_cost_matrix
+from capt12.distortions.registry import block_cost_matrix, conditional_utility_cost
 from capt12.evaluation.metrics import prediction_metrics
 from capt12.experiments.fixed_support import (
     _expected_frame_from_cartesian,
@@ -67,6 +67,7 @@ class ContextObjective:
     block_weights: np.ndarray
     utility_objective: str = "teacher_kl"
     empirical_label_count: int = 0
+    objective_constant_floor: float = 0.0
 
 
 @dataclass
@@ -166,46 +167,27 @@ def _context_objectives(
     }
     utility_objective = str(config.get("context_utility_objective", "teacher_kl"))
     empirical_weight = float(config.get("hybrid_empirical_weight", 0.5))
-    function = DISTORTION_REGISTRY["bernoulli_kl"]
     eta = float(config.get("distortion_clip", 1e-6))
     objectives: list[ContextObjective] = []
     for context in contexts:
         probabilities = probability_grid[context]
-        teacher_cost = function(
-            probabilities[:, None],
-            probabilities[None, :],
-            eta,
-        )
         empirical_count = 0
         if context in stored_index:
             index = stored_index[context]
             label_counts = stored_label_counts[:, index]
             label_sums = stored_label_sums[:, index]
-            empirical_rate = np.divide(
-                label_sums,
-                label_counts,
-                out=probabilities.copy(),
-                where=label_counts > 0,
-            )
             empirical_count = int(label_counts.sum())
         else:
-            empirical_rate = probabilities.copy()
-        clipped_output = np.clip(probabilities, eta, 1 - eta)
-        empirical_cost = (
-            empirical_rate[:, None] * -np.log(clipped_output[None, :])
-            + (1 - empirical_rate[:, None]) * -np.log(1 - clipped_output[None, :])
+            label_counts = np.zeros(k, dtype=float)
+            label_sums = np.zeros(k, dtype=float)
+        token_cost, constant_floor_by_token = conditional_utility_cost(
+            probabilities,
+            label_counts,
+            label_sums,
+            objective=utility_objective,
+            eta=eta,
+            hybrid_empirical_weight=empirical_weight,
         )
-        if utility_objective == "teacher_kl":
-            token_cost = teacher_cost
-        elif utility_objective == "empirical_logloss":
-            token_cost = empirical_cost
-        elif utility_objective == "hybrid_logloss_kl":
-            token_cost = (
-                empirical_weight * empirical_cost
-                + (1 - empirical_weight) * teacher_cost
-            )
-        else:  # validate_config normally makes this unreachable.
-            raise ValueError(f"unsupported context utility objective: {utility_objective}")
         if context in stored_index and context_mass[context] > 0:
             token_weights = stored_weights[:, stored_index[context]].copy()
             token_weights /= token_weights.sum()
@@ -232,6 +214,7 @@ def _context_objectives(
                 block_weights=block_weights,
                 utility_objective=utility_objective,
                 empirical_label_count=empirical_count,
+                objective_constant_floor=float(token_weights @ constant_floor_by_token),
             )
         )
     total_mass = sum(value.design_mass for value in objectives)
@@ -514,9 +497,7 @@ def _solve_design(
             ),
             post_repair_realized_epsilon=repair.post_verification.realized_epsilon,
             post_repair_max_violation=repair.post_verification.max_violation,
-            conservative_realized_epsilon=(
-                repair.conservative_verification.realized_epsilon
-            ),
+            conservative_realized_epsilon=(repair.conservative_verification.realized_epsilon),
             conservative_max_violation=repair.conservative_verification.max_violation,
             min_channel_entry=repair.min_entry,
             max_row_sum_error=repair.max_row_sum_error,
@@ -614,9 +595,7 @@ def _solve_design(
         heartbeat_seconds=heartbeat_seconds,
         cut_formulation=cut_formulation,
         checkpoint_path=(
-            checkpoint_dir / design.name / "shared.npz"
-            if checkpoint_dir is not None
-            else None
+            checkpoint_dir / design.name / "shared.npz" if checkpoint_dir is not None else None
         ),
         resume_checkpoint=resume_checkpoint,
         checkpoint_every=checkpoint_every,
@@ -653,6 +632,9 @@ def _aggregate_rows(
         "shared_ldp": lambda cell: shared_ldp.channel,
         "shared_capt": lambda cell: shared_capt.channel,
     }
+    constant_floor = sum(
+        cell.objective.design_mass * cell.objective.objective_constant_floor for cell in cells
+    )
     rows = []
     for method, channel_for in methods.items():
         distortion = sum(
@@ -671,8 +653,13 @@ def _aggregate_rows(
                 "L": len(design.block_weights),
                 "method": method,
                 "utility_objective": cells[0].objective.utility_objective,
+                "representation_mode": design.representation_mode,
+                "representation_objective": design.representation_objective,
+                "representation_token_cost_hash": design.representation_token_cost_hash,
                 "aggregate_distortion": distortion,
                 "aggregate_objective_value": distortion,
+                "aggregate_objective_constant_floor": constant_floor,
+                "aggregate_excess_objective": max(0.0, distortion - constant_floor),
             }
         )
     constant = next(
@@ -706,6 +693,7 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
             cell.objective.block_cost,
             cell.objective.block_weights,
         )
+        floor = cell.objective.objective_constant_floor
         rows.append(
             {
                 "design": cell.design.name,
@@ -714,7 +702,11 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "public_context": cell.objective.context,
                 "design_mass": cell.objective.design_mass,
                 "utility_objective": cell.objective.utility_objective,
+                "representation_mode": cell.design.representation_mode,
+                "representation_objective": cell.design.representation_objective,
+                "representation_token_cost_hash": (cell.design.representation_token_cost_hash),
                 "empirical_design_label_count": cell.objective.empirical_label_count,
+                "objective_constant_floor": floor,
                 "expected_group_count": len(cell.groups),
                 "missing_group_count": len(cell.full_simplex_keys),
                 "rare_group_count": cell.rare_group_count,
@@ -724,6 +716,10 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "D_context_ldp": ldp,
                 "D_context_capt": capt,
                 "D_context_capt_pre_repair": raw_capt,
+                "excess_context_constant": max(0.0, constant - floor),
+                "excess_context_ldp": max(0.0, ldp - floor),
+                "excess_context_capt": max(0.0, capt - floor),
+                "excess_context_capt_pre_repair": max(0.0, raw_capt - floor),
                 "capt_gain_over_constant": constant - capt,
                 "capt_advantage_over_context_ldp": ldp - capt,
                 "capt_advantage_over_context_ldp_pre_repair": ldp - raw_capt,
@@ -741,9 +737,7 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "robust_valid": cell.capt_verification.valid,
                 "robust_checked_constraints": cell.capt_verification.checked_constraints,
                 "robust_max_violation": cell.capt_verification.max_violation,
-                "pre_repair_realized_epsilon": (
-                    cell.raw_capt_verification.realized_epsilon
-                ),
+                "pre_repair_realized_epsilon": (cell.raw_capt_verification.realized_epsilon),
                 "pre_repair_max_violation": cell.raw_capt_verification.max_violation,
                 "pre_repair_infinite_constraint_count": (
                     cell.capt_repair.pre_infinite_constraint_count
@@ -754,9 +748,7 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "post_repair_realized_epsilon": (
                     cell.capt_repair.post_verification.realized_epsilon
                 ),
-                "post_repair_max_violation": (
-                    cell.capt_repair.post_verification.max_violation
-                ),
+                "post_repair_max_violation": (cell.capt_repair.post_verification.max_violation),
                 "conservative_realized_epsilon": (
                     cell.capt_repair.conservative_verification.realized_epsilon
                 ),
@@ -767,9 +759,7 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                     cell.capt_repair.post_zero_denominator_positive_numerator_count
                 ),
                 "released_channel_min_entry": cell.capt_repair.min_entry,
-                "released_channel_max_row_sum_error": (
-                    cell.capt_repair.max_row_sum_error
-                ),
+                "released_channel_max_row_sum_error": (cell.capt_repair.max_row_sum_error),
                 "capt_solver_runtime_seconds": cell.capt_solution.solver.runtime_seconds,
                 "ldp_solver_runtime_seconds": cell.ldp_solution.solver.runtime_seconds,
             }
@@ -815,9 +805,7 @@ def _privacy_repair_diagnostic_rows(
                     "robust_denominator": value.minimum,
                     "additive_violation": value.additive_violation,
                     "channel_column_exact_zero_count": len(zero_indices),
-                    "channel_column_exact_zero_row_indices": json.dumps(
-                        zero_indices.tolist()
-                    ),
+                    "channel_column_exact_zero_row_indices": json.dumps(zero_indices.tolist()),
                     "channel_column_tiny_positive_count": len(tiny_indices),
                     "channel_column_tiny_positive_entries": json.dumps(
                         [
@@ -884,7 +872,7 @@ def _channel_manifest(
     cells_by_design: dict[str, list[ContextCell]],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "version": 2,
+        "version": 3,
         "profile": profile,
         "public_context_column": context_column,
         "channel_selector_inputs": ["Z", "profile", context_column],
@@ -910,6 +898,9 @@ def _channel_manifest(
         )
         payload["designs"][design.name] = {
             "L": len(design.block_weights),
+            "representation_mode": design.representation_mode,
+            "representation_objective": design.representation_objective,
+            "representation_token_cost_hash": design.representation_token_cost_hash,
             "assignment_hash": hash_array(design.assignment),
             "decoder_hash": hash_array(design.decoder),
             "table_entries": int(len(ordered) * len(design.block_weights) ** 2),
@@ -1013,9 +1004,7 @@ def _write_certificates(
                         cell.capt_repair.post_zero_denominator_positive_numerator_count
                     ),
                     "released_channel_min_entry": cell.capt_repair.min_entry,
-                    "released_channel_max_row_sum_error": (
-                        cell.capt_repair.max_row_sum_error
-                    ),
+                    "released_channel_max_row_sum_error": (cell.capt_repair.max_row_sum_error),
                     "conservative_decimal_verification": asdict(
                         cell.capt_repair.conservative_verification
                     ),
@@ -1171,6 +1160,8 @@ def _evaluate_test(
                     "L": len(design.block_weights),
                     "method": method,
                     "utility_objective": cells[0].objective.utility_objective,
+                    "representation_mode": design.representation_mode,
+                    "representation_objective": design.representation_objective,
                     "test_rows": len(test_frame),
                     "expected_randomized_log_loss": expected_loss_sum / len(test_frame),
                     "mixture_mean_log_loss": metrics["unweighted_log_loss"],
@@ -1206,9 +1197,7 @@ def _sample_context_token_outputs(
         if not mask.any():
             continue
         block_channel = (
-            cell.capt_solution.channel
-            if method == "context_capt"
-            else cell.ldp_solution.channel
+            cell.capt_solution.channel if method == "context_capt" else cell.ldp_solution.channel
         )
         token_channel = lift_block_channel(
             block_channel,
@@ -1332,6 +1321,8 @@ def _lower_audit_rows(
                     "L": len(design.block_weights),
                     "method": method,
                     "utility_objective": cells[0].objective.utility_objective,
+                    "representation_mode": design.representation_mode,
+                    "representation_objective": design.representation_objective,
                     "audit_seed": audit_seed,
                     "attack_user_days": len(attack),
                     "test_user_days": len(test),
@@ -1452,8 +1443,7 @@ def _plot_results(
     for index, design in enumerate(designs):
         degraded_mass = float(
             state_frame.loc[
-                (state_frame["design"] == design)
-                & (state_frame["state"] == "LDP-degraded"),
+                (state_frame["design"] == design) & (state_frame["state"] == "LDP-degraded"),
                 "mass",
             ].iloc[0]
         )
@@ -1519,6 +1509,7 @@ def _write_report(
         f"- Profile: `features_kv_bits_constrained_2`; epsilon=1; {metadata['context_count']} frozen public-context values.",
         f"- D_cert: {metadata['cert_user_days']:,} one-display-per-user-day contributions; D_test: {metadata['test_rows']:,} displays.",
         f"- LP utility objective: `{metadata['context_utility_objective']}`; hybrid empirical weight: {metadata['hybrid_empirical_weight']:.6g}.",
+        f"- Partition/decoder representation mode: `{metadata['context_representation_mode']}`; representation objective: `{metadata['representation_objective']}`.",
         "- Online selector: Z, profile, and public context B only. The protected value A is not an online input.",
         "- `__MISSING__` and unseen sensitive values are coarsened to one `__UNKNOWN__` secret.",
         "- Each design allocates alpha/B to its context certificates, giving a Bonferroni simultaneous level of at least 95% across contexts.",
@@ -1531,6 +1522,16 @@ def _write_report(
         context_design = contexts.loc[contexts["design"] == design]
         advantage = context_design["capt_advantage_over_context_ldp"] > 1e-12
         degraded = context_design["ldp_degraded"]
+        capt_objective = float(aggregate_design.loc["context_capt", "aggregate_objective_value"])
+        ldp_objective = float(aggregate_design.loc["context_ldp", "aggregate_objective_value"])
+        objective_floor = float(
+            aggregate_design.loc["context_capt", "aggregate_objective_constant_floor"]
+        )
+        capt_excess = max(0.0, capt_objective - objective_floor)
+        ldp_excess = max(0.0, ldp_objective - objective_floor)
+        relative_excess_reduction = (
+            (ldp_excess - capt_excess) / ldp_excess if ldp_excess > 0 else float("nan")
+        )
         lines.extend(
             [
                 f"### {aggregate_design.iloc[0]['label']}",
@@ -1539,6 +1540,8 @@ def _write_report(
                 f"- Released context CAPT LP objective after repair: {aggregate_design.loc['context_capt', 'aggregate_objective_value']:.9g}",
                 f"- Context LDP LP objective: {aggregate_design.loc['context_ldp', 'aggregate_objective_value']:.9g}",
                 f"- CAPT objective reduction versus context LDP: {aggregate_design.loc['context_ldp', 'aggregate_objective_value'] - aggregate_design.loc['context_capt', 'aggregate_objective_value']:.9g}",
+                f"- Channel-invariant objective floor: {objective_floor:.9g}; released CAPT excess objective: {capt_excess:.9g}; context-LDP excess objective: {ldp_excess:.9g}",
+                f"- CAPT reduction in excess objective: {100 * relative_excess_reduction:.6g}%; absolute advantage: {1e6 * (ldp_objective - capt_objective):.6g} micro-objective-units/display",
                 f"- Contexts with strict CAPT advantage: {int(advantage.sum())}/{len(context_design)}, design mass {context_design.loc[advantage, 'design_mass'].sum():.9g}",
                 f"- Contexts with a full-simplex edge and exact LDP degradation: {int(degraded.sum())}/{len(context_design)}, design mass {context_design.loc[degraded, 'design_mass'].sum():.9g}",
                 f"- Channel table entries: {metadata['table_entries'][design]:,}",
@@ -1558,6 +1561,10 @@ def _write_report(
             f"All {len(certificate_summary)} context certificates are valid; they independently recheck {int(certificate_summary['certificate_checked_constraints'].sum()):,} robust constraints. The ordinary verifier maximum violation is {certificate_summary['certificate_max_violation'].max():.3g}. The Decimal verifier applies no privacy feasibility tolerance.",
             "",
             "The comparison that determines CAPT advantage is context CAPT versus context-specific optimal LDP under the same partition, decoder, context objective, and public-context table. Shared-channel methods are supplementary baselines.",
+            "",
+            "For empirical and hybrid objectives, the objective contains a channel-invariant empirical entropy term. Relative improvement is therefore normalized by the excess objective after subtracting that floor; this reporting transformation does not alter the LP or the released channel. Exact raw and excess values are saved in the aggregate and context tables.",
+            "",
+            "In `objective_aligned` mode, the common partition/decoder cost is the context aggregation `C_repr(z,o) = sum_b P(b|z) C_b(z,o)`, while each public-context channel uses its corresponding `C_b`. In `teacher_kl_fixed` mode, the representation remains teacher-KL by design, providing the R-objective-only ablation.",
             "",
             "D_test AUC and calibration use the expected prediction under mechanism randomness. `expected_randomized_log_loss` instead averages the loss after drawing a sanitized output and is the primary randomized log-loss metric. These are frozen-reference diagnostics; no downstream bidder or CTR model is retrained.",
             "",
@@ -1642,9 +1649,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     if config.get("missing_group_policy") != "full_simplex":
         raise ValueError("context diagnostic requires full-simplex completion")
     if config.get("certificate_channel_repair") != "uniform_full_support_mixing":
-        raise ValueError(
-            "context diagnostic requires certificate-safe uniform full-support repair"
-        )
+        raise ValueError("context diagnostic requires certificate-safe uniform full-support repair")
 
     path = prepare_run(config)
     progress = ProgressLogger(path, name=path.name)
@@ -1670,6 +1675,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         resume_cutting_plane=config.get("resume_cutting_plane", False),
         context_designs=config.get("context_designs"),
         context_utility_objective=config.get("context_utility_objective"),
+        context_representation_mode=config.get("context_representation_mode"),
         hybrid_empirical_weight=config.get("hybrid_empirical_weight"),
     )
     progress.emit_environment()
@@ -1718,6 +1724,9 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
                 "partition": design.partition_method,
                 "decoder": design.decoder_method,
                 "information_gap": design.diagnostic.information_gap,
+                "representation_mode": design.representation_mode,
+                "representation_objective": design.representation_objective,
+                "representation_token_cost_hash": design.representation_token_cost_hash,
             }
             for design in designs
         ],
@@ -1876,6 +1885,8 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             min_context_mass=min(value.design_mass for value in objectives),
             max_context_mass=max(value.design_mass for value in objectives),
             utility_objective=config["context_utility_objective"],
+            representation_mode=design.representation_mode,
+            representation_objective=design.representation_objective,
             empirical_design_label_count=sum(value.empirical_label_count for value in objectives),
             **process_memory_bytes(),
         )
@@ -2105,6 +2116,9 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "profile": profile,
         "public_context_column": context_column,
         "context_utility_objective": config["context_utility_objective"],
+        "context_representation_mode": config["context_representation_mode"],
+        "representation_objective": designs[0].representation_objective,
+        "representation_token_cost_hash": designs[0].representation_token_cost_hash,
         "hybrid_empirical_weight": config["hybrid_empirical_weight"],
         "context_count": int(context_frame["public_context"].nunique()),
         "cert_source_rows": len(cert_source),
@@ -2136,9 +2150,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "pre_repair_infinite_constraint_count": int(
             context_frame["pre_repair_infinite_constraint_count"].sum()
         ),
-        "pre_repair_max_additive_violation": float(
-            context_frame["pre_repair_max_violation"].max()
-        ),
+        "pre_repair_max_additive_violation": float(context_frame["pre_repair_max_violation"].max()),
         "post_repair_infinite_context_count": int(
             np.isinf(context_frame["post_repair_realized_epsilon"]).sum()
         ),
@@ -2155,17 +2167,13 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             context_frame["conservative_max_violation"].max()
         ),
         "post_repair_zero_denominator_positive_numerator_count": int(
-            context_frame[
-                "post_repair_zero_denominator_positive_numerator_count"
-            ].sum()
+            context_frame["post_repair_zero_denominator_positive_numerator_count"].sum()
         ),
         "max_repair_lambda": float(context_frame["repair_lambda"].max()),
         "mass_weighted_repair_lambda": float(
             np.sum(context_frame["design_mass"] * context_frame["repair_lambda"])
         ),
-        "released_channel_min_entry": float(
-            context_frame["released_channel_min_entry"].min()
-        ),
+        "released_channel_min_entry": float(context_frame["released_channel_min_entry"].min()),
         "released_channel_max_row_sum_error": float(
             context_frame["released_channel_max_row_sum_error"].max()
         ),

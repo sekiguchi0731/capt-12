@@ -78,7 +78,18 @@ def test_cli_accepts_hyphen_and_underscore_aliases(tmp_path) -> None:
     assert result.exit_code == 0, result.output
     result = runner.invoke(
         app,
-        ["run-grid", "--config", "configs/smoke.yaml", "--output-dir", str(output), "--K-list", "3", "--L_list", "1", "--dry-run"],
+        [
+            "run-grid",
+            "--config",
+            "configs/smoke.yaml",
+            "--output-dir",
+            str(output),
+            "--K-list",
+            "3",
+            "--L_list",
+            "1",
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -131,6 +142,8 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
             "7",
             "--utility-objective",
             "empirical_logloss",
+            "--representation-mode",
+            "objective_aligned",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -138,6 +151,7 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
     assert captured["epsilon"] == 1.0
     assert captured["context_designs"] == ["joint_kmedoids_cost_medoid_L16"]
     assert captured["context_utility_objective"] == "empirical_logloss"
+    assert captured["context_representation_mode"] == "objective_aligned"
 
 
 def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
@@ -164,6 +178,8 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "hybrid_logloss_kl",
             "--hybrid-empirical-weight",
             "0.75",
+            "--representation-mode",
+            "objective_aligned",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -171,6 +187,7 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
     assert captured["config"]["epsilon"] == 1.0
     assert captured["config"]["context_utility_objective"] == "hybrid_logloss_kl"
     assert captured["config"]["hybrid_empirical_weight"] == 0.75
+    assert captured["config"]["context_representation_mode"] == "objective_aligned"
     assert "sol_seed_stability_review_bundle.zip" in result.output
 
 
@@ -198,10 +215,13 @@ def test_resolve_run_id_changes_with_frozen_design_seed(monkeypatch) -> None:
 def test_context_utility_objective_validation() -> None:
     base = load_config("configs/criteo_context_stratified.yaml")
     assert base["context_utility_objective"] == "teacher_kl"
+    assert base["context_representation_mode"] == "teacher_kl_fixed"
     with pytest.raises(ValueError, match="context_utility_objective"):
         validate_config({**base, "context_utility_objective": "maximize_ctr"})
     with pytest.raises(ValueError, match="hybrid_empirical_weight"):
         validate_config({**base, "hybrid_empirical_weight": 1.1})
+    with pytest.raises(ValueError, match="context_representation_mode"):
+        validate_config({**base, "context_representation_mode": "test_selected"})
 
 
 def test_splits_reject_day_and_row_overlap() -> None:
@@ -319,9 +339,7 @@ def test_full_simplex_policy_requires_observed_rare_confidence_boxes() -> None:
 
 
 def test_solver_progress_config_requires_valid_types_and_interval() -> None:
-    assert validate_config(
-        {"solver_verbose": True, "solver_heartbeat_seconds": 30}
-    )
+    assert validate_config({"solver_verbose": True, "solver_heartbeat_seconds": 30})
     with pytest.raises(ValueError, match="solver_heartbeat_seconds"):
         validate_config({"solver_heartbeat_seconds": 0})
     with pytest.raises(ValueError, match="solver_verbose"):
@@ -375,9 +393,7 @@ def test_external_reference_declared_inputs_exclude_protected_columns(tmp_path) 
             sensitive_columns=["protected"],
         )
     manifest = tmp_path / "prediction-manifest.json"
-    manifest.write_text(
-        '{"prediction_column":"prediction","feature_columns":["z"]}'
-    )
+    manifest.write_text('{"prediction_column":"prediction","feature_columns":["z"]}')
     assert (
         validate_external_reference_inputs(
             precomputed,

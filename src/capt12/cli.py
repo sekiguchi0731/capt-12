@@ -25,7 +25,9 @@ app = typer.Typer(no_args_is_help=True, help="CAPT-12 reproducible research CLI"
 
 
 def _load(path: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    return load_config(path, {key: value for key, value in (overrides or {}).items() if value is not None})
+    return load_config(
+        path, {key: value for key, value in (overrides or {}).items() if value is not None}
+    )
 
 
 def _resolve_git_commit(revision: str) -> str:
@@ -57,6 +59,11 @@ def resolve_run_id(
         "--utility-objective",
         help="Context LP objective: teacher_kl, empirical_logloss, or hybrid_logloss_kl.",
     ),
+    representation_mode: str | None = typer.Option(
+        None,
+        "--representation-mode",
+        help="Block/decoder cost: teacher_kl_fixed or objective_aligned.",
+    ),
     hybrid_empirical_weight: float | None = typer.Option(
         None,
         "--hybrid-empirical-weight",
@@ -75,6 +82,7 @@ def resolve_run_id(
         {
             "frozen_design_seed": frozen_design_seed,
             "context_utility_objective": utility_objective,
+            "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
         },
     )
@@ -145,44 +153,91 @@ def prepare(
     max_rows: int | None = typer.Option(None, "--max-rows", min=1),
     sample_frac: float | None = typer.Option(None, "--sample-frac", min=0, max=1),
 ) -> None:
-    cfg = _load(config, {"data_root": str(data_root) if data_root else None, "output_dir": str(output_dir) if output_dir else None, "max_rows": max_rows, "sample_frac": sample_frac})
+    cfg = _load(
+        config,
+        {
+            "data_root": str(data_root) if data_root else None,
+            "output_dir": str(output_dir) if output_dir else None,
+            "max_rows": max_rows,
+            "sample_frac": sample_frac,
+        },
+    )
     path, metrics = run_pipeline(cfg, max_rows=max_rows)
     typer.echo(json.dumps({"stage": "prepare", "run": str(path), "rows": len(metrics)}, indent=2))
 
 
 @app.command("train-ref-model")
-def train_ref_model(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows")) -> None:
+def train_ref_model(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+) -> None:
     _stage_command(config, max_rows, "train-ref-model")
 
 
 @app.command("build-encoder")
-def build_encoder(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows")) -> None:
+def build_encoder(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+) -> None:
     _stage_command(config, max_rows, "build-encoder")
 
 
 @app.command("solve")
-def solve(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows"), force_full: bool = typer.Option(False, "--force-full")) -> None:
+def solve(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+    force_full: bool = typer.Option(False, "--force-full"),
+) -> None:
     cfg = _load(config, {"max_rows": max_rows, "force_full": force_full})
     path, metrics = run_pipeline(cfg, max_rows=max_rows)
-    typer.echo(json.dumps({"stage": "solve", "run": str(path), "solver_status": metrics.get("solver_status", []).tolist() if "solver_status" in metrics else []}, indent=2))
+    typer.echo(
+        json.dumps(
+            {
+                "stage": "solve",
+                "run": str(path),
+                "solver_status": metrics.get("solver_status", []).tolist()
+                if "solver_status" in metrics
+                else [],
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command("certify")
-def certify(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows")) -> None:
+def certify(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+) -> None:
     cfg = _load(config, {"max_rows": max_rows})
     if cfg.get("confidence") == "dp_aware_box":
         raise typer.BadParameter("dp_aware_box is experimental and cannot emit a certified result")
     path, metrics = run_pipeline(cfg, max_rows=max_rows)
-    typer.echo(json.dumps({"stage": "certify", "run": str(path), "certified": bool(metrics.get("certified", False).all())}, indent=2))
+    typer.echo(
+        json.dumps(
+            {
+                "stage": "certify",
+                "run": str(path),
+                "certified": bool(metrics.get("certified", False).all()),
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command("audit")
-def audit(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows")) -> None:
+def audit(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+) -> None:
     _stage_command(config, max_rows, "audit")
 
 
 @app.command("evaluate")
-def evaluate(config: Path = typer.Option(..., "--config", exists=True), max_rows: int | None = typer.Option(None, "--max-rows")) -> None:
+def evaluate(
+    config: Path = typer.Option(..., "--config", exists=True),
+    max_rows: int | None = typer.Option(None, "--max-rows"),
+) -> None:
     _stage_command(config, max_rows, "evaluate")
 
 
@@ -223,7 +278,9 @@ def run_grid_command(
     distortion_clip: float | None = typer.Option(None, "--distortion-clip"),
     partition: str | None = typer.Option(None, "--partition"),
     partition_list: str | None = typer.Option(None, "--partition-list"),
-    nested_partitions: bool | None = typer.Option(None, "--nested-partitions/--non-nested-partitions"),
+    nested_partitions: bool | None = typer.Option(
+        None, "--nested-partitions/--non-nested-partitions"
+    ),
     decoder: str | None = typer.Option(None, "--decoder"),
     decoder_list: str | None = typer.Option(None, "--decoder-list"),
     mechanism_list: str | None = typer.Option(None, "--mechanism-list"),
@@ -265,7 +322,9 @@ def run_grid_command(
         "sensitive_cols": parse_csv_list(sensitive_cols) if sensitive_cols else None,
         "profiles": parse_profiles(profiles) if profiles else None,
         "profile_assignment": profile_assignment,
-        "profile_probs": parse_csv_list(profile_probs, float, minimum=0, maximum=1) if profile_probs else None,
+        "profile_probs": parse_csv_list(profile_probs, float, minimum=0, maximum=1)
+        if profile_probs
+        else None,
         "context_cols": parse_csv_list(context_cols) if context_cols else None,
         "max_context_cardinality": max_context_cardinality,
         "privacy_scope": privacy_scope,
@@ -288,7 +347,9 @@ def run_grid_command(
         "alpha_cert": alpha_cert,
         "dp_hist_epsilon": dp_hist_epsilon,
         "dp_hist_delta": dp_hist_delta,
-        "shift_tv_list": parse_csv_list(shift_tv_list, float, minimum=0, maximum=1) if shift_tv_list else None,
+        "shift_tv_list": parse_csv_list(shift_tv_list, float, minimum=0, maximum=1)
+        if shift_tv_list
+        else None,
         "min_group_count": min_group_count,
         "rare_group_policy": rare_group_policy,
         "contribution_policy": contribution_policy,
@@ -298,11 +359,26 @@ def run_grid_command(
         "full_max_k": full_max_k,
         "force_full": force_full,
         "jobs": jobs,
-        "target_ctr_list": parse_csv_list(target_ctr_list, float, minimum=0, maximum=1) if target_ctr_list else None,
+        "target_ctr_list": parse_csv_list(target_ctr_list, float, minimum=0, maximum=1)
+        if target_ctr_list
+        else None,
     }
     cfg = _load(config, overrides)
     result = run_grid(cfg, resume=resume, dry_run=dry_run, max_rows=max_rows)
-    typer.echo(json.dumps({"rows": len(result), "complete": int((result.get("grid_status") == "complete").sum()) if "grid_status" in result else 0, "skipped": int((result.get("status") == "skipped").sum()) if "status" in result else 0}, indent=2))
+    typer.echo(
+        json.dumps(
+            {
+                "rows": len(result),
+                "complete": int((result.get("grid_status") == "complete").sum())
+                if "grid_status" in result
+                else 0,
+                "skipped": int((result.get("status") == "skipped").sum())
+                if "status" in result
+                else 0,
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command("plot")
@@ -316,7 +392,12 @@ def plot(
     from capt12.plots.paper import plot_paper_suite
 
     paths = plot_paper_suite(input_path, output_dir)
-    typer.echo(json.dumps({"generated": len(paths), "output": str(output_dir or input_path / "paper_figures")}, indent=2))
+    typer.echo(
+        json.dumps(
+            {"generated": len(paths), "output": str(output_dir or input_path / "paper_figures")},
+            indent=2,
+        )
+    )
 
 
 @app.command("verify-certificate")
@@ -388,6 +469,11 @@ def context_stratified(
         "--utility-objective",
         help="LP objective: teacher_kl, empirical_logloss, or hybrid_logloss_kl.",
     ),
+    representation_mode: str | None = typer.Option(
+        None,
+        "--representation-mode",
+        help="Block/decoder cost: teacher_kl_fixed or objective_aligned.",
+    ),
     hybrid_empirical_weight: float | None = typer.Option(
         None,
         "--hybrid-empirical-weight",
@@ -407,6 +493,7 @@ def context_stratified(
             {
                 "frozen_design_seed": frozen_design_seed,
                 "context_utility_objective": utility_objective,
+                "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
             },
         )
@@ -426,6 +513,11 @@ def context_seed_stability(
         None,
         "--utility-objective",
         help="LP objective used by every seed.",
+    ),
+    representation_mode: str | None = typer.Option(
+        None,
+        "--representation-mode",
+        help="Block/decoder cost used by every seed.",
     ),
     hybrid_empirical_weight: float | None = typer.Option(
         None,
@@ -447,6 +539,7 @@ def context_seed_stability(
             config,
             {
                 "context_utility_objective": utility_objective,
+                "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
             },
         ),
@@ -472,9 +565,19 @@ def smoke(
     seed: int | None = typer.Option(None, "--seed"),
     max_rows: int | None = typer.Option(None, "--max-rows", min=1),
 ) -> None:
-    cfg = _load(config, {"data_root": str(data_root) if data_root else None, "output_dir": str(output_dir) if output_dir else None, "seed": seed, "max_rows": max_rows})
+    cfg = _load(
+        config,
+        {
+            "data_root": str(data_root) if data_root else None,
+            "output_dir": str(output_dir) if output_dir else None,
+            "seed": seed,
+            "max_rows": max_rows,
+        },
+    )
     path, metrics = run_pipeline(cfg, max_rows=max_rows)
-    typer.echo(json.dumps({"status": "ok", "run": str(path), "metric_rows": len(metrics)}, indent=2))
+    typer.echo(
+        json.dumps({"status": "ok", "run": str(path), "metric_rows": len(metrics)}, indent=2)
+    )
 
 
 if __name__ == "__main__":

@@ -18,7 +18,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from capt12.certification.artifact import hash_json, make_certificate, verify_certificate
+from capt12.certification.artifact import (
+    hash_array,
+    hash_json,
+    make_certificate,
+    verify_certificate,
+)
 from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
 from capt12.confidence.boxes import CONFIDENCE_REGISTRY, ConfidenceBox
 from capt12.config import validate_config
@@ -32,7 +37,11 @@ from capt12.data.preprocessing import (
     build_group_histograms,
 )
 from capt12.decoders.registry import build_decoder
-from capt12.distortions.registry import block_cost_matrix, token_cost_matrix
+from capt12.distortions.registry import (
+    block_cost_matrix,
+    conditional_utility_cost,
+    token_cost_matrix,
+)
 from capt12.encoders.base import make_encoder
 from capt12.experiments.sampling import (
     FULL_LABEL,
@@ -85,6 +94,67 @@ def _expected_frame_from_cartesian(
     attributes = profile.split("+") if profile else []
     columns = [*attributes, context]
     return pd.DataFrame(list(sorted(tuples)), columns=columns)
+
+
+def _context_aggregated_representation_cost(
+    probability_grid: np.ndarray,
+    context_counts: np.ndarray,
+    label_sums: np.ndarray,
+    *,
+    objective: str,
+    eta: float,
+    hybrid_empirical_weight: float,
+    empty_token_context_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Aggregate the per-context R estimand into one common representation cost.
+
+    Partition and decoder must be shared across public contexts.  Their aligned
+    cost is therefore C_repr(z,o) = sum_b P(b|z) C_b(z,o), where every C_b is
+    produced by the exact same objective definition later used for R_b.  The
+    optional fallback weights matter only for tokens absent from D_design.
+    """
+    probabilities = np.asarray(probability_grid, dtype=float)
+    counts = np.asarray(context_counts, dtype=float)
+    successes = np.asarray(label_sums, dtype=float)
+    if probabilities.ndim != 2 or counts.shape != probabilities.shape:
+        raise ValueError("probability grid and context counts must have shape K x |B|")
+    if successes.shape != probabilities.shape:
+        raise ValueError("label sums must align with the probability grid")
+
+    weights = counts.copy()
+    empty_tokens = weights.sum(axis=1) == 0
+    if empty_tokens.any():
+        if empty_token_context_weights is None:
+            weights[empty_tokens] = 1.0
+        else:
+            fallback = np.asarray(empty_token_context_weights, dtype=float)
+            if fallback.shape != probabilities.shape:
+                raise ValueError("empty-token context weights must have shape K x |B|")
+            weights[empty_tokens] = fallback[empty_tokens]
+            still_empty = weights.sum(axis=1) == 0
+            weights[still_empty] = 1.0
+    weights = np.divide(
+        weights,
+        weights.sum(axis=1, keepdims=True),
+        out=np.zeros_like(weights),
+        where=weights.sum(axis=1, keepdims=True) > 0,
+    )
+
+    token_count = probabilities.shape[0]
+    result = np.zeros((token_count, token_count), dtype=float)
+    floor = np.zeros(token_count, dtype=float)
+    for context_idx in range(probabilities.shape[1]):
+        context_cost, context_floor = conditional_utility_cost(
+            probabilities[:, context_idx],
+            counts[:, context_idx],
+            successes[:, context_idx],
+            objective=objective,
+            eta=eta,
+            hybrid_empirical_weight=hybrid_empirical_weight,
+        )
+        result += weights[:, context_idx, None] * context_cost
+        floor += weights[:, context_idx] * context_floor
+    return result, floor
 
 
 def cartesian_support_from_domains(
@@ -267,6 +337,42 @@ def _fixed_design(
         config.get("distortion", "bernoulli_kl"),
         float(config.get("distortion_clip", 1e-6)),
     )
+    representation_mode = str(config.get("context_representation_mode", "teacher_kl_fixed"))
+    representation_objective = (
+        str(config.get("context_utility_objective", "teacher_kl"))
+        if representation_mode == "objective_aligned"
+        else "teacher_kl"
+    )
+    representation_token_cost = token_cost.copy()
+    representation_constant_floor_by_token = np.zeros(k, dtype=float)
+    representation_probability_grid = token_context_scores.copy()
+    if representation_mode == "objective_aligned":
+        if len(contexts) != 1:
+            raise ValueError(
+                "objective-aligned context representation requires one public context column"
+            )
+        context_column = contexts[0]
+        representation_probability_grid = np.empty_like(token_context_scores)
+        for context_value, context_idx in context_index.items():
+            probability_frame = pd.DataFrame(
+                {
+                    "__token__": np.arange(k, dtype=int),
+                    context_column: context_value,
+                }
+            )
+            representation_probability_grid[:, context_idx] = reference.predict(probability_frame)
+        (
+            representation_token_cost,
+            representation_constant_floor_by_token,
+        ) = _context_aggregated_representation_cost(
+            representation_probability_grid,
+            token_context_label_count,
+            token_context_label_sum,
+            objective=representation_objective,
+            eta=float(config.get("distortion_clip", 1e-6)),
+            hybrid_empirical_weight=float(config.get("hybrid_empirical_weight", 0.5)),
+            empty_token_context_weights=token_context_weights,
+        )
     cost_weights = (
         np.ones(k) / k if config.get("cost_aggregation", "empirical") == "uniform" else frequencies
     )
@@ -280,10 +386,7 @@ def _fixed_design(
         fallback_levels_by_column=(
             {
                 **{column: (unknown_value,) for column in profile_attributes},
-                **{
-                    column: ("__OTHER__", "__MISSING__")
-                    for column in contexts
-                },
+                **{column: ("__OTHER__", "__MISSING__") for column in contexts},
             }
             if unified_unknown
             else None
@@ -342,6 +445,13 @@ def _fixed_design(
         assignment=assignment,
         decoder=decoder,
         token_cost=token_cost,
+        teacher_token_cost=token_cost,
+        representation_token_cost=representation_token_cost,
+        representation_mode=np.asarray(representation_mode),
+        representation_objective=np.asarray(representation_objective),
+        representation_token_cost_hash=np.asarray(hash_array(representation_token_cost)),
+        representation_constant_floor_by_token=representation_constant_floor_by_token,
+        representation_probability_grid=representation_probability_grid,
         block_cost=block_cost,
         block_weights=block_weights,
         common_cover_distribution=block_weights / block_weights.sum(),
@@ -369,6 +479,11 @@ def _fixed_design(
         "token_context_weights": token_context_weights,
         "token_context_label_count": token_context_label_count,
         "token_context_label_sum": token_context_label_sum,
+        "representation_mode": representation_mode,
+        "representation_objective": representation_objective,
+        "representation_token_cost": representation_token_cost,
+        "representation_token_cost_hash": hash_array(representation_token_cost),
+        "representation_constant_floor_by_token": representation_constant_floor_by_token,
         "cartesian_support": cartesian_support,
         "design_support": observed_design_support,
         "design_probability": design_probability,

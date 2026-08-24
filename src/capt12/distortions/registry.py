@@ -59,6 +59,72 @@ DISTORTION_REGISTRY: dict[str, Callable] = {
 }
 
 
+def conditional_utility_cost(
+    token_probabilities: np.ndarray,
+    label_counts: np.ndarray,
+    label_sums: np.ndarray,
+    *,
+    objective: str,
+    eta: float = 1e-6,
+    hybrid_empirical_weight: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return one public-context token cost and its channel-invariant floor.
+
+    ``teacher_kl`` uses KL between frozen reference probabilities.  The
+    empirical objective uses D_design label cross entropy against each fixed
+    output-token prediction, falling back to the teacher rate only for an
+    unobserved input token/context cell.  The hybrid is their fixed convex
+    combination.  In all cases the returned floor is independent of the
+    released output and can therefore be subtracted for honest relative
+    reporting without changing any optimizer.
+    """
+    probabilities = np.asarray(token_probabilities, dtype=float)
+    counts = np.asarray(label_counts, dtype=float)
+    successes = np.asarray(label_sums, dtype=float)
+    if probabilities.ndim != 1 or counts.shape != probabilities.shape:
+        raise ValueError("probabilities and label counts must be one-dimensional and aligned")
+    if successes.shape != probabilities.shape:
+        raise ValueError("label sums must align with token probabilities")
+    if np.any(counts < 0) or np.any(successes < 0) or np.any(successes > counts):
+        raise ValueError("label counts/sums must satisfy 0 <= sums <= counts")
+    if not 0 <= hybrid_empirical_weight <= 1:
+        raise ValueError("hybrid_empirical_weight must be in [0, 1]")
+
+    empirical_rate = np.divide(
+        successes,
+        counts,
+        out=probabilities.copy(),
+        where=counts > 0,
+    )
+    empirical_rate = np.clip(empirical_rate, 0.0, 1.0)
+    clipped_output = _clip(probabilities, eta)
+    teacher_cost = bernoulli_kl(
+        probabilities[:, None],
+        probabilities[None, :],
+        eta,
+    )
+    empirical_cost = empirical_rate[:, None] * -np.log(clipped_output[None, :]) + (
+        1 - empirical_rate[:, None]
+    ) * -np.log(1 - clipped_output[None, :])
+    entropy = np.zeros_like(empirical_rate)
+    positive = empirical_rate > 0
+    below_one = empirical_rate < 1
+    entropy[positive] -= empirical_rate[positive] * np.log(empirical_rate[positive])
+    entropy[below_one] -= (1 - empirical_rate[below_one]) * np.log(1 - empirical_rate[below_one])
+
+    if objective == "teacher_kl":
+        return teacher_cost, np.zeros_like(entropy)
+    if objective == "empirical_logloss":
+        return empirical_cost, entropy
+    if objective == "hybrid_logloss_kl":
+        weight = float(hybrid_empirical_weight)
+        return (
+            weight * empirical_cost + (1 - weight) * teacher_cost,
+            weight * entropy,
+        )
+    raise ValueError(f"unsupported context utility objective: {objective}")
+
+
 def token_cost_matrix(
     token_probabilities_by_context: np.ndarray,
     context_weights_by_token: np.ndarray,
@@ -70,7 +136,12 @@ def token_cost_matrix(
     weights = np.asarray(context_weights_by_token, dtype=float)
     if probabilities.ndim != 2 or weights.shape != probabilities.shape:
         raise ValueError("probability and context-weight tables must have shape K x |B|")
-    weights = np.divide(weights, weights.sum(axis=1, keepdims=True), out=np.zeros_like(weights), where=weights.sum(axis=1, keepdims=True) > 0)
+    weights = np.divide(
+        weights,
+        weights.sum(axis=1, keepdims=True),
+        out=np.zeros_like(weights),
+        where=weights.sum(axis=1, keepdims=True) > 0,
+    )
     function = DISTORTION_REGISTRY[name]
     k, context_count = probabilities.shape
     result = np.empty((k, k), dtype=float)
@@ -79,7 +150,9 @@ def token_cost_matrix(
             if name == "retention":
                 result[z, o] = float(z != o)
             else:
-                result[z, o] = float(np.sum(weights[z] * function(probabilities[z], probabilities[o], eta)))
+                result[z, o] = float(
+                    np.sum(weights[z] * function(probabilities[z], probabilities[o], eta))
+                )
     return result
 
 
@@ -98,9 +171,12 @@ def block_cost_matrix(
     for source_block in range(l_count):
         members = np.flatnonzero(assignment == source_block)
         conditional = weights[members]
-        conditional = conditional / conditional.sum() if conditional.sum() else np.ones(len(members)) / len(members)
+        conditional = (
+            conditional / conditional.sum()
+            if conditional.sum()
+            else np.ones(len(members)) / len(members)
+        )
         for destination_block in range(l_count):
             expected_by_source = token_cost[members] @ decoder[destination_block]
             result[source_block, destination_block] = conditional @ expected_by_source
     return result
-

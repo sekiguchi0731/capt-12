@@ -5,6 +5,7 @@ import pandas as pd
 
 from capt12.data.preprocessing import FrozenCategoryMapper
 from capt12.experiments.fixed_support import (
+    _context_aggregated_representation_cost,
     cartesian_support_from_domains,
     ordered_size_labels,
 )
@@ -126,3 +127,41 @@ def test_plot_size_labels_match_cell_labels() -> None:
     labels = ordered_size_labels(results)
     assert labels == ["5000", "10000", "full"]
     assert results["cert_size_label"].isin(labels).all()
+
+
+def test_objective_aligned_representation_uses_same_context_estimand() -> None:
+    probability_grid = np.array([[0.2, 0.3], [0.8, 0.7]])
+    counts = np.array([[3.0, 1.0], [1.0, 3.0]])
+    successes = np.array([[0.0, 1.0], [1.0, 2.0]])
+    cost, floor = _context_aggregated_representation_cost(
+        probability_grid,
+        counts,
+        successes,
+        objective="empirical_logloss",
+        eta=1e-6,
+        hybrid_empirical_weight=0.5,
+    )
+
+    rates = successes / counts
+    expected_context_costs = []
+    expected_context_floors = []
+    for context in range(2):
+        output = probability_grid[:, context]
+        rate = rates[:, context]
+        expected_context_costs.append(
+            rate[:, None] * -np.log(output[None, :])
+            + (1 - rate[:, None]) * -np.log(1 - output[None, :])
+        )
+        expected_context_floors.append(
+            -(rate * np.log(np.where(rate > 0, rate, 1.0)))
+            - (1 - rate) * np.log(np.where(rate < 1, 1 - rate, 1.0))
+        )
+    context_weights = counts / counts.sum(axis=1, keepdims=True)
+    expected_cost = sum(
+        context_weights[:, context, None] * expected_context_costs[context] for context in range(2)
+    )
+    expected_floor = sum(
+        context_weights[:, context] * expected_context_floors[context] for context in range(2)
+    )
+    np.testing.assert_allclose(cost, expected_cost)
+    np.testing.assert_allclose(floor, expected_floor)

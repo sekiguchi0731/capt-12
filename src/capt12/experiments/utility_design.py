@@ -51,6 +51,9 @@ class UtilityDesign:
     block_cost: np.ndarray
     block_weights: np.ndarray
     diagnostic: UtilityInformativeness
+    representation_mode: str = "teacher_kl_fixed"
+    representation_objective: str = "teacher_kl"
+    representation_token_cost_hash: str = ""
 
 
 def _build_designs(
@@ -60,7 +63,22 @@ def _build_designs(
     frequencies = np.asarray(frozen_arrays["frequencies"], dtype=float)
     objective_weights = np.asarray(frozen_arrays["objective_weights"], dtype=float)
     token_scores = np.asarray(frozen_arrays["token_scores"], dtype=float)
-    token_cost = np.asarray(frozen_arrays["token_cost"], dtype=float)
+    representation_mode = str(config.get("context_representation_mode", "teacher_kl_fixed"))
+    representation_objective = (
+        str(config.get("context_utility_objective", "teacher_kl"))
+        if representation_mode == "objective_aligned"
+        else "teacher_kl"
+    )
+    if representation_mode == "objective_aligned":
+        try:
+            token_cost = np.asarray(frozen_arrays["representation_token_cost"], dtype=float)
+        except KeyError as error:
+            raise ValueError(
+                "objective-aligned representation requires representation_token_cost"
+            ) from error
+    else:
+        token_cost = np.asarray(frozen_arrays["token_cost"], dtype=float)
+    representation_token_cost_hash = hash_array(token_cost)
     current_assignment = np.asarray(frozen_arrays["assignment"], dtype=int)
     current_decoder = np.asarray(frozen_arrays["decoder"], dtype=float)
     cost_weights = (
@@ -166,6 +184,9 @@ def _build_designs(
                     weights,
                     tolerance=tolerance,
                 ),
+                representation_mode=representation_mode,
+                representation_objective=representation_objective,
+                representation_token_cost_hash=representation_token_cost_hash,
             )
         )
     return designs
@@ -182,6 +203,9 @@ def _screen_frame(designs: list[UtilityDesign]) -> pd.DataFrame:
                 "L": len(design.block_weights),
                 "partition_method": design.partition_method,
                 "decoder_method": design.decoder_method,
+                "representation_mode": design.representation_mode,
+                "representation_objective": design.representation_objective,
+                "representation_token_cost_hash": design.representation_token_cost_hash,
                 "D_constant": diagnostic.constant_distortion,
                 "D_free": diagnostic.free_distortion,
                 "G_info": diagnostic.information_gap,
@@ -201,10 +225,14 @@ def _screen_frame(designs: list[UtilityDesign]) -> pd.DataFrame:
 def _plot_results(screen: pd.DataFrame, privacy: pd.DataFrame, path: Path) -> None:
     order = screen["design"].tolist()
     labels = screen.set_index("design").loc[order, "label"].tolist()
-    merged = screen.set_index("design").join(
-        privacy.set_index("design")[["capt_gain_over_constant", "capt_max_row_tv"]],
-        how="left",
-    ).loc[order]
+    merged = (
+        screen.set_index("design")
+        .join(
+            privacy.set_index("design")[["capt_gain_over_constant", "capt_max_row_tv"]],
+            how="left",
+        )
+        .loc[order]
+    )
     y = np.arange(len(order))
     height = 0.34
     fig, axes = plt.subplots(1, 2, figsize=(12, 6.2))
@@ -297,26 +325,24 @@ def _write_report(
     informative = screen.loc[screen["utility_gate_passed"]]
     advantage_count = int((privacy["capt_utility_advantage_over_ldp"] > 1e-12).sum())
     nontrivial_count = int(privacy["capt_nontrivial_channel"].sum())
-    nontrivial_names = privacy.loc[
-        privacy["capt_nontrivial_channel"], "label"
-    ].tolist()
+    nontrivial_names = privacy.loc[privacy["capt_nontrivial_channel"], "label"].tolist()
     report = f"""# Criteo utility-aware design and simplex-CAPT diagnostic
 
 ## Scope
 
-- Frozen source: full D_model and D_design; certificate population: {metadata['cert_user_days']:,} one-display-per-user-day D_cert contributions.
-- Profile: `features_kv_bits_constrained_2`; epsilon=1; expected Cartesian support fixed at {metadata['expected_group_count']} groups.
+- Frozen source: full D_model and D_design; certificate population: {metadata["cert_user_days"]:,} one-display-per-user-day D_cert contributions.
+- Profile: `features_kv_bits_constrained_2`; epsilon=1; expected Cartesian support fixed at {metadata["expected_group_count"]} groups.
 - Compared five fixed channel classes: current decoder, utility medoid, cost medoid, joint weighted k-medoids/cost-medoid, and L=K=64 singleton identity.
 
 ## P0-A utility gate
 
-The current L=16 design fails before privacy optimization: `D_constant={baseline['D_constant']:.9g}`, `D_free={baseline['D_free']:.9g}`, and `G_info=0`; all source-block rows select destination block 6. It is recorded but not re-solved.
+The current L=16 design fails before privacy optimization: `D_constant={baseline["D_constant"]:.9g}`, `D_free={baseline["D_free"]:.9g}`, and `G_info=0`; all source-block rows select destination block 6. It is recorded but not re-solved.
 
-The other {len(informative)} designs pass the gate. Their no-privacy information gaps range from {informative['G_info'].min():.9g} to {informative['G_info'].max():.9g}, confirming that utility-aware decoders/partitions restore a reason to use input-dependent channels.
+The other {len(informative)} designs pass the gate. Their no-privacy information gaps range from {informative["G_info"].min():.9g} to {informative["G_info"].max():.9g}, confirming that utility-aware decoders/partitions restore a reason to use input-dependent channels.
 
 ## Privacy optimization
 
-Of the {len(privacy)} informative designs, {nontrivial_count}/{len(privacy)} produce CAPT channels with positive row TV: {', '.join(nontrivial_names)}. Every CAPT certificate passes independent verification. However, {advantage_count}/{len(privacy)} have utility strictly above optimal LDP at tolerance 1e-12.
+Of the {len(privacy)} informative designs, {nontrivial_count}/{len(privacy)} produce CAPT channels with positive row TV: {", ".join(nontrivial_names)}. Every CAPT certificate passes independent verification. However, {advantage_count}/{len(privacy)} have utility strictly above optimal LDP at tolerance 1e-12.
 
 Every solved design contains 374 ordered adjacent pairs whose two uncertainty sets are full simplexes. One such pair compiles to the global row-wise epsilon-LDP constraints for the shared channel. Accordingly, each simplex-CAPT optimum has the same objective as its optimal-LDP comparator. Cost medoid, joint k-medoids, and singleton identity repair the second degeneration (constant optimum); utility medoid remains constant after privacy. None repairs the first degeneration (CAPT feasible region equals LDP).
 
@@ -411,8 +437,7 @@ def run_utility_design_diagnostic(config: dict[str, Any]) -> Path:
         boxes = _build_boxes(hist.counts, adjacency_count=len(adjacency), config=config)
         full_simplex_keys = {key for key, box in boxes.items() if box.method == "full_simplex"}
         full_full_edges = sum(
-            pair.left in full_simplex_keys and pair.right in full_simplex_keys
-            for pair in adjacency
+            pair.left in full_simplex_keys and pair.right in full_simplex_keys for pair in adjacency
         )
 
         ldp_solution = solve_ldp_block_lp(
