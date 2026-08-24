@@ -20,7 +20,7 @@ from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
 _DESIGN = "joint_kmedoids_cost_medoid_L16"
-_SUMMARY_VERSION = 2
+_SUMMARY_VERSION = 3
 
 
 def _emit(event: str, **fields: Any) -> None:
@@ -138,9 +138,14 @@ def _read_seed_run(
     masses = contexts["design_mass"].to_numpy(float)
     capt_audit = _method_row(audits, "context_capt")
     ldp_audit = _method_row(audits, "context_ldp")
-    relative_reduction = float(
-        (ldp["aggregate_distortion"] - capt["aggregate_distortion"])
-        / ldp["aggregate_distortion"]
+    raw_relative_reduction = float(
+        (ldp["aggregate_distortion"] - capt["aggregate_distortion"]) / ldp["aggregate_distortion"]
+    )
+    objective_floor = float(ldp["aggregate_objective_constant_floor"])
+    ldp_excess = float(ldp["aggregate_excess_objective"])
+    capt_excess = float(capt["aggregate_excess_objective"])
+    relative_excess_reduction = (
+        float((ldp_excess - capt_excess) / ldp_excess) if ldp_excess > 0 else math.nan
     )
     strict_mass = float(contexts.loc[strict_advantage, "design_mass"].sum())
     degraded_mass = float(contexts.loc[degraded, "design_mass"].sum())
@@ -158,6 +163,9 @@ def _read_seed_run(
         "L": 16,
         "epsilon": 1.0,
         "utility_objective": str(resolved["context_utility_objective"]),
+        "representation_mode": str(resolved["context_representation_mode"]),
+        "representation_objective": str(design_manifest["representation_objective"]),
+        "representation_token_cost_hash": str(design_manifest["representation_token_cost_hash"]),
         "hybrid_empirical_weight": float(resolved["hybrid_empirical_weight"]),
         "context_constant_distortion": float(constant["aggregate_distortion"]),
         "context_ldp_distortion": float(ldp["aggregate_distortion"]),
@@ -166,7 +174,14 @@ def _read_seed_run(
         "capt_advantage_over_context_ldp": float(
             ldp["aggregate_distortion"] - capt["aggregate_distortion"]
         ),
-        "relative_capt_reduction_vs_context_ldp": relative_reduction,
+        "objective_constant_floor": objective_floor,
+        "context_ldp_excess_objective": ldp_excess,
+        "context_capt_excess_objective": capt_excess,
+        "relative_capt_reduction_vs_context_ldp": raw_relative_reduction,
+        "relative_excess_capt_reduction_vs_context_ldp": relative_excess_reduction,
+        "capt_advantage_micro_objective_units": float(
+            1e6 * (ldp["aggregate_distortion"] - capt["aggregate_distortion"])
+        ),
         "repair_distortion_cost": float(
             capt["aggregate_distortion"] - capt_pre["aggregate_distortion"]
         ),
@@ -199,9 +214,7 @@ def _read_seed_run(
         "lower_audit_context_ldp_epsilon": float(ldp_audit["lower_epsilon"]),
         "lower_audit_context_capt_tests": int(capt_audit["events_tested"]),
         "lower_audit_context_ldp_tests": int(ldp_audit["events_tested"]),
-        "lower_audit_total_bounds": int(
-            capt_audit["bounds_tested"] + ldp_audit["bounds_tested"]
-        ),
+        "lower_audit_total_bounds": int(capt_audit["bounds_tested"] + ldp_audit["bounds_tested"]),
         "lower_audit_familywise_alpha": float(capt_audit["audit_familywise_alpha"]),
         "lower_audit_any_comparable": bool(
             _boolean_values(
@@ -236,6 +249,11 @@ def _stability_table(seed_results: pd.DataFrame) -> pd.DataFrame:
         "context_ldp_distortion",
         "capt_advantage_over_context_ldp",
         "relative_capt_reduction_vs_context_ldp",
+        "relative_excess_capt_reduction_vs_context_ldp",
+        "capt_advantage_micro_objective_units",
+        "objective_constant_floor",
+        "context_ldp_excess_objective",
+        "context_capt_excess_objective",
         "strict_advantage_context_count",
         "strict_advantage_context_mass",
         "ldp_degraded_context_count",
@@ -292,10 +310,7 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     blue = "#2563A6"
     orange = "#D97706"
     pale = "#D9E6F2"
-    relative = 100 * (
-        frame["context_ldp_distortion"].to_numpy(float)
-        - frame["context_capt_distortion"].to_numpy(float)
-    ) / frame["context_ldp_distortion"].to_numpy(float)
+    relative = 100 * frame["relative_excess_capt_reduction_vs_context_ldp"].to_numpy(float)
     strict = frame["strict_advantage_context_mass"].to_numpy(float)
     degraded = frame["ldp_degraded_context_mass"].to_numpy(float)
     tie = np.maximum(0.0, 1.0 - strict - degraded)
@@ -314,8 +329,8 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     reduction_axis.bar_label(bars, fmt="%.2f%%", padding=3, fontsize=8)
     reduction_axis.set_xticks(x, labels)
     reduction_axis.set_xlabel("Frozen design seed")
-    reduction_axis.set_ylabel("Reduction vs context LDP (%)")
-    reduction_axis.set_title("A. Paired D_design objective reduction")
+    reduction_axis.set_ylabel("Reduction in excess objective (%)")
+    reduction_axis.set_title("A. Paired D_design excess-objective reduction")
     reduction_axis.grid(axis="y", alpha=0.22)
     reduction_axis.margins(y=0.16)
 
@@ -431,14 +446,16 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     metric_axes[0].set_title("D. Paired D_test improvement (positive favors CAPT)")
 
     objective = str(frame.get("utility_objective", pd.Series(["teacher_kl"])).iloc[0])
+    representation = str(frame.get("representation_mode", pd.Series(["teacher_kl_fixed"])).iloc[0])
     fig.suptitle(
-        f"Criteo public-context CAPT stability; epsilon=1, L=16; objective={objective}",
+        "Criteo public-context CAPT stability; "
+        f"epsilon=1, L=16; R={objective}; representation={representation}",
         y=0.985,
     )
     fig.text(
         0.5,
         0.008,
-        "Only frozen_design_seed changes. Bars/points are paired by seed; no seed-level confidence interval is implied.",
+        "Excess objective subtracts the channel-invariant entropy floor. Only frozen_design_seed changes; no seed-level CI is implied.",
         ha="center",
         fontsize=8,
         color="#4B5563",
@@ -471,6 +488,8 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     all_finite = bool(np.isfinite(ordered["conservative_max_realized_epsilon"]).all())
     total_constraints = int(ordered["certificate_checked_constraints"].sum())
     objective = str(ordered["utility_objective"].iloc[0])
+    representation_mode = str(ordered["representation_mode"].iloc[0])
+    representation_objective = str(ordered["representation_objective"].iloc[0])
     conclusion = (
         "The CAPT-over-context-LDP design utility advantage is positive for every seed."
         if all_advantage
@@ -489,18 +508,20 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         f"- Frozen design seeds: {', '.join(map(str, ordered['frozen_design_seed']))}.",
         "- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon=1; joint weighted k-medoids; L=16.",
         f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
+        f"- Partition/decoder representation mode: `{representation_mode}`; representation objective: `{representation_objective}`.",
         "- Temporal splits, support/adjacency/privacy definition, utility objective, D_cert, and D_test are fixed. Only `frozen_design_seed` changes the frozen encoder/design realization.",
         "- Runs are sequential to bound local peak memory. A completed run with the exact source SHA and resolved seed config is reused.",
         "",
         "## Per-seed primary results",
         "",
-        "| seed | run | relative objective reduction | mass-weighted CAPT row TV | strict-advantage mass | LDP-degraded mass | D_test CAPT-LDP log loss | privacy lower (CAPT/LDP) | certificates |",
-        "|---:|:---|---:|---:|---:|---:|---:|---:|:---:|",
+        "| seed | run | excess-objective reduction | CAPT advantage (micro-units/display) | mass-weighted CAPT row TV | strict-advantage mass | LDP-degraded mass | D_test CAPT-LDP log loss | privacy lower (CAPT/LDP) | certificates |",
+        "|---:|:---|---:|---:|---:|---:|---:|---:|---:|:---:|",
     ]
     for _, row in ordered.iterrows():
         lines.append(
             f"| {int(row['frozen_design_seed'])} | `{row['run_id']}` | "
-            f"{100 * row['relative_capt_reduction_vs_context_ldp']:.3f}% | "
+            f"{100 * row['relative_excess_capt_reduction_vs_context_ldp']:.3f}% | "
+            f"{row['capt_advantage_micro_objective_units']:.6g} | "
             f"{row['mass_weighted_capt_row_tv']:.6g} | "
             f"{row['strict_advantage_context_mass']:.6g} | {row['ldp_degraded_context_mass']:.6g} | "
             f"{row['test_capt_minus_ldp_expected_randomized_log_loss']:.9g} | "
@@ -517,7 +538,8 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     )
     display_metrics = [
         "capt_advantage_over_context_ldp",
-        "relative_capt_reduction_vs_context_ldp",
+        "capt_advantage_micro_objective_units",
+        "relative_excess_capt_reduction_vs_context_ldp",
         "strict_advantage_context_mass",
         "ldp_degraded_context_mass",
         "test_capt_minus_ldp_expected_randomized_log_loss",
@@ -553,6 +575,10 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
             "The five seed audits are five separate within-seed simultaneous families; they are not one joint 95% statement over all seeds. Because no D_cert-to-D_test population bridge is asserted, lower witnesses and certificate path uppers are not treated as a comparable sandwich or subtracted into a gap.",
             "",
             "## Interpretation limits",
+            "",
+            "For empirical and hybrid objectives, the reported relative improvement subtracts the channel-invariant empirical entropy floor before normalization. This changes only reporting, not the LP or its optimizer. The exact raw objective, floor, excess objective, and absolute CAPT-LDP difference remain in `tables/seed_results.csv`; the absolute difference is also reported in micro-objective-units per display.",
+            "",
+            "`teacher_kl_fixed` is the deliberate R-objective-only ablation: partition and decoder retain the teacher-KL representation even when R uses an empirical or hybrid cost. `objective_aligned` constructs the common representation with the context-aggregated version of the same estimand used by each context R LP.",
             "",
             "This experiment measures sensitivity to the frozen design seed, not sampling uncertainty: the data rows and temporal splits do not change. With only a few seeds, ranges and individual points are more informative than asymptotic confidence intervals. The Sol bundle includes exact utility, lower-audit, certificate, and context tables, figures, resolved configs, mechanisms, and all per-context certificates for every seed.",
         ]
@@ -742,6 +768,11 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "source_git_sha": source_git_sha,
         "frozen_design_seeds": seeds,
         "context_utility_objective": base["context_utility_objective"],
+        "context_representation_mode": base["context_representation_mode"],
+        "representation_objective": str(seed_results["representation_objective"].iloc[0]),
+        "representation_token_cost_hashes": sorted(
+            seed_results["representation_token_cost_hash"].astype(str).unique().tolist()
+        ),
         "hybrid_empirical_weight": base["hybrid_empirical_weight"],
         "seed_count": len(seeds),
         "run_ids": {str(seed): path.name for seed, path in sorted(seed_paths.items())},
