@@ -46,13 +46,19 @@ def _resolve_git_commit(revision: str) -> str:
 def resolve_run_id(
     revision: str = typer.Argument(..., help="Git commit, short SHA, tag, or HEAD"),
     config: Path = typer.Option(..., "--config", exists=True),
+    frozen_design_seed: int | None = typer.Option(
+        None,
+        "--frozen-design-seed",
+        min=0,
+        help="Override the frozen encoder/partition design seed.",
+    ),
 ) -> None:
     """Predict the deterministic output ID for a config and source commit."""
     try:
         source_git_sha = _resolve_git_commit(revision)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="revision") from error
-    resolved = _load(config)
+    resolved = _load(config, {"frozen_design_seed": frozen_design_seed})
     # Match record_source_provenance() exactly without requiring the requested
     # revision to be the currently checked-out HEAD.
     resolved["require_clean_worktree"] = True
@@ -352,14 +358,51 @@ def utility_design(
 @app.command("context-stratified")
 def context_stratified(
     config: Path = typer.Option(..., "--config", exists=True),
+    frozen_design_seed: int | None = typer.Option(
+        None,
+        "--frozen-design-seed",
+        min=0,
+        help="Override frozen_design_seed while keeping the prescribed epsilon/L condition.",
+    ),
 ) -> None:
-    """Run the one-condition public-context CAPT diagnostic."""
+    """Run one prescribed public-context CAPT condition for one design seed."""
     from capt12.experiments.context_stratified import (
         run_context_stratified_diagnostic,
     )
 
-    path = run_context_stratified_diagnostic(_load(config))
+    path = run_context_stratified_diagnostic(
+        _load(config, {"frozen_design_seed": frozen_design_seed})
+    )
     typer.echo(json.dumps({"status": "ok", "run": str(path)}, indent=2))
+
+
+@app.command("context-seed-stability")
+def context_seed_stability(
+    config: Path = typer.Option(..., "--config", exists=True),
+    frozen_design_seeds: str = typer.Option(
+        "0,1,2",
+        "--frozen-design-seeds",
+        help="Comma-separated frozen design seeds; runs are sequential and then aggregated.",
+    ),
+) -> None:
+    """Run/reuse L16 epsilon=1 seeds and create one Sol review bundle."""
+    from capt12.experiments.context_seed_stability import run_context_seed_stability
+
+    try:
+        seeds = parse_csv_list(frozen_design_seeds, int, minimum=0)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
+    path = run_context_seed_stability(_load(config), seeds)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "summary": str(path),
+                "sol_review_bundle": str(path / "sol_seed_stability_review_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command("smoke")

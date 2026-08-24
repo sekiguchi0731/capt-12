@@ -95,6 +95,22 @@ all of them, run the prescribed L=16 primary diagnostic first:
 uv run capt12 context-stratified --config configs/criteo_context_stratified.yaml
 ```
 
+Override the frozen design seed for one run with
+`--frozen-design-seed 7`. To assess whether the result is stable across seeds,
+run the seeds sequentially and aggregate them in one command:
+
+```bash
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified.yaml \
+  --frozen-design-seeds 0,1,2
+```
+
+The stability command keeps epsilon=1 and L=16 fixed. It reuses completed runs
+from the same source commit, writes per-seed and across-seed CSVs plus one
+stability figure/report under `outputs/context_stratified_seed_summaries/`, and
+creates `sol_seed_stability_review_bundle.zip` containing all constituent
+mechanisms and certificates for one-file review.
+
 Run the substantially larger L=K=64 positive control separately, so a stopped
 positive-control solve cannot discard the completed primary artifacts:
 

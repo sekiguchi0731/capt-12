@@ -220,6 +220,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if not 0 < repair_margin <= 1e-8:
             raise ValueError("certificate_repair_margin must be in (0, 1e-8]")
         cfg["certificate_repair_margin"] = repair_margin
+    if "frozen_design_seed" in cfg:
+        frozen_design_seed = int(cfg["frozen_design_seed"])
+        if frozen_design_seed < 0:
+            raise ValueError("frozen_design_seed must be nonnegative")
+        cfg["frozen_design_seed"] = frozen_design_seed
     return cfg
 
 

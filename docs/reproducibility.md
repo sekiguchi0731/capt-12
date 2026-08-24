@@ -177,6 +177,23 @@ uv run capt12 context-stratified \
   --config configs/criteo_context_stratified.yaml
 ```
 
+For frozen-design seed stability at the same prescribed epsilon=1, L=16
+condition, use:
+
+```bash
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified.yaml \
+  --frozen-design-seeds 0,1,2
+```
+
+The seeds run sequentially to avoid multiplying local memory use. The complete
+command aggregates exact per-seed metrics, context rows, D_test metrics, and
+certificate summaries. Its output includes a deterministic stability PDF/PNG,
+an interpretation report, and one `sol_seed_stability_review_bundle.zip` that
+expands every per-seed review bundle. This experiment changes only
+`frozen_design_seed`; it is a design-sensitivity check, not a resampling or
+temporal-split uncertainty estimate.
+
 Only after the primary completes, run the isolated L=K=64 positive control:
 
 ```bash

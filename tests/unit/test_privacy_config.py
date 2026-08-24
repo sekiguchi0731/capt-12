@@ -110,6 +110,82 @@ def test_resolve_run_id_cli_reproduces_provenance_config_hash(monkeypatch) -> No
     assert payload["output_path"].endswith(payload["run_id"])
 
 
+def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_run(config):
+        captured.update(config)
+        return tmp_path / "seed-run"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_stratified.run_context_stratified_diagnostic",
+        fake_run,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-stratified",
+            "--config",
+            "configs/criteo_context_stratified.yaml",
+            "--frozen-design-seed",
+            "7",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["frozen_design_seed"] == 7
+    assert captured["epsilon"] == 1.0
+    assert captured["context_designs"] == ["joint_kmedoids_cost_medoid_L16"]
+
+
+def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_run(config, seeds):
+        captured["config"] = config
+        captured["seeds"] = seeds
+        return tmp_path / "seed-summary"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_seed_stability.run_context_seed_stability",
+        fake_run,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified.yaml",
+            "--frozen-design-seeds",
+            "7,2,7,4",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["seeds"] == [2, 4, 7]
+    assert captured["config"]["epsilon"] == 1.0
+    assert "sol_seed_stability_review_bundle.zip" in result.output
+
+
+def test_resolve_run_id_changes_with_frozen_design_seed(monkeypatch) -> None:
+    monkeypatch.setattr("capt12.cli._resolve_git_commit", lambda revision: "b" * 40)
+    runner = CliRunner()
+    payloads = []
+    for seed in (0, 1):
+        result = runner.invoke(
+            app,
+            [
+                "resolve-run-id",
+                "HEAD",
+                "--config",
+                "configs/criteo_context_stratified.yaml",
+                "--frozen-design-seed",
+                str(seed),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payloads.append(json.loads(result.output))
+    assert payloads[0]["run_id"] != payloads[1]["run_id"]
+
+
 def test_splits_reject_day_and_row_overlap() -> None:
     with pytest.raises(ValueError):
         assert_disjoint_splits({"D_model": [1, 2], "D_design": [2, 3]})
