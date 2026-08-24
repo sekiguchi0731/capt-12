@@ -147,6 +147,11 @@ If HiGHS dual simplex returns numerical status 4/Unknown, the identical LP is
 retried once with HiGHS IPM at the same feasibility tolerance. A retry result
 is never accepted without the usual support-oracle and independent certificate
 verification stages.
+If both algorithms reject the auxiliary-variable shared-support master, CAPT
+automatically retries the same robust feasible set with the direct
+paired-witness cutting-plane formulation. This removes the ill-conditioned
+support-bound auxiliary variables without changing the objective, privacy
+constraints, confidence sets, or certificate tolerance.
 
 To reproduce the deterministic output directory from a Git revision and the
 same config used for the run:

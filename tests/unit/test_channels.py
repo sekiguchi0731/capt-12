@@ -4,6 +4,7 @@ import numpy as np
 from scipy import sparse
 from scipy.optimize import OptimizeResult, linprog
 
+import capt12.certification.robust as robust_module
 import capt12.mechanisms.lp as lp_module
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
 from capt12.certification.robust import (
@@ -18,6 +19,8 @@ from capt12.data.synthetic import theorem4_counterexample
 from capt12.decoders.registry import build_decoder
 from capt12.mechanisms.baselines import common_cover, k_ary_rr
 from capt12.mechanisms.lp import (
+    ChannelSolution,
+    SolverInfo,
     _solve_channel_lp,
     lift_block_channel,
     solve_block_lp,
@@ -225,6 +228,67 @@ def test_shared_support_bounds_match_paired_witness_objective() -> None:
     assert paired.solver.status == shared.solver.status == "optimal"
     np.testing.assert_allclose(shared.solver.objective, paired.solver.objective, atol=1e-10)
     np.testing.assert_allclose(shared.channel, paired.channel, atol=1e-9)
+
+
+def test_shared_support_numerical_failure_uses_equivalent_paired_fallback(
+    monkeypatch,
+) -> None:
+    failed = ChannelSolution(
+        None,
+        SolverInfo(
+            status="solver_failure",
+            objective=None,
+            runtime_seconds=0.25,
+            iterations=10,
+            message="synthetic HiGHS status 4/Unknown",
+        ),
+    )
+
+    def fail_shared(*args, **kwargs):
+        return failed, robust_module.VerificationResult(
+            False,
+            float("inf"),
+            float("inf"),
+            {"error": failed.solver.message},
+            0,
+        )
+
+    monkeypatch.setattr(robust_module, "_solve_shared_support_bounds", fail_shared)
+    first = np.array([0.8, 0.2])
+    second = np.array([0.2, 0.8])
+    boxes = {
+        "first": ConfidenceBox(first, first, first, "point", 1.0),
+        "second": ConfidenceBox(second, second, second, "point", 1.0),
+    }
+    adjacency = [
+        AdjacentPair("first", "second", 0.5),
+        AdjacentPair("second", "first", 0.5),
+    ]
+    events: list[tuple[str, dict]] = []
+
+    solution, verification = solve_robust_block_lp(
+        1 - np.eye(2),
+        np.array([0.5, 0.5]),
+        boxes,
+        adjacency,
+        cut_formulation="shared_support_bounds",
+        progress=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    assert solution.channel is not None
+    assert solution.solver.status == "optimal"
+    assert verification.valid
+    assert solution.solver.runtime_seconds >= 0.25
+    assert solution.cuts[0] == {
+        "source": "numerical_formulation_fallback",
+        "failed_formulation": "shared_support_bounds",
+        "fallback_formulation": "paired_witness",
+        "constraints_relaxed": False,
+        "tolerance_changed": False,
+    }
+    names = [event for event, _ in events]
+    assert "robust_formulation_fallback_started" in names
+    assert names[-1] == "robust_formulation_fallback_finished"
 
 
 def test_shared_support_checkpoint_resumes_after_explicit_iteration_limit(tmp_path) -> None:

@@ -932,7 +932,7 @@ def solve_robust_block_lp(
             **process_memory_bytes(),
         )
     if cut_formulation == "shared_support_bounds":
-        return _solve_shared_support_bounds(
+        shared_solution, shared_verification = _solve_shared_support_bounds(
             cost,
             block_weights,
             boxes,
@@ -949,6 +949,80 @@ def solve_robust_block_lp(
             resume_checkpoint=resume_checkpoint,
             checkpoint_every=checkpoint_every,
         )
+        if shared_solution.channel is not None:
+            return shared_solution, shared_verification
+
+        # A common input-independent channel is feasible for every valid
+        # robust privacy problem with nonnegative epsilon.  Consequently, a
+        # numerical status from the auxiliary-variable shared-support master
+        # is not evidence that the mathematical problem is infeasible.  Retry
+        # the same robust feasible set with the existing direct paired-witness
+        # cutting plane, which removes the support-bound auxiliary variables.
+        # Its output is still accepted only after the independent robust
+        # verifier below (and context runs subsequently apply strict uniform
+        # mixing plus Decimal verification to the released channel).
+        shared_failure = shared_solution.solver.message
+        _emit_progress(
+            progress,
+            "robust_formulation_fallback_started",
+            label=progress_label,
+            failed_formulation="shared_support_bounds",
+            failed_status=shared_solution.solver.status,
+            failed_message=shared_failure,
+            fallback_formulation="paired_witness",
+            fallback_variable_count=channel_variable_count,
+            fallback_auxiliary_variable_count=0,
+            certificate_tolerance=tolerance,
+            **process_memory_bytes(),
+        )
+        fallback_started = time.perf_counter()
+        fallback_solution, fallback_verification = solve_robust_block_lp(
+            cost,
+            block_weights,
+            boxes,
+            adjacency,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+            time_limit=time_limit,
+            progress=progress,
+            progress_label=f"{progress_label}/paired_witness_fallback",
+            solver_verbose=solver_verbose,
+            heartbeat_seconds=heartbeat_seconds,
+            cut_formulation="paired_witness",
+            checkpoint_path=None,
+            resume_checkpoint=False,
+            checkpoint_every=checkpoint_every,
+        )
+        fallback_solution.solver.runtime_seconds += shared_solution.solver.runtime_seconds
+        fallback_solution.solver.message = (
+            "shared_support_bounds numerical failure: "
+            f"{shared_failure} | paired_witness fallback: "
+            f"{fallback_solution.solver.message}"
+        )
+        fallback_solution.cuts.insert(
+            0,
+            {
+                "source": "numerical_formulation_fallback",
+                "failed_formulation": "shared_support_bounds",
+                "fallback_formulation": "paired_witness",
+                "constraints_relaxed": False,
+                "tolerance_changed": False,
+            },
+        )
+        _emit_progress(
+            progress,
+            "robust_formulation_fallback_finished",
+            label=progress_label,
+            fallback_formulation="paired_witness",
+            fallback_seconds=time.perf_counter() - fallback_started,
+            status=fallback_solution.solver.status,
+            valid=fallback_verification.valid,
+            checked_constraints=fallback_verification.checked_constraints,
+            max_violation=fallback_verification.max_violation,
+            support_cut_count=len(fallback_solution.cuts),
+            **process_memory_bytes(),
+        )
+        return fallback_solution, fallback_verification
     cuts: list[tuple[np.ndarray, np.ndarray, float, int]] = []
     cut_keys: set[tuple[bytes, bytes, float, int]] = set()
     solution: ChannelSolution | None = None
