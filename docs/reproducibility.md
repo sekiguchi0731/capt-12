@@ -183,7 +183,8 @@ condition, use:
 ```bash
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
-  --frozen-design-seeds 0,1,2
+  --frozen-design-seeds 0,1,2,3,4 \
+  --utility-objective teacher_kl
 ```
 
 The seeds run sequentially to avoid multiplying local memory use. The complete
@@ -193,6 +194,21 @@ an interpretation report, and one `sol_seed_stability_review_bundle.zip` that
 expands every per-seed review bundle. This experiment changes only
 `frozen_design_seed`; it is a design-sensitivity check, not a resampling or
 temporal-split uncertainty estimate.
+
+Use `--utility-objective empirical_logloss` to build the fixed linear LP cost
+from D_design click labels, or `--utility-objective hybrid_logloss_kl
+--hybrid-empirical-weight 0.5` for a predeclared blend with teacher KL. The
+partition, decoder, support, adjacency, D_cert confidence problem, and D_test
+evaluation remain unchanged. D_test must not be used to choose the objective
+or hybrid weight.
+
+Every constituent run also samples the released context CAPT and matched
+context-LDP mechanisms once per D_attack_train/D_test user-day and writes
+`tables/lower_audit.csv`. Candidate contexts, groups, and output events are
+fixed on D_attack_train. The configured audit alpha is first split across the
+two methods and then across all ordered comparisons/events/strata and both CP
+bounds. Without an explicit D_cert-to-D_test population bridge, this lower
+witness is not subtracted from the certificate upper.
 
 Only after the primary completes, run the isolated L=K=64 positive control:
 

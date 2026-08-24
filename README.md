@@ -102,12 +102,21 @@ run the seeds sequentially and aggregate them in one command:
 ```bash
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
-  --frozen-design-seeds 0,1,2
+  --frozen-design-seeds 0,1,2,3,4 \
+  --utility-objective teacher_kl
 ```
+
+The LP objective can be changed without changing the frozen support,
+partition/decoder, privacy constraints, or certificate definition. Supported
+values are `teacher_kl`, `empirical_logloss` (D_design click labels only), and
+`hybrid_logloss_kl`; the hybrid additionally accepts
+`--hybrid-empirical-weight 0.5`. Never select the objective or hybrid weight
+from D_test.
 
 The stability command keeps epsilon=1 and L=16 fixed. It reuses completed runs
 from the same source commit, writes per-seed and across-seed CSVs plus one
-stability figure/report under `outputs/context_stratified_seed_summaries/`, and
+stability figure/report and D_attack_train-fixed privacy lower audits under
+`outputs/context_stratified_seed_summaries/`, and
 creates `sol_seed_stability_review_bundle.zip` containing all constituent
 mechanisms and certificates for one-file review.
 

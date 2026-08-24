@@ -20,7 +20,7 @@ from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
 _DESIGN = "joint_kmedoids_cost_medoid_L16"
-_SUMMARY_VERSION = 1
+_SUMMARY_VERSION = 2
 
 
 def _emit(event: str, **fields: Any) -> None:
@@ -42,6 +42,7 @@ def _completed_run(path: Path) -> bool:
         path / "tables" / "context_results.csv",
         path / "tables" / "test_metrics.csv",
         path / "tables" / "certificate_summary.csv",
+        path / "tables" / "lower_audit.csv",
         path / "context_stratified_metadata.json",
         path / "sol_review_bundle.zip",
     ]
@@ -87,11 +88,13 @@ def _read_seed_run(
         "certificates": pd.read_csv(
             path / "tables" / "certificate_summary.csv", dtype={"public_context": str}
         ),
+        "audits": pd.read_csv(path / "tables" / "lower_audit.csv"),
     }
     aggregate = tables["aggregate"]
     contexts = tables["contexts"]
     tests = tables["tests"]
     certificates = tables["certificates"]
+    audits = tables["audits"]
 
     if manifest.get("status") != "complete":
         raise RuntimeError(f"seed {seed} run is not complete: {path}")
@@ -130,9 +133,17 @@ def _read_seed_run(
     constant = _method_row(aggregate, "context_constant")
     capt_test = _method_row(tests, "context_capt")
     ldp_test = _method_row(tests, "context_ldp")
-    strict_advantage = contexts["capt_advantage_over_context_ldp"] > 1e-12
     degraded = _boolean_values(contexts["ldp_degraded"])
+    strict_advantage = (contexts["capt_advantage_over_context_ldp"] > 1e-12) & ~degraded
     masses = contexts["design_mass"].to_numpy(float)
+    capt_audit = _method_row(audits, "context_capt")
+    ldp_audit = _method_row(audits, "context_ldp")
+    relative_reduction = float(
+        (ldp["aggregate_distortion"] - capt["aggregate_distortion"])
+        / ldp["aggregate_distortion"]
+    )
+    strict_mass = float(contexts.loc[strict_advantage, "design_mass"].sum())
+    degraded_mass = float(contexts.loc[degraded, "design_mass"].sum())
 
     design_manifest = mechanism["designs"][_DESIGN]
     row = {
@@ -146,6 +157,8 @@ def _read_seed_run(
         "context_count": int(metadata["context_count"]),
         "L": 16,
         "epsilon": 1.0,
+        "utility_objective": str(resolved["context_utility_objective"]),
+        "hybrid_empirical_weight": float(resolved["hybrid_empirical_weight"]),
         "context_constant_distortion": float(constant["aggregate_distortion"]),
         "context_ldp_distortion": float(ldp["aggregate_distortion"]),
         "context_capt_pre_repair_distortion": float(capt_pre["aggregate_distortion"]),
@@ -153,13 +166,15 @@ def _read_seed_run(
         "capt_advantage_over_context_ldp": float(
             ldp["aggregate_distortion"] - capt["aggregate_distortion"]
         ),
+        "relative_capt_reduction_vs_context_ldp": relative_reduction,
         "repair_distortion_cost": float(
             capt["aggregate_distortion"] - capt_pre["aggregate_distortion"]
         ),
         "strict_advantage_context_count": int(strict_advantage.sum()),
-        "strict_advantage_context_mass": float(contexts.loc[strict_advantage, "design_mass"].sum()),
+        "strict_advantage_context_mass": strict_mass,
         "ldp_degraded_context_count": int(degraded.sum()),
-        "ldp_degraded_context_mass": float(contexts.loc[degraded, "design_mass"].sum()),
+        "ldp_degraded_context_mass": degraded_mass,
+        "tie_or_other_context_mass": max(0.0, 1.0 - strict_mass - degraded_mass),
         "mass_weighted_capt_row_tv": float(
             np.sum(masses * contexts["context_capt_row_tv"].to_numpy(float))
         ),
@@ -180,6 +195,24 @@ def _read_seed_run(
         "wall_seconds": float(metadata["wall_seconds"]),
         "process_peak_rss_bytes": int(metadata["process_peak_rss_bytes"]),
         "test_rows": int(capt_test["test_rows"]),
+        "lower_audit_context_capt_epsilon": float(capt_audit["lower_epsilon"]),
+        "lower_audit_context_ldp_epsilon": float(ldp_audit["lower_epsilon"]),
+        "lower_audit_context_capt_tests": int(capt_audit["events_tested"]),
+        "lower_audit_context_ldp_tests": int(ldp_audit["events_tested"]),
+        "lower_audit_total_bounds": int(
+            capt_audit["bounds_tested"] + ldp_audit["bounds_tested"]
+        ),
+        "lower_audit_familywise_alpha": float(capt_audit["audit_familywise_alpha"]),
+        "lower_audit_any_comparable": bool(
+            _boolean_values(
+                pd.Series(
+                    [
+                        capt_audit["certificate_comparable"],
+                        ldp_audit["certificate_comparable"],
+                    ]
+                )
+            ).any()
+        ),
     }
     for metric in [
         "expected_randomized_log_loss",
@@ -202,10 +235,12 @@ def _stability_table(seed_results: pd.DataFrame) -> pd.DataFrame:
         "context_capt_distortion",
         "context_ldp_distortion",
         "capt_advantage_over_context_ldp",
+        "relative_capt_reduction_vs_context_ldp",
         "strict_advantage_context_count",
         "strict_advantage_context_mass",
         "ldp_degraded_context_count",
         "ldp_degraded_context_mass",
+        "tie_or_other_context_mass",
         "mass_weighted_capt_row_tv",
         "max_capt_row_tv",
         "max_repair_lambda",
@@ -223,6 +258,8 @@ def _stability_table(seed_results: pd.DataFrame) -> pd.DataFrame:
         "test_capt_minus_ldp_PR_AUC",
         "test_context_capt_ECE",
         "test_context_ldp_ECE",
+        "lower_audit_context_capt_epsilon",
+        "lower_audit_context_ldp_epsilon",
         "wall_seconds",
         "process_peak_rss_bytes",
     ]
@@ -251,92 +288,162 @@ def _stability_table(seed_results: pd.DataFrame) -> pd.DataFrame:
 def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     frame = seed_results.sort_values("frozen_design_seed").reset_index(drop=True)
     labels = [str(value) for value in frame["frozen_design_seed"]]
-    y = np.arange(len(frame))
+    x = np.arange(len(frame))
     blue = "#2563A6"
     orange = "#D97706"
-    gray = "#6B7280"
-    fig, axes = plt.subplots(2, 2, figsize=(11.2, 7.6))
+    pale = "#D9E6F2"
+    relative = 100 * (
+        frame["context_ldp_distortion"].to_numpy(float)
+        - frame["context_capt_distortion"].to_numpy(float)
+    ) / frame["context_ldp_distortion"].to_numpy(float)
+    strict = frame["strict_advantage_context_mass"].to_numpy(float)
+    degraded = frame["ldp_degraded_context_mass"].to_numpy(float)
+    tie = np.maximum(0.0, 1.0 - strict - degraded)
+    ldp_ceiling = math.tanh(0.5)
 
-    def dumbbell(
-        axis: Any,
-        left: np.ndarray,
-        right: np.ndarray,
-        xlabel: str,
-        *,
-        use_offset: bool = True,
-    ) -> None:
-        for index in range(len(frame)):
-            axis.plot([left[index], right[index]], [y[index], y[index]], color="#CBD5E1", lw=2)
-        axis.scatter(left, y, color=orange, marker="s", label="context LDP", zorder=3)
-        axis.scatter(right, y, color=blue, marker="o", label="context CAPT", zorder=3)
-        axis.set_yticks(y, labels)
-        axis.set_ylabel("Frozen design seed")
-        axis.set_xlabel(xlabel)
-        if not use_offset:
-            axis.ticklabel_format(axis="x", style="plain", useOffset=False)
-            axis.tick_params(axis="x", labelsize=8)
-        axis.grid(axis="x", alpha=0.22)
+    fig = plt.figure(figsize=(12.4, 8.4))
+    outer = fig.add_gridspec(2, 2, hspace=0.34, wspace=0.28)
+    reduction_axis = fig.add_subplot(outer[0, 0])
+    tv_axis = fig.add_subplot(outer[0, 1])
+    mass_axis = fig.add_subplot(outer[1, 0])
+    metric_grid = outer[1, 1].subgridspec(3, 1, hspace=0.15)
+    metric_axes = [fig.add_subplot(metric_grid[index, 0]) for index in range(3)]
 
-    dumbbell(
-        axes[0, 0],
-        frame["context_ldp_distortion"].to_numpy(float),
-        frame["context_capt_distortion"].to_numpy(float),
-        "D_design distortion (lower is better)",
-    )
-    axes[0, 0].set_title("CAPT advantage across seeds")
-    axes[0, 0].legend(fontsize=8)
+    bars = reduction_axis.bar(x, relative, color=blue, edgecolor="#1F2937")
+    reduction_axis.axhline(0, color="#111827", lw=0.8)
+    reduction_axis.bar_label(bars, fmt="%.2f%%", padding=3, fontsize=8)
+    reduction_axis.set_xticks(x, labels)
+    reduction_axis.set_xlabel("Frozen design seed")
+    reduction_axis.set_ylabel("Reduction vs context LDP (%)")
+    reduction_axis.set_title("A. Paired D_design objective reduction")
+    reduction_axis.grid(axis="y", alpha=0.22)
+    reduction_axis.margins(y=0.16)
 
-    advantage = frame["capt_advantage_over_context_ldp"].to_numpy(float)
-    axes[0, 1].bar(labels, advantage, color=blue)
-    axes[0, 1].axhline(0, color="#111827", lw=0.8)
-    axes[0, 1].set_title("Utility advantage is positive if above zero")
-    axes[0, 1].set_xlabel("Frozen design seed")
-    axes[0, 1].set_ylabel("D(LDP) - D(CAPT)")
-    axes[0, 1].grid(axis="y", alpha=0.22)
-
-    width = 0.36
-    x = np.arange(len(frame))
-    axes[1, 0].bar(
-        x - width / 2,
-        frame["strict_advantage_context_mass"],
-        width,
+    tv_axis.plot(
+        x,
+        frame["mass_weighted_capt_row_tv"],
         color=blue,
-        label="strict CAPT advantage",
+        marker="o",
+        lw=1.8,
+        label="mass-weighted CAPT row TV",
     )
-    axes[1, 0].bar(
-        x + width / 2,
-        frame["ldp_degraded_context_mass"],
-        width,
-        color=gray,
+    tv_axis.scatter(
+        x,
+        frame["max_capt_row_tv"],
+        color=blue,
+        facecolors="white",
+        marker="^",
+        s=48,
+        label="maximum context row TV",
+        zorder=3,
+    )
+    tv_axis.axhline(
+        ldp_ceiling,
+        color=orange,
+        ls="--",
+        lw=1.6,
+        label=r"epsilon-LDP ceiling $\tanh(1/2)$",
+    )
+    tv_axis.set_xticks(x, labels)
+    tv_axis.set_xlabel("Frozen design seed")
+    tv_axis.set_ylabel("Maximum pairwise row TV")
+    tv_axis.set_title("B. CAPT uses a non-LDP feasible region")
+    tv_axis.grid(axis="y", alpha=0.22)
+    tv_axis.legend(fontsize=8, loc="center right")
+
+    mass_axis.bar(x, strict, color=blue, edgecolor="#1F2937", label="strict CAPT advantage")
+    mass_axis.bar(x, tie, bottom=strict, color=pale, edgecolor="#1F2937", label="tie / other")
+    mass_axis.bar(
+        x,
+        degraded,
+        bottom=strict + tie,
+        color=orange,
+        edgecolor="#1F2937",
+        hatch="//",
         label="LDP-degraded",
     )
-    axes[1, 0].set_xticks(x, labels)
-    axes[1, 0].set_ylim(0, 1.02)
-    axes[1, 0].set_xlabel("Frozen design seed")
-    axes[1, 0].set_ylabel("D_design context mass")
-    axes[1, 0].set_title("Where CAPT improves or degrades")
-    axes[1, 0].legend(fontsize=8)
-    axes[1, 0].grid(axis="y", alpha=0.22)
+    for index, (strict_value, degraded_value) in enumerate(zip(strict, degraded, strict=True)):
+        mass_axis.text(
+            index,
+            strict_value / 2,
+            f"{100 * strict_value:.2f}% strict",
+            ha="center",
+            va="center",
+            color="white",
+            fontsize=8,
+            rotation=90 if len(frame) > 6 else 0,
+        )
+        mass_axis.text(
+            index,
+            0.985,
+            f"LDP {100 * degraded_value:.4f}%",
+            ha="center",
+            va="top",
+            color=orange,
+            fontsize=6.5,
+            rotation=90,
+        )
+    mass_axis.set_xticks(x, labels)
+    mass_axis.set_ylim(0, 1.02)
+    mass_axis.set_xlabel("Frozen design seed")
+    mass_axis.set_ylabel("D_design context mass")
+    mass_axis.set_title("C. Mutually exclusive context-mass states")
+    mass_axis.legend(fontsize=8, loc="lower left")
+    mass_axis.grid(axis="y", alpha=0.18)
 
-    dumbbell(
-        axes[1, 1],
-        frame["test_context_ldp_expected_randomized_log_loss"].to_numpy(float),
-        frame["test_context_capt_expected_randomized_log_loss"].to_numpy(float),
-        "D_test expected randomized log loss (lower is better)",
-        use_offset=False,
+    metric_specs = [
+        (
+            "Expected log loss",
+            1e6
+            * (
+                frame["test_context_ldp_expected_randomized_log_loss"].to_numpy(float)
+                - frame["test_context_capt_expected_randomized_log_loss"].to_numpy(float)
+            ),
+            r"$(LDP-CAPT)\times10^6$",
+        ),
+        (
+            "ROC-AUC",
+            1e3 * frame["test_capt_minus_ldp_ROC_AUC"].to_numpy(float),
+            r"$(CAPT-LDP)\times10^3$",
+        ),
+        (
+            "PR-AUC",
+            1e3 * frame["test_capt_minus_ldp_PR_AUC"].to_numpy(float),
+            r"$(CAPT-LDP)\times10^3$",
+        ),
+    ]
+    for index, (axis, (metric, values, ylabel)) in enumerate(
+        zip(metric_axes, metric_specs, strict=True)
+    ):
+        colors = np.where(values >= 0, blue, orange)
+        axis.axhline(0, color="#111827", lw=0.8)
+        axis.bar(x, values, color=colors, width=0.68)
+        limit = max(float(np.max(np.abs(values))) * 1.3, 1e-9)
+        axis.set_ylim(-limit, limit)
+        axis.set_ylabel(ylabel, fontsize=7)
+        axis.text(0.01, 0.83, metric, transform=axis.transAxes, fontsize=8)
+        axis.grid(axis="y", alpha=0.18)
+        if index < 2:
+            axis.set_xticks(x, [])
+        else:
+            axis.set_xticks(x, labels)
+            axis.set_xlabel("Frozen design seed")
+    metric_axes[0].set_title("D. Paired D_test improvement (positive favors CAPT)")
+
+    objective = str(frame.get("utility_objective", pd.Series(["teacher_kl"])).iloc[0])
+    fig.suptitle(
+        f"Criteo public-context CAPT stability; epsilon=1, L=16; objective={objective}",
+        y=0.985,
     )
-    axes[1, 1].set_title("Frozen D_test comparison")
-
-    fig.suptitle("Criteo public-context CAPT stability; epsilon=1, L=16")
     fig.text(
         0.5,
-        0.01,
-        "Only frozen_design_seed changes; temporal splits, support policy, privacy definition, and objective stay fixed.",
+        0.008,
+        "Only frozen_design_seed changes. Bars/points are paired by seed; no seed-level confidence interval is implied.",
         ha="center",
         fontsize=8,
         color="#4B5563",
     )
-    fig.tight_layout(rect=(0, 0.035, 1, 0.96))
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.08, top=0.92)
     fixed_time = datetime(2000, 1, 1, tzinfo=UTC)
     fig.savefig(
         output_dir / "figures" / "context_seed_stability.pdf",
@@ -363,6 +470,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     all_certified = bool(ordered["all_certificates_valid"].all())
     all_finite = bool(np.isfinite(ordered["conservative_max_realized_epsilon"]).all())
     total_constraints = int(ordered["certificate_checked_constraints"].sum())
+    objective = str(ordered["utility_objective"].iloc[0])
     conclusion = (
         "The CAPT-over-context-LDP design utility advantage is positive for every seed."
         if all_advantage
@@ -380,22 +488,23 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         "",
         f"- Frozen design seeds: {', '.join(map(str, ordered['frozen_design_seed']))}.",
         "- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon=1; joint weighted k-medoids; L=16.",
+        f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
         "- Temporal splits, support/adjacency/privacy definition, utility objective, D_cert, and D_test are fixed. Only `frozen_design_seed` changes the frozen encoder/design realization.",
         "- Runs are sequential to bound local peak memory. A completed run with the exact source SHA and resolved seed config is reused.",
         "",
         "## Per-seed primary results",
         "",
-        "| seed | run | CAPT distortion | context LDP distortion | CAPT advantage | strict-advantage mass | LDP-degraded mass | D_test CAPT log loss | D_test LDP log loss | certificates |",
-        "|---:|:---|---:|---:|---:|---:|---:|---:|---:|:---:|",
+        "| seed | run | relative objective reduction | mass-weighted CAPT row TV | strict-advantage mass | LDP-degraded mass | D_test CAPT-LDP log loss | privacy lower (CAPT/LDP) | certificates |",
+        "|---:|:---|---:|---:|---:|---:|---:|---:|:---:|",
     ]
     for _, row in ordered.iterrows():
         lines.append(
             f"| {int(row['frozen_design_seed'])} | `{row['run_id']}` | "
-            f"{row['context_capt_distortion']:.9g} | {row['context_ldp_distortion']:.9g} | "
-            f"{row['capt_advantage_over_context_ldp']:.9g} | "
+            f"{100 * row['relative_capt_reduction_vs_context_ldp']:.3f}% | "
+            f"{row['mass_weighted_capt_row_tv']:.6g} | "
             f"{row['strict_advantage_context_mass']:.6g} | {row['ldp_degraded_context_mass']:.6g} | "
-            f"{row['test_context_capt_expected_randomized_log_loss']:.9g} | "
-            f"{row['test_context_ldp_expected_randomized_log_loss']:.9g} | valid |"
+            f"{row['test_capt_minus_ldp_expected_randomized_log_loss']:.9g} | "
+            f"{row['lower_audit_context_capt_epsilon']:.6g} / {row['lower_audit_context_ldp_epsilon']:.6g} | valid |"
         )
     lines.extend(
         [
@@ -408,6 +517,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     )
     display_metrics = [
         "capt_advantage_over_context_ldp",
+        "relative_capt_reduction_vs_context_ldp",
         "strict_advantage_context_mass",
         "ldp_degraded_context_mass",
         "test_capt_minus_ldp_expected_randomized_log_loss",
@@ -415,6 +525,8 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         "test_capt_minus_ldp_PR_AUC",
         "max_repair_lambda",
         "conservative_max_realized_epsilon",
+        "lower_audit_context_capt_epsilon",
+        "lower_audit_context_ldp_epsilon",
     ]
     indexed = stability.set_index("metric")
     for metric in display_metrics:
@@ -434,9 +546,15 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
             f"- Maximum repair lambda: {ordered['max_repair_lambda'].max():.9g}.",
             "- Every released channel has zero positive-numerator/zero-denominator constraints; this is checked inside each constituent run before aggregation.",
             "",
+            "## Privacy lower audit",
+            "",
+            f"Each seed reports D_attack_train-fixed lower audits for context CAPT and matched context LDP. Alpha={ordered['lower_audit_familywise_alpha'].iloc[0]:.6g} is split across the two mechanism families before each audit allocates over all tests and both CP bounds. Across seeds, the maximum CAPT lower is {ordered['lower_audit_context_capt_epsilon'].max():.9g}, and the maximum LDP lower is {ordered['lower_audit_context_ldp_epsilon'].max():.9g}.",
+            "",
+            "The five seed audits are five separate within-seed simultaneous families; they are not one joint 95% statement over all seeds. Because no D_cert-to-D_test population bridge is asserted, lower witnesses and certificate path uppers are not treated as a comparable sandwich or subtracted into a gap.",
+            "",
             "## Interpretation limits",
             "",
-            "This experiment measures sensitivity to the frozen design seed, not sampling uncertainty: the data rows and temporal splits do not change. With only a few seeds, ranges and individual points are more informative than asymptotic confidence intervals. The Sol bundle includes exact tables, figures, resolved configs, mechanisms, and all per-context certificates for every seed.",
+            "This experiment measures sensitivity to the frozen design seed, not sampling uncertainty: the data rows and temporal splits do not change. With only a few seeds, ranges and individual points are more informative than asymptotic confidence intervals. The Sol bundle includes exact utility, lower-audit, certificate, and context tables, figures, resolved configs, mechanisms, and all per-context certificates for every seed.",
         ]
     )
     (output_dir / "context_seed_stability_report.md").write_text(
@@ -584,6 +702,7 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "contexts": [],
         "tests": [],
         "certificates": [],
+        "audits": [],
     }
     for seed, seed_path in sorted(seed_paths.items()):
         row, tables = _read_seed_run(
@@ -622,6 +741,8 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "version": _SUMMARY_VERSION,
         "source_git_sha": source_git_sha,
         "frozen_design_seeds": seeds,
+        "context_utility_objective": base["context_utility_objective"],
+        "hybrid_empirical_weight": base["hybrid_empirical_weight"],
         "seed_count": len(seeds),
         "run_ids": {str(seed): path.name for seed, path in sorted(seed_paths.items())},
         "all_certificates_valid": bool(seed_results["all_certificates_valid"].all()),
@@ -630,6 +751,12 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         ),
         "total_certificate_count": int(seed_results["certificate_count"].sum()),
         "total_checked_constraints": int(seed_results["certificate_checked_constraints"].sum()),
+        "lower_audit_familywise_alpha_per_seed": float(
+            seed_results["lower_audit_familywise_alpha"].iloc[0]
+        ),
+        "max_context_capt_lower_epsilon": float(
+            seed_results["lower_audit_context_capt_epsilon"].max()
+        ),
         "wall_seconds_including_new_seed_runs": time.perf_counter() - started,
     }
     (output_dir / "context_seed_stability_metadata.json").write_text(

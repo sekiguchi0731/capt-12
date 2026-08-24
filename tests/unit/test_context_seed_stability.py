@@ -21,10 +21,12 @@ def _seed_frame() -> pd.DataFrame:
             "context_capt_distortion": 3.2e-8 + shift,
             "context_ldp_distortion": 3.7e-8 + shift,
             "capt_advantage_over_context_ldp": 5e-9,
+            "relative_capt_reduction_vs_context_ldp": 5e-9 / (3.7e-8 + shift),
             "strict_advantage_context_count": 20 + seed,
             "strict_advantage_context_mass": 0.99 - seed * 1e-4,
             "ldp_degraded_context_count": 5,
             "ldp_degraded_context_mass": 2e-4,
+            "tie_or_other_context_mass": 1 - (0.99 - seed * 1e-4) - 2e-4,
             "mass_weighted_capt_row_tv": 0.51,
             "max_capt_row_tv": 0.6,
             "max_repair_lambda": 1e-9,
@@ -33,6 +35,9 @@ def _seed_frame() -> pd.DataFrame:
             "conservative_max_additive_violation": -1e-10,
             "wall_seconds": 200.0 + seed,
             "process_peak_rss_bytes": 2_000_000_000 + seed,
+            "utility_objective": "teacher_kl",
+            "lower_audit_context_capt_epsilon": 0.1 + seed * 0.01,
+            "lower_audit_context_ldp_epsilon": 0.08 + seed * 0.01,
         }
         for method, method_shift in [("capt", 0.0), ("ldp", 1e-6)]:
             row[f"test_context_{method}_expected_randomized_log_loss"] = (
