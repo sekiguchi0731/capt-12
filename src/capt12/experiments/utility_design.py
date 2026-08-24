@@ -125,29 +125,36 @@ def _build_designs(
             ),
         ),
     ]
-    joint_assignment = build_partition(
-        "weighted_cost_kmedoids",
-        frequencies,
-        16,
-        token_cost=token_cost,
-        token_weights=objective_weights,
-    )
-    raw.append(
-        (
-            "joint_kmedoids_cost_medoid_L16",
-            "Joint k-medoids (L=16)",
+    # Keep the same weighted k-medoids/cost-medoid construction at every
+    # reported compression level. This makes L an isolated capacity ablation:
+    # the representation estimand, privacy definition, and R objective do not
+    # change when moving between L=8, 16, and 32.
+    for block_count in (8, 16, 32):
+        if block_count > len(frequencies):
+            continue
+        joint_assignment = build_partition(
             "weighted_cost_kmedoids",
-            "cost_medoid",
-            joint_assignment,
-            build_decoder(
+            frequencies,
+            block_count,
+            token_cost=token_cost,
+            token_weights=objective_weights,
+        )
+        raw.append(
+            (
+                f"joint_kmedoids_cost_medoid_L{block_count}",
+                f"Joint k-medoids (L={block_count})",
+                "weighted_cost_kmedoids",
                 "cost_medoid",
                 joint_assignment,
-                frequencies,
-                token_cost=token_cost,
-                token_weights=cost_weights,
-            ),
+                build_decoder(
+                    "cost_medoid",
+                    joint_assignment,
+                    frequencies,
+                    token_cost=token_cost,
+                    token_weights=cost_weights,
+                ),
+            )
         )
-    )
     singleton_assignment = np.arange(len(frequencies), dtype=int)
     raw.append(
         (

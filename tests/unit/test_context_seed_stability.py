@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from capt12.experiments.context_seed_stability import (
+    _joint_design,
     _plot_stability,
     _stability_table,
     _write_review_bundle,
@@ -13,11 +14,18 @@ from capt12.experiments.context_seed_stability import (
 from capt12.utils.artifacts import sha256_file
 
 
+def test_joint_seed_stability_design_accepts_reported_dimensions() -> None:
+    for block_count in (8, 16, 32):
+        name = f"joint_kmedoids_cost_medoid_L{block_count}"
+        assert _joint_design({"context_designs": [name]}) == (name, block_count)
+
+
 def _seed_frame() -> pd.DataFrame:
     rows = []
     for seed, shift in [(0, 0.0), (1, 1e-10), (2, -1e-10)]:
         row = {
             "frozen_design_seed": seed,
+            "L": 8,
             "context_capt_distortion": 3.2e-8 + shift,
             "context_ldp_distortion": 3.7e-8 + shift,
             "capt_advantage_over_context_ldp": 5e-9,

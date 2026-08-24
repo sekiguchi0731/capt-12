@@ -200,12 +200,16 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     cfg["cutting_plane_checkpoint_every"] = checkpoint_every
     if "context_designs" in cfg:
         valid_context_designs = {
+            "joint_kmedoids_cost_medoid_L8",
             "joint_kmedoids_cost_medoid_L16",
+            "joint_kmedoids_cost_medoid_L32",
             "singleton_identity_L64",
         }
         context_designs = list(dict.fromkeys(map(str, cfg["context_designs"])))
         if len(context_designs) != 1 or context_designs[0] not in valid_context_designs:
-            raise ValueError("context_designs must select exactly one prescribed L16 or L64 design")
+            raise ValueError(
+                "context_designs must select exactly one prescribed L8, L16, L32, or L64 design"
+            )
         cfg["context_designs"] = context_designs
     if "certificate_channel_repair" in cfg:
         if cfg["certificate_channel_repair"] != "uniform_full_support_mixing":

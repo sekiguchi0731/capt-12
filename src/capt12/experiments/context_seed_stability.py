@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 import zipfile
 from datetime import UTC, datetime
@@ -19,8 +20,21 @@ from capt12.experiments.context_stratified import run_context_stratified_diagnos
 from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
-_DESIGN = "joint_kmedoids_cost_medoid_L16"
-_SUMMARY_VERSION = 3
+_JOINT_DESIGN_PATTERN = re.compile(r"joint_kmedoids_cost_medoid_L(8|16|32)")
+_SUMMARY_VERSION = 4
+
+
+def _joint_design(config: dict[str, Any]) -> tuple[str, int]:
+    designs = config.get("context_designs")
+    if not isinstance(designs, list) or len(designs) != 1:
+        raise ValueError("context seed stability requires exactly one utility design")
+    name = str(designs[0])
+    match = _JOINT_DESIGN_PATTERN.fullmatch(name)
+    if match is None:
+        raise ValueError(
+            "context seed stability requires joint weighted k-medoids with L=8, 16, or 32"
+        )
+    return name, int(match.group(1))
 
 
 def _emit(event: str, **fields: Any) -> None:
@@ -72,6 +86,8 @@ def _read_seed_run(
     path: Path,
     source_git_sha: str,
     expected_config: dict[str, Any],
+    design_name: str,
+    block_count: int,
 ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     metadata = json.loads((path / "context_stratified_metadata.json").read_text(encoding="utf-8"))
@@ -111,10 +127,14 @@ def _read_seed_run(
         raise RuntimeError(f"seed {seed} run directory is not bound to its resolved config")
     if float(resolved.get("epsilon", -1)) != 1.0:
         raise RuntimeError("seed stability experiment is fixed at epsilon=1")
-    if resolved.get("context_designs") != [_DESIGN]:
-        raise RuntimeError("seed stability experiment is fixed at joint k-medoids L=16")
-    if set(aggregate["L"].astype(int)) != {16} or set(contexts["L"].astype(int)) != {16}:
-        raise RuntimeError("seed result contains a channel dimension other than L=16")
+    if resolved.get("context_designs") != [design_name]:
+        raise RuntimeError("seed result changed the requested joint k-medoids design")
+    if set(aggregate["L"].astype(int)) != {block_count} or set(
+        contexts["L"].astype(int)
+    ) != {block_count}:
+        raise RuntimeError(
+            f"seed result contains a channel dimension other than L={block_count}"
+        )
     if len(certificates) != int(metadata["context_count"]):
         raise RuntimeError("one certificate per public context is required")
     if not _boolean_values(certificates["certificate_valid"]).all():
@@ -150,7 +170,7 @@ def _read_seed_run(
     strict_mass = float(contexts.loc[strict_advantage, "design_mass"].sum())
     degraded_mass = float(contexts.loc[degraded, "design_mass"].sum())
 
-    design_manifest = mechanism["designs"][_DESIGN]
+    design_manifest = mechanism["designs"][design_name]
     row = {
         "frozen_design_seed": seed,
         "run_id": path.name,
@@ -160,7 +180,7 @@ def _read_seed_run(
         "assignment_hash": design_manifest["assignment_hash"],
         "decoder_hash": design_manifest["decoder_hash"],
         "context_count": int(metadata["context_count"]),
-        "L": 16,
+        "L": block_count,
         "epsilon": 1.0,
         "utility_objective": str(resolved["context_utility_objective"]),
         "representation_mode": str(resolved["context_representation_mode"]),
@@ -447,9 +467,10 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
 
     objective = str(frame.get("utility_objective", pd.Series(["teacher_kl"])).iloc[0])
     representation = str(frame.get("representation_mode", pd.Series(["teacher_kl_fixed"])).iloc[0])
+    block_count = int(frame["L"].iloc[0])
     fig.suptitle(
         "Criteo public-context CAPT stability; "
-        f"epsilon=1, L=16; R={objective}; representation={representation}",
+        f"epsilon=1, L={block_count}; R={objective}; representation={representation}",
         y=0.985,
     )
     fig.text(
@@ -490,6 +511,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     objective = str(ordered["utility_objective"].iloc[0])
     representation_mode = str(ordered["representation_mode"].iloc[0])
     representation_objective = str(ordered["representation_objective"].iloc[0])
+    block_count = int(ordered["L"].iloc[0])
     conclusion = (
         "The CAPT-over-context-LDP design utility advantage is positive for every seed."
         if all_advantage
@@ -506,7 +528,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         "## Fixed scope",
         "",
         f"- Frozen design seeds: {', '.join(map(str, ordered['frozen_design_seed']))}.",
-        "- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon=1; joint weighted k-medoids; L=16.",
+        f"- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon=1; joint weighted k-medoids; L={block_count}.",
         f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
         f"- Partition/decoder representation mode: `{representation_mode}`; representation objective: `{representation_objective}`.",
         "- Temporal splits, support/adjacency/privacy definition, utility objective, D_cert, and D_test are fixed. Only `frozen_design_seed` changes the frozen encoder/design realization.",
@@ -652,7 +674,7 @@ def _write_review_bundle(output_dir: Path, seed_paths: dict[int, Path]) -> Path:
 
 
 def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path:
-    """Run/reuse prescribed L16 context CAPT seeds, then make one review packet."""
+    """Run/reuse prescribed context CAPT seeds, then make one review packet."""
     started = time.perf_counter()
     seeds = sorted(set(map(int, seeds)))
     if len(seeds) < 2:
@@ -660,8 +682,9 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
     if any(seed < 0 for seed in seeds):
         raise ValueError("frozen design seeds must be nonnegative")
     base = validate_config(config)
-    if float(base.get("epsilon", -1)) != 1.0 or base.get("context_designs") != [_DESIGN]:
-        raise ValueError("context seed stability is fixed at epsilon=1 and joint k-medoids L=16")
+    design_name, block_count = _joint_design(base)
+    if float(base.get("epsilon", -1)) != 1.0:
+        raise ValueError("context seed stability is fixed at epsilon=1")
     provenance = record_source_provenance(base)
     source_git_sha = str(provenance["source_git_sha"])
     signature_config = dict(provenance)
@@ -736,6 +759,8 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
             seed_path,
             source_git_sha,
             expected_configs[seed],
+            design_name,
+            block_count,
         )
         result_rows.append(row)
         for name, table in tables.items():
@@ -767,6 +792,8 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "version": _SUMMARY_VERSION,
         "source_git_sha": source_git_sha,
         "frozen_design_seeds": seeds,
+        "design": design_name,
+        "L": block_count,
         "context_utility_objective": base["context_utility_objective"],
         "context_representation_mode": base["context_representation_mode"],
         "representation_objective": str(seed_results["representation_objective"].iloc[0]),

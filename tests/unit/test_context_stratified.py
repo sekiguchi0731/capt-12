@@ -130,6 +130,13 @@ def test_objective_aligned_mode_changes_joint_partition_or_decoder() -> None:
     )
     fixed_joint = next(item for item in fixed if item.name == "joint_kmedoids_cost_medoid_L16")
     aligned_joint = next(item for item in aligned if item.name == "joint_kmedoids_cost_medoid_L16")
+    for designs in (fixed, aligned):
+        joint_dimensions = {
+            len(item.block_weights)
+            for item in designs
+            if item.name.startswith("joint_kmedoids_cost_medoid_L")
+        }
+        assert joint_dimensions == {8, 16, 32}
     assert aligned_joint.representation_objective == "empirical_logloss"
     assert aligned_joint.representation_token_cost_hash != (
         fixed_joint.representation_token_cost_hash

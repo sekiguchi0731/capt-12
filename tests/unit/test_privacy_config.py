@@ -347,6 +347,9 @@ def test_solver_progress_config_requires_valid_types_and_interval() -> None:
 
 
 def test_resumable_robust_solver_config_is_strict() -> None:
+    for block_count in (8, 16, 32):
+        design = f"joint_kmedoids_cost_medoid_L{block_count}"
+        assert validate_config({"context_designs": [design]})["context_designs"] == [design]
     config = validate_config(
         {
             "robust_cut_formulation": "shared_support_bounds",

@@ -527,7 +527,7 @@ def context_seed_stability(
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
 ) -> None:
-    """Run/reuse L16 epsilon=1 seeds and create one Sol review bundle."""
+    """Run/reuse L8/L16/L32 epsilon=1 seeds and create one Sol review bundle."""
     from capt12.experiments.context_seed_stability import run_context_seed_stability
 
     try:
