@@ -304,6 +304,11 @@ def _solve_channel_lp(
                 message="Unrecognized options detected:.*small_matrix_value",
                 category=OptimizeWarning,
             )
+            warnings.filterwarnings(
+                "ignore",
+                message="Unrecognized options detected:.*run_crossover",
+                category=OptimizeWarning,
+            )
             equality_matrix = a_eq.tocsr()
 
             def solve_once(method: str, method_options: dict[str, float | bool]):
@@ -355,6 +360,59 @@ def _solve_channel_lp(
                     message=str(result.message),
                     iterations=getattr(result, "nit", None),
                     crossover_iterations=getattr(result, "crossover_nit", None),
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+            # Some highly degenerate shared-support masters are solved by IPM
+            # to the requested primal/dual tolerances and then downgraded to
+            # Unknown solely because crossover makes the basic solution less
+            # accurate. A final IPM retry disables crossover and returns the
+            # already accurate interior solution. Neither feasibility nor
+            # optimality tolerance changes. Acceptance still requires the
+            # support oracle, independent robust verification, strict channel
+            # repair, and Decimal verification downstream.
+            if not result.success and int(result.status) == 4:
+                no_crossover_options = {
+                    **options,
+                    "run_crossover": "off",
+                }
+                solver_state.update(method="highs-ipm", attempt=3)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="crossover_numerical_status",
+                    failed_method="highs-ipm",
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover",
+                    retry_attempt=3,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ipm", no_crossover_options)
+                attempts.append(("highs-ipm-no-crossover", result))
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover",
+                    retry_attempt=3,
+                    success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    crossover_iterations=getattr(result, "crossover_nit", None),
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
                     solver_elapsed_seconds=time.perf_counter() - started,
                     **process_memory_bytes(),
                 )
