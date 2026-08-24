@@ -10,7 +10,11 @@ from typing import Any
 
 import numpy as np
 
-from capt12.certification.robust import VerificationResult, verify_robust_channel
+from capt12.certification.robust import (
+    VerificationResult,
+    verify_robust_channel,
+    verify_robust_channel_conservative,
+)
 from capt12.confidence.boxes import (
     CONFIDENCE_REGISTRY,
     ConfidenceBox,
@@ -352,6 +356,11 @@ def _verify_context_channel_manifest(
         "unseen": "__UNKNOWN__",
     }:
         return "context-channel manifest does not declare unified sensitive fallback"
+    repair = certificate.coverage.get("post_solve_repair")
+    if repair is not None and manifest.get("released_channel_policy") != (
+        "uniform_full_support_postsolve_repair"
+    ):
+        return "context-channel manifest does not identify the repaired released channel"
     design_name = config.get("context_design")
     design = manifest.get("designs", {}).get(design_name)
     if not isinstance(design, dict):
@@ -360,6 +369,17 @@ def _verify_context_channel_manifest(
     context_value = str(config.get("public_context_value", ""))
     if design.get("contexts", {}).get(context_value) != channel_hash:
         return "context-channel manifest does not bind the certified context channel"
+    if repair is not None:
+        manifest_repair = design.get("context_repairs", {}).get(context_value, {})
+        if manifest_repair.get("method") != repair.get("method"):
+            return "context-channel manifest repair method does not match the certificate"
+        if not np.isclose(
+            float(manifest_repair.get("mixing_weight", -1)),
+            float(repair.get("mixing_weight", -2)),
+            atol=0,
+            rtol=0,
+        ):
+            return "context-channel manifest repair weight does not match the certificate"
     if design.get("assignment_hash") != certificate.component_hashes.get("partition"):
         return "context-channel manifest partition does not match the certificate"
     if design.get("decoder_hash") != certificate.component_hashes.get("decoder"):
@@ -603,6 +623,26 @@ def _verify_certificate(path: str | Path, tolerance: float | None = None) -> Ver
     if not np.isclose(certificate.target_epsilon, expected_target):
         return _invalid("target epsilon summary does not match reconstructed adjacency")
     result = verify_robust_channel(channel, boxes, adjacency, tolerance=tol)
+    repair = certificate.coverage.get("post_solve_repair")
+    if repair is not None:
+        if not isinstance(repair, dict) or repair.get("method") != (
+            "uniform_full_support_mixing"
+        ):
+            return _invalid("certificate declares an unsupported post-solve repair")
+        conservative = verify_robust_channel_conservative(channel, boxes, adjacency)
+        if not conservative.valid:
+            return _invalid("repaired channel fails tolerance-free Decimal privacy verification")
+        if not np.isfinite(conservative.realized_epsilon):
+            return _invalid("repaired channel has a non-finite pure-epsilon ratio")
+        if conservative.realized_epsilon > expected_target:
+            return _invalid("repaired channel exceeds its target pure-epsilon budget")
+        declared = repair.get("conservative_decimal_verification", {})
+        if declared.get("valid") is not True:
+            return _invalid("certificate does not declare a valid conservative repair check")
+        if int(declared.get("checked_constraints", -1)) != conservative.checked_constraints:
+            return _invalid("conservative repair constraint count does not match")
+        if int(repair.get("post_repair_zero_denominator_positive_numerator_count", -1)) != 0:
+            return _invalid("certificate repair leaves a positive-over-zero ratio")
     if result.valid and not np.isclose(
         certificate.realized_worst_case_epsilon,
         result.realized_epsilon,

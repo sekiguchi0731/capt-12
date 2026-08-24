@@ -147,6 +147,36 @@ simultaneous confidence statement across all `B` context tables within a
 design, each certificate uses `alpha_cert / |B|` (Bonferroni). The design-level
 statement is conditional on all these context confidence events holding.
 
+### Certificate-safe post-solve repair
+
+An LP solver enforces inequalities to an additive feasibility tolerance. A
+returned channel can consequently contain a tiny positive entry in one row of
+an otherwise zero output column. A robust denominator can then be exactly zero
+while its numerator is positive, so the pure-epsilon ratio is infinite even
+though the additive violation is below the solver tolerance. Such a channel is
+not released unchanged.
+
+For each context, the implementation deterministically mixes the LP output
+with the input-independent uniform channel `U(l,o)=1/L`:
+
+`R_lambda = (1-lambda) R + lambda U`.
+
+For any group distribution `p`, `p^T U[:,o]=1/L`. Thus a robust additive
+violation `v=n-exp(epsilon)d` becomes
+
+`v(lambda) = (1-lambda)v - lambda(exp(epsilon)-1)/L`.
+
+For positive epsilon, the common component supplies strict slack. The code
+takes the maximum closed-form minimum `lambda` required by every constraint in
+that context, adds an explicit small additive safety margin, and stores
+`R_lambda`—not the unmodified solver output—as the released and certified
+channel. It then recomputes all constraints from scratch. A separate Decimal
+check evaluates the serialized binary64 channel with no privacy feasibility
+tolerance and no denominator floor; any non-finite realized epsilon or
+positive additive violation rejects the certificate. Because the objective is
+linear, the distortion change is also linear in `lambda`, avoiding a larger
+arbitrary utility penalty.
+
 ## Utility informativeness gate
 
 For a fixed partition, common decoder, block cost `C`, and normalized input

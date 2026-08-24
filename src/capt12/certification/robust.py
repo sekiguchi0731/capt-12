@@ -6,6 +6,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,43 @@ class VerificationResult:
     realized_epsilon: float
     worst_case: dict | None
     checked_constraints: int
+
+
+@dataclass(frozen=True)
+class RobustConstraintEvaluation:
+    """One independently recomputed robust privacy inequality."""
+
+    left: str
+    right: str
+    output_block: int
+    target_epsilon: float
+    maximum: float
+    minimum: float
+    additive_violation: float
+    realized_epsilon: float
+    left_witness: np.ndarray
+    right_witness: np.ndarray
+
+
+@dataclass(frozen=True)
+class UniformMixRepair:
+    """Result of strict-feasibility repair with a full-support common channel."""
+
+    channel: np.ndarray
+    mixing_weight: float
+    safety_margin: float
+    pre_verification: VerificationResult
+    post_verification: VerificationResult
+    conservative_verification: VerificationResult
+    pre_infinite_constraint_count: int
+    post_zero_denominator_positive_numerator_count: int
+    max_row_sum_error: float
+    min_entry: float
+
+
+def robust_master_tolerance(certificate_tolerance: float) -> float:
+    """Return the HiGHS feasibility tolerance used by shared-support masters."""
+    return max(1e-10, min(float(certificate_tolerance) / 100, 1e-9))
 
 
 def _full_simplex_ldp_epsilon(
@@ -246,7 +284,7 @@ def _solve_shared_support_bounds(
     # Solving the master at the public certificate tolerance can therefore
     # produce up to several times that tolerance in the independent verifier.
     # HiGHS supports feasibility tolerances down to 1e-10.
-    master_tolerance = max(1e-10, min(tolerance / 100, 1e-9))
+    master_tolerance = robust_master_tolerance(tolerance)
     fingerprint = _support_problem_fingerprint(
         cost,
         block_weights,
@@ -465,6 +503,248 @@ def _solve_shared_support_bounds(
     return solution, verification
 
 
+def evaluate_robust_constraints(
+    channel: np.ndarray,
+    boxes: Mapping[str, ConfidenceBox],
+    adjacency: Sequence[AdjacentPair],
+) -> list[RobustConstraintEvaluation]:
+    """Recompute every robust inequality without denominator flooring."""
+    values: list[RobustConstraintEvaluation] = []
+    for pair in adjacency:
+        factor = math.exp(pair.epsilon)
+        for output in range(channel.shape[1]):
+            maximum, p_max = support(channel[:, output], boxes[pair.left], maximize=True)
+            minimum, p_min = support(channel[:, output], boxes[pair.right], maximize=False)
+            violation = maximum - factor * minimum
+            realized = (
+                math.inf
+                if minimum <= 0 < maximum
+                else (
+                    math.log(maximum / minimum)
+                    if maximum > 0 and minimum > 0
+                    else -math.inf
+                )
+            )
+            values.append(
+                RobustConstraintEvaluation(
+                    left=pair.left,
+                    right=pair.right,
+                    output_block=output,
+                    target_epsilon=float(pair.epsilon),
+                    maximum=float(maximum),
+                    minimum=float(minimum),
+                    additive_violation=float(violation),
+                    realized_epsilon=float(realized),
+                    left_witness=np.asarray(p_max, dtype=float),
+                    right_witness=np.asarray(p_min, dtype=float),
+                )
+            )
+    return values
+
+
+def _decimal(value: float) -> Decimal:
+    """Represent the actual serialized binary64 value exactly in Decimal."""
+    return Decimal.from_float(float(value))
+
+
+def _decimal_box_simplex_support(
+    coefficients: np.ndarray,
+    box: ConfidenceBox,
+    *,
+    maximize: bool,
+) -> Decimal:
+    """Evaluate a box-simplex support function using 80-digit arithmetic.
+
+    The context-stratified certificates currently use zero TV radius.  In that
+    case the greedy vertex is exact: start at all lower bounds and allocate the
+    remaining simplex mass in coefficient order up to each upper bound.  This
+    independently checks the serialized binary64 channel without relying on a
+    solver feasibility tolerance or on a ratio denominator floor.
+    """
+    if box.tv_radius != 0:
+        raise ValueError("high-precision verification currently requires tv_radius=0")
+    coefficient = [_decimal(value) for value in np.asarray(coefficients, dtype=float)]
+    lower = [_decimal(value) for value in box.lower]
+    upper = [_decimal(value) for value in box.upper]
+    point = list(lower)
+    remaining = Decimal(1) - sum(point, Decimal(0))
+    if remaining < 0:
+        raise ValueError("serialized confidence lower bounds exceed simplex mass")
+    order = sorted(range(len(coefficient)), key=coefficient.__getitem__, reverse=maximize)
+    for index in order:
+        addition = min(remaining, upper[index] - point[index])
+        point[index] += addition
+        remaining -= addition
+        if remaining == 0:
+            break
+    if remaining != 0:
+        raise ValueError("serialized confidence box is simplex-infeasible")
+    return sum((coefficient[index] * point[index] for index in range(len(point))), Decimal(0))
+
+
+def verify_robust_channel_conservative(
+    channel: np.ndarray,
+    boxes: Mapping[str, ConfidenceBox],
+    adjacency: Sequence[AdjacentPair],
+    *,
+    decimal_precision: int = 80,
+    stochasticity_tolerance: float = 2e-15,
+) -> VerificationResult:
+    """Verify pure-epsilon inequalities in high precision with no privacy tolerance.
+
+    ``valid`` requires every recomputed Decimal inequality to be nonpositive.
+    The only numerical tolerance is for the separate row-stochasticity check;
+    it is never applied to a privacy numerator, denominator, ratio, or additive
+    violation.
+    """
+    matrix = np.asarray(channel, dtype=float)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        return VerificationResult(False, math.inf, math.inf, {"error": "channel is not square"}, 0)
+    if np.any(~np.isfinite(matrix)) or float(np.min(matrix)) < 0:
+        return VerificationResult(
+            False, math.inf, math.inf, {"error": "channel has non-finite or negative entries"}, 0
+        )
+    row_error = float(np.max(np.abs(matrix.sum(axis=1) - 1.0)))
+    if row_error > stochasticity_tolerance:
+        return VerificationResult(
+            False,
+            math.inf,
+            math.inf,
+            {"error": "channel rows are not stochastic", "max_row_sum_error": row_error},
+            0,
+        )
+    max_violation = Decimal("-Infinity")
+    realized = Decimal("-Infinity")
+    worst: dict | None = None
+    checked = 0
+    try:
+        with localcontext() as context:
+            context.prec = int(decimal_precision)
+            for pair in adjacency:
+                factor = _decimal(pair.epsilon).exp()
+                for output in range(matrix.shape[1]):
+                    column = matrix[:, output]
+                    maximum = _decimal_box_simplex_support(
+                        column, boxes[pair.left], maximize=True
+                    )
+                    minimum = _decimal_box_simplex_support(
+                        column, boxes[pair.right], maximize=False
+                    )
+                    violation = maximum - factor * minimum
+                    epsilon = (
+                        Decimal("Infinity")
+                        if minimum <= 0 < maximum
+                        else (
+                            (maximum / minimum).ln()
+                            if maximum > 0 and minimum > 0
+                            else Decimal("-Infinity")
+                        )
+                    )
+                    checked += 1
+                    if violation > max_violation:
+                        max_violation = violation
+                        worst = {
+                            "left": pair.left,
+                            "right": pair.right,
+                            "output_block": output,
+                            "target_epsilon": pair.epsilon,
+                            "maximum_decimal": str(maximum),
+                            "minimum_decimal": str(minimum),
+                            "additive_violation_decimal": str(violation),
+                        }
+                    realized = max(realized, epsilon)
+    except ValueError as error:
+        return VerificationResult(False, math.inf, math.inf, {"error": str(error)}, checked)
+    if checked == 0:
+        return VerificationResult(True, 0.0, 0.0, None, 0)
+    return VerificationResult(
+        max_violation <= 0,
+        float(max_violation),
+        float(realized),
+        worst,
+        checked,
+    )
+
+
+def repair_robust_channel_uniform(
+    channel: np.ndarray,
+    boxes: Mapping[str, ConfidenceBox],
+    adjacency: Sequence[AdjacentPair],
+    *,
+    safety_margin: float = 1e-10,
+) -> UniformMixRepair:
+    """Make a released channel strictly pure-epsilon feasible with minimum mixing.
+
+    Let ``U`` have identical uniform rows and set ``R_lambda=(1-lambda)R +
+    lambda U``.  For every group distribution ``p``, ``p^T U[:,o]=1/L``.
+    Therefore a robust violation ``v=n-exp(epsilon)d`` becomes
+
+    ``(1-lambda)v - lambda (exp(epsilon)-1)/L``.
+
+    For each context we take the maximum closed-form lambda needed to put all
+    inequalities below ``-safety_margin``.  This changes the released channel
+    itself (not its diagnostics), gives every output positive probability, and
+    supplies strict slack against binary64 serialization roundoff.
+    """
+    matrix = np.asarray(channel, dtype=float)
+    validate_channel(matrix)
+    if not np.isfinite(safety_margin) or safety_margin <= 0:
+        raise ValueError("uniform repair safety_margin must be positive and finite")
+    if not adjacency:
+        raise ValueError("uniform repair requires at least one privacy constraint")
+    evaluations = evaluate_robust_constraints(matrix, boxes, adjacency)
+    required = 0.0
+    for value in evaluations:
+        strict_slack = math.expm1(value.target_epsilon) / matrix.shape[1]
+        if strict_slack <= safety_margin:
+            raise ValueError("repair margin must be smaller than uniform-channel slack")
+        numerator = value.additive_violation + safety_margin
+        if numerator > 0:
+            denominator = value.additive_violation + strict_slack
+            required = max(required, numerator / denominator)
+    mixing_weight = float(np.nextafter(required, math.inf))
+    if not 0 <= mixing_weight <= 1:
+        raise RuntimeError("no valid uniform mixing weight was found")
+    uniform = np.full_like(matrix, 1.0 / matrix.shape[1])
+    repaired = (1.0 - mixing_weight) * matrix + mixing_weight * uniform
+    # Make stochasticity explicit in the serialized binary64 matrix.  The
+    # correction is at most a few ulps; strict privacy slack is much larger.
+    for row in range(repaired.shape[0]):
+        index = int(np.argmax(repaired[row]))
+        repaired[row, index] += 1.0 - float(repaired[row].sum())
+    validate_channel(repaired, tolerance=1e-14)
+    pre_verification = verify_robust_channel(matrix, boxes, adjacency, tolerance=1e-8)
+    post_verification = verify_robust_channel(repaired, boxes, adjacency, tolerance=1e-14)
+    conservative = verify_robust_channel_conservative(repaired, boxes, adjacency)
+    if (
+        not post_verification.valid
+        or post_verification.max_violation > 0
+        or not conservative.valid
+    ):
+        raise RuntimeError("uniform repair did not produce a strictly feasible channel")
+    if not math.isfinite(post_verification.realized_epsilon):
+        raise RuntimeError("uniform repair left a non-finite realized epsilon")
+    post_evaluations = evaluate_robust_constraints(repaired, boxes, adjacency)
+    pre_infinite = sum(value.realized_epsilon == math.inf for value in evaluations)
+    zero_positive = sum(
+        value.minimum <= 0 < value.maximum for value in post_evaluations
+    )
+    if zero_positive:
+        raise RuntimeError("uniform repair left a positive-over-zero privacy ratio")
+    return UniformMixRepair(
+        channel=repaired,
+        mixing_weight=mixing_weight,
+        safety_margin=float(safety_margin),
+        pre_verification=pre_verification,
+        post_verification=post_verification,
+        conservative_verification=conservative,
+        pre_infinite_constraint_count=pre_infinite,
+        post_zero_denominator_positive_numerator_count=zero_positive,
+        max_row_sum_error=float(np.max(np.abs(repaired.sum(axis=1) - 1.0))),
+        min_entry=float(np.min(repaired)),
+    )
+
+
 def verify_robust_channel(
     channel: np.ndarray,
     boxes: Mapping[str, ConfidenceBox],
@@ -479,31 +759,22 @@ def verify_robust_channel(
     max_violation = -math.inf
     realized = -math.inf
     worst = None
-    checked = 0
-    for pair in adjacency:
-        for output in range(channel.shape[1]):
-            maximum, p_max = support(channel[:, output], boxes[pair.left], maximize=True)
-            minimum, p_min = support(channel[:, output], boxes[pair.right], maximize=False)
-            violation = maximum - math.exp(pair.epsilon) * minimum
-            epsilon = (
-                math.inf
-                if minimum <= 0 < maximum
-                else (math.log(maximum / minimum) if maximum > 0 and minimum > 0 else -math.inf)
-            )
-            checked += 1
-            if violation > max_violation:
-                max_violation = float(violation)
-                worst = {
-                    "left": pair.left,
-                    "right": pair.right,
-                    "output_block": output,
-                    "target_epsilon": pair.epsilon,
-                    "maximum": maximum,
-                    "minimum": minimum,
-                    "left_witness": p_max.tolist(),
-                    "right_witness": p_min.tolist(),
-                }
-            realized = max(realized, epsilon)
+    evaluations = evaluate_robust_constraints(channel, boxes, adjacency)
+    for value in evaluations:
+        if value.additive_violation > max_violation:
+            max_violation = value.additive_violation
+            worst = {
+                "left": value.left,
+                "right": value.right,
+                "output_block": value.output_block,
+                "target_epsilon": value.target_epsilon,
+                "maximum": value.maximum,
+                "minimum": value.minimum,
+                "left_witness": value.left_witness.tolist(),
+                "right_witness": value.right_witness.tolist(),
+            }
+        realized = max(realized, value.realized_epsilon)
+    checked = len(evaluations)
     if checked == 0:
         max_violation = 0.0
         realized = 0.0

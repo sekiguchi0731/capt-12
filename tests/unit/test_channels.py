@@ -5,7 +5,12 @@ from scipy import sparse
 from scipy.optimize import linprog
 
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
-from capt12.certification.robust import solve_robust_block_lp, verify_robust_channel
+from capt12.certification.robust import (
+    repair_robust_channel_uniform,
+    solve_robust_block_lp,
+    verify_robust_channel,
+    verify_robust_channel_conservative,
+)
 from capt12.confidence.boxes import ConfidenceBox, cp_box, dp_aware_box, full_simplex_box
 from capt12.confidence.support import support
 from capt12.data.synthetic import theorem4_counterexample
@@ -92,6 +97,56 @@ def test_cover_is_feasible_at_epsilon_zero() -> None:
     result = verify_robust_channel(common_cover(np.array([0.7, 0.3])), boxes, adjacency)
     assert result.valid
     assert result.realized_epsilon <= 1e-12
+
+
+def test_uniform_postsolve_repair_changes_channel_and_removes_infinite_ratio() -> None:
+    tiny = 2e-10
+    channel = np.array([[1.0, 0.0], [1.0 - tiny, tiny]])
+    boxes = {
+        "g0": ConfidenceBox(
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            "point",
+            1.0,
+        ),
+        "g1": ConfidenceBox(
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            "point",
+            1.0,
+        ),
+    }
+    adjacency = [AdjacentPair("g0", "g1", 1.0), AdjacentPair("g1", "g0", 1.0)]
+    before = verify_robust_channel(channel, boxes, adjacency, tolerance=1e-8)
+    assert before.valid
+    assert before.realized_epsilon == float("inf")
+    assert not verify_robust_channel_conservative(channel, boxes, adjacency).valid
+
+    first = repair_robust_channel_uniform(
+        channel,
+        boxes,
+        adjacency,
+        safety_margin=1e-10,
+    )
+    second = repair_robust_channel_uniform(
+        channel,
+        boxes,
+        adjacency,
+        safety_margin=1e-10,
+    )
+
+    np.testing.assert_array_equal(first.channel, second.channel)
+    assert 0 < first.mixing_weight < 1
+    assert first.pre_infinite_constraint_count == 1
+    assert first.post_zero_denominator_positive_numerator_count == 0
+    assert first.post_verification.realized_epsilon <= 1.0
+    assert first.conservative_verification.valid
+    assert first.conservative_verification.realized_epsilon <= 1.0
+    assert first.conservative_verification.max_violation <= 0
+    assert np.min(first.channel) > 0
+    assert np.max(np.abs(first.channel.sum(axis=1) - 1.0)) <= 2e-15
 
 
 def test_independent_verification_rejects_broken_channel() -> None:

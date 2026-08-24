@@ -211,6 +211,15 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
                 "context_designs must select exactly one prescribed L16 or L64 design"
             )
         cfg["context_designs"] = context_designs
+    if "certificate_channel_repair" in cfg:
+        if cfg["certificate_channel_repair"] != "uniform_full_support_mixing":
+            raise ValueError(
+                "certificate_channel_repair must be uniform_full_support_mixing"
+            )
+        repair_margin = float(cfg.get("certificate_repair_margin", 1e-10))
+        if not 0 < repair_margin <= 1e-8:
+            raise ValueError("certificate_repair_margin must be in (0, 1e-8]")
+        cfg["certificate_repair_margin"] = repair_margin
     return cfg
 
 
