@@ -557,6 +557,36 @@ def context_seed_stability(
     )
 
 
+@app.command("context-cost-comparison")
+def context_cost_comparison(
+    summary_dirs: list[Path] = typer.Option(
+        ...,
+        "--summary-dir",
+        exists=True,
+        file_okay=False,
+        help="Seed-summary directory; repeat once for each of the three utility objectives.",
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/context_cost_comparisons"),
+        "--output-root",
+    ),
+) -> None:
+    """Validate and compare three objective-aligned cost families."""
+    from capt12.experiments.context_cost_comparison import run_context_cost_comparison
+
+    path = run_context_cost_comparison(summary_dirs, output_root)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "comparison": str(path),
+                "sol_review_bundle": str(path / "sol_context_cost_comparison_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),
