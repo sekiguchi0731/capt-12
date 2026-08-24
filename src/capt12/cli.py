@@ -587,6 +587,50 @@ def context_cost_comparison(
     )
 
 
+@app.command("context-cost-stability")
+def context_cost_stability(
+    config: Path = typer.Option(..., "--config", exists=True),
+    frozen_design_seeds: str = typer.Option(
+        "0,1,2,3,4",
+        "--frozen-design-seeds",
+        help="Comma-separated seeds used by every objective family.",
+    ),
+    hybrid_empirical_weight: float = typer.Option(
+        0.5,
+        "--hybrid-empirical-weight",
+        min=0,
+        max=1,
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/context_cost_comparisons"),
+        "--output-root",
+    ),
+) -> None:
+    """Run/reuse all three aligned costs and create one integrated bundle."""
+    from capt12.experiments.context_cost_comparison import run_context_cost_stability
+
+    try:
+        seeds = parse_csv_list(frozen_design_seeds, int, minimum=0)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
+    path = run_context_cost_stability(
+        _load(config),
+        seeds,
+        hybrid_empirical_weight=hybrid_empirical_weight,
+        output_root=output_root,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "comparison": str(path),
+                "sol_review_bundle": str(path / "sol_context_cost_comparison_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),

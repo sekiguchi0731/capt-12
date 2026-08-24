@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from capt12.config import canonical_json
+from capt12.experiments.context_seed_stability import run_context_seed_stability
 from capt12.utils.artifacts import git_sha, sha256_file
 
 _OBJECTIVES = ("teacher_kl", "empirical_logloss", "hybrid_logloss_kl")
@@ -506,3 +507,48 @@ def run_context_cost_comparison(
         encoding="utf-8",
     )
     return output_dir
+
+
+def run_context_cost_stability(
+    config: dict[str, Any],
+    seeds: list[int],
+    *,
+    hybrid_empirical_weight: float = 0.5,
+    output_root: Path = Path("outputs/context_cost_comparisons"),
+) -> Path:
+    """Run/reuse all aligned objectives and always finish with one bundle.
+
+    Each objective remains an independently certified seed-stability family.
+    The comparison is attempted only after all three families complete, so a
+    partial experiment can never be mislabeled as a three-cost review bundle.
+    """
+    if not 0 <= hybrid_empirical_weight <= 1:
+        raise ValueError("hybrid empirical weight must be in [0, 1]")
+    summaries: list[Path] = []
+    for objective in _OBJECTIVES:
+        objective_config = {
+            **config,
+            "context_utility_objective": objective,
+            "context_representation_mode": "objective_aligned",
+            "hybrid_empirical_weight": hybrid_empirical_weight,
+        }
+        print(
+            "[context_cost_stability] "
+            f"objective_started objective={objective} seeds={','.join(map(str, seeds))}",
+            flush=True,
+        )
+        summary = run_context_seed_stability(objective_config, seeds)
+        summaries.append(summary)
+        print(
+            "[context_cost_stability] "
+            f"objective_finished objective={objective} summary={summary}",
+            flush=True,
+        )
+    comparison = run_context_cost_comparison(summaries, output_root)
+    print(
+        "[context_cost_stability] "
+        f"comparison_finished comparison={comparison} "
+        f"bundle={comparison / 'sol_context_cost_comparison_bundle.zip'}",
+        flush=True,
+    )
+    return comparison
