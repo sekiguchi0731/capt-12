@@ -828,6 +828,40 @@ def context_global_token_ldp(
     )
 
 
+@app.command("context-cost-global-ldp-figures")
+def context_cost_global_ldp_figures(
+    cost_comparison_dirs: list[Path] = typer.Option(
+        ...,
+        "--cost-comparison-dir",
+        exists=True,
+        file_okay=False,
+        help="Repeat for each completed L-specific three-cost comparison directory.",
+    ),
+    global_comparison_dir: Path = typer.Option(
+        ...,
+        "--global-comparison-dir",
+        exists=True,
+        file_okay=False,
+        help="Completed global token-level optimal-LDP comparison directory.",
+    ),
+) -> None:
+    """Add non-overwriting global-LDP figures and review bundles."""
+    from capt12.experiments.context_cost_global_ldp_figure import (
+        add_global_ldp_figures,
+    )
+
+    bundles = add_global_ldp_figures(cost_comparison_dirs, global_comparison_dir)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "bundles": [str(path) for path in bundles],
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),
