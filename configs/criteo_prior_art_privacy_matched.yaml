@@ -1,0 +1,29 @@
+base_config: criteo_context_stratified.yaml
+prior_art_comparison: true
+output_dir: outputs/prior_art_comparison_runs
+context_representation_mode: objective_aligned
+context_designs:
+  - joint_kmedoids_cost_medoid_L16
+K: 4096
+L: 16
+epsilon_list: [0.25, 0.5, 1.0, 2.0, 4.0]
+seeds: [0, 1, 2, 3, 4]
+cost_list:
+  - teacher_kl
+  - empirical_logloss
+  - hybrid_logloss_kl
+mass_m_list: [0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
+mass_n_list: [0.0]
+mass_privacy_weight_list: [0.1, 1.0, 10.0, 100.0]
+mass_utility_weight_list: [0.1, 1.0, 10.0]
+mass_seed_list: [0, 1, 2, 3, 4]
+mass_epochs: 300
+mass_output_mode: finite_block
+mass_temperature_list: [0.25, 0.5, 1.0, 2.0]
+cover_probability_floor: 1.0e-12
+cover_bisection_tolerance: 1.0e-8
+formal_comparison_epsilon: 1.0
+attack_crossfit_folds: 5
+attack_cluster_bootstrap_replicates: 2000
+attack_regularization_grid: [0.01, 0.1, 1.0, 10.0]
+comparison_output_dir: results/prior_art_comparison

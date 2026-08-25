@@ -308,6 +308,24 @@ def run_grid_command(
     resume: bool = typer.Option(False, "--resume"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     target_ctr_list: str | None = typer.Option(None, "--target-ctr-list"),
+    mass_m_list: str | None = typer.Option(None, "--mass-m-list", "--mass_m_list"),
+    mass_n_list: str | None = typer.Option(None, "--mass-n-list", "--mass_n_list"),
+    mass_privacy_weight_list: str | None = typer.Option(
+        None, "--mass-privacy-weight-list", "--mass_privacy_weight_list"
+    ),
+    mass_utility_weight_list: str | None = typer.Option(
+        None, "--mass-utility-weight-list", "--mass_utility_weight_list"
+    ),
+    mass_seed_list: str | None = typer.Option(
+        None, "--mass-seed-list", "--mass_seed_list"
+    ),
+    mass_epochs: int | None = typer.Option(None, "--mass-epochs", "--mass_epochs", min=1),
+    mass_output_mode: str | None = typer.Option(
+        None, "--mass-output-mode", "--mass_output_mode"
+    ),
+    mass_temperature_list: str | None = typer.Option(
+        None, "--mass-temperature-list", "--mass_temperature_list"
+    ),
 ) -> None:
     overrides: dict[str, Any] = {
         "data_root": str(data_root) if data_root else None,
@@ -369,6 +387,32 @@ def run_grid_command(
         "target_ctr_list": parse_csv_list(target_ctr_list, float, minimum=0, maximum=1)
         if target_ctr_list
         else None,
+        "mass_m_list": parse_csv_list(mass_m_list, float, minimum=0)
+        if mass_m_list
+        else None,
+        "mass_n_list": parse_csv_list(mass_n_list, float, minimum=0)
+        if mass_n_list
+        else None,
+        "mass_privacy_weight_list": parse_csv_list(
+            mass_privacy_weight_list, float, minimum=0
+        )
+        if mass_privacy_weight_list
+        else None,
+        "mass_utility_weight_list": parse_csv_list(
+            mass_utility_weight_list, float, minimum=0
+        )
+        if mass_utility_weight_list
+        else None,
+        "mass_seed_list": parse_csv_list(mass_seed_list, int, minimum=0)
+        if mass_seed_list
+        else None,
+        "mass_epochs": mass_epochs,
+        "mass_output_mode": mass_output_mode,
+        "mass_temperature_list": parse_csv_list(
+            mass_temperature_list, float, minimum=0
+        )
+        if mass_temperature_list
+        else None,
     }
     cfg = _load(config, overrides)
     result = run_grid(cfg, resume=resume, dry_run=dry_run, max_rows=max_rows)
@@ -403,6 +447,37 @@ def plot(
         json.dumps(
             {"generated": len(paths), "output": str(output_dir or input_path / "paper_figures")},
             indent=2,
+        )
+    )
+
+
+@app.command("render-prior-art-comparison")
+def render_prior_art_comparison(
+    results: Path = typer.Option(..., "--results", exists=True),
+    method_contracts: Path = typer.Option(..., "--method-contracts", exists=True),
+    output_dir: Path = typer.Option(..., "--output-dir"),
+) -> None:
+    """Render validated prior-art figures after comparison runs finish."""
+    import pandas as pd
+
+    from capt12.comparison.artifacts import (
+        figure_hash_manifest,
+        load_method_contracts,
+        render_prior_art_figures,
+    )
+
+    paths = render_prior_art_figures(
+        pd.read_csv(results), load_method_contracts(method_contracts), output_dir
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "generated": len(paths),
+                "output_dir": str(output_dir),
+                "sha256": figure_hash_manifest(paths),
+            },
+            indent=2,
+            sort_keys=True,
         )
     )
 
