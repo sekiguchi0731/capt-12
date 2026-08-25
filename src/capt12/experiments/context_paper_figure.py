@@ -144,18 +144,18 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
-            "font.size": 9,
-            "axes.titlesize": 10,
-            "axes.labelsize": 9,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
-            "legend.fontsize": 8,
+            "font.size": 10,
+            "axes.titlesize": 16,
+            "axes.labelsize": 14,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 15,
         }
     )
     fig, axes = plt.subplots(
         1,
         2,
-        figsize=(7.15, 3.05),
+        figsize=(7.15, 3.75),
         constrained_layout=True,
         sharey=True,
     )
@@ -200,7 +200,7 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
     )
     axis.axhline(0, color=_GREY, lw=1, ls="--")
     axis.set_title(
-        "(a) Certified privacy–utility trade-off\n" r"$L=16$",
+        "(a) Certified privacy–\n" r"utility trade-off ($L=16$)",
         loc="left",
         fontweight="bold",
     )
@@ -242,7 +242,7 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
         )
     axis.axhline(0, color=_GREY, lw=1, ls="--")
     axis.set_title(
-        "(b) Block-size sensitivity\n" r"$\epsilon=1$",
+        "(b) Block-size sensitivity\n" r"($\epsilon=1$)",
         loc="left",
         fontweight="bold",
     )
@@ -262,7 +262,6 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
             lw=0.75,
             label="Paired frozen-design seed",
         ),
-        Line2D([0], [0], color=_BLUE, lw=2.4, label="Seed mean"),
         Line2D(
             [0],
             [0],
@@ -271,11 +270,12 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
             ls="--",
             label=r"Parity with optimal $\epsilon$-LDP",
         ),
+        Line2D([0], [0], color=_BLUE, lw=2.4, label="Seed mean"),
     ]
     fig.legend(
         handles=legend_handles,
         loc="outside lower center",
-        ncol=3,
+        ncol=2,
         frameon=False,
         handlelength=2.5,
         columnspacing=1.4,
