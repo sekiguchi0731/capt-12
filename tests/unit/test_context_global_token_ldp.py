@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 
 from capt12.experiments.context_global_token_ldp import (
     _comparison_tables,
+    _json_default,
     _ldp_max_violation,
     _repair_ldp_uniform,
 )
+
+
+def test_json_default_normalizes_numpy_scalars() -> None:
+    encoded = json.dumps(
+        {"seed": np.int64(4), "epsilon": np.float64(1), "valid": np.bool_(True)},
+        default=_json_default,
+    )
+    assert json.loads(encoded) == {"seed": 4, "epsilon": 1.0, "valid": True}
 
 
 def test_uniform_repair_makes_released_channel_strictly_ldp() -> None:

@@ -31,12 +31,39 @@ from capt12.utils.artifacts import git_sha, sha256_file
 _BLUE = "#2563A6"
 _GREY = "#6B7280"
 _LIGHT_BLUE = "#93B7D5"
-_VERSION = 1
+_VERSION = 2
 
 
 def _emit(event: str, **fields: Any) -> None:
     details = " ".join(f"{key}={value}" for key, value in fields.items())
     print(f"[global_token_ldp] [{event}] {details}".rstrip(), flush=True)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _write_result_checkpoint(output_dir: Path, result_rows: list[dict[str, Any]]) -> None:
+    """Persist every completed cell so a later finalization error loses no LP work."""
+    baselines = pd.DataFrame(result_rows)
+    baselines.drop(columns="solver").to_csv(
+        output_dir / "tables" / "global_token_ldp_results.csv",
+        index=False,
+    )
+    (output_dir / "tables" / "global_token_ldp_solver_results.json").write_text(
+        json.dumps(result_rows, indent=2, sort_keys=True, default=_json_default) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _ldp_max_violation(channel: np.ndarray, epsilon: float) -> float:
@@ -606,15 +633,11 @@ def run_global_token_ldp_comparison(
                 expected_log_loss=f"{metrics['expected_randomized_log_loss']:.12g}",
                 max_additive_violation=f"{after:.3g}",
             )
+            _write_result_checkpoint(output_dir, result_rows)
         del token_cache
         gc.collect()
     baselines = pd.DataFrame(result_rows)
-    # The nested solver dictionary is useful in JSON but not in a flat CSV.
-    baselines_for_csv = baselines.drop(columns="solver")
-    baselines_for_csv.to_csv(output_dir / "tables" / "global_token_ldp_results.csv", index=False)
-    (output_dir / "tables" / "global_token_ldp_solver_results.json").write_text(
-        json.dumps(result_rows, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    _write_result_checkpoint(output_dir, result_rows)
     frontier_comparison, block_comparison = _comparison_tables(frontier, blocks, baselines)
     frontier_comparison.to_csv(
         output_dir / "tables" / "global_frontier_seed_points.csv", index=False
@@ -664,7 +687,8 @@ def run_global_token_ldp_comparison(
         "block_source_git_sha": block_metadata["source_git_sha"],
     }
     (output_dir / "global_token_ldp_metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(metadata, indent=2, sort_keys=True, default=_json_default) + "\n",
+        encoding="utf-8",
     )
     report = [
         "# Global token-level optimal LDP comparison",
@@ -690,7 +714,8 @@ def run_global_token_ldp_comparison(
         "bundle_sha256": sha256_file(bundle),
     }
     (output_dir / "sol_global_token_ldp_comparison_bundle_manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(manifest, indent=2, sort_keys=True, default=_json_default) + "\n",
+        encoding="utf-8",
     )
     _emit("finished", output=output_dir, bundle=bundle, wall_seconds=f"{metadata['wall_seconds']:.1f}")
     return output_dir
