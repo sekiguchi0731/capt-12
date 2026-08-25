@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -415,6 +416,13 @@ def run_grid_command(
         else None,
     }
     cfg = _load(config, overrides)
+    if cfg.get("prior_art_comparison", False) or any(
+        key.startswith("mass_") for key in cfg
+    ):
+        raise typer.BadParameter(
+            "prior-art/MaSS configs cannot run through run-grid; use "
+            "`capt12 prior-art-comparison --config ...`"
+        )
     result = run_grid(cfg, resume=resume, dry_run=dry_run, max_rows=max_rows)
     typer.echo(
         json.dumps(
@@ -451,6 +459,57 @@ def plot(
     )
 
 
+@app.command("prior-art-comparison")
+def prior_art_comparison(
+    config: Path = typer.Option(..., "--config", exists=True),
+    phase: str = typer.Option(
+        "pilot",
+        "--phase",
+        help="pilot runs epsilon=1/L=16; full adds the epsilon and L grids.",
+    ),
+    comparison_output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Publication results directory (defaults to comparison_output_dir in config).",
+    ),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
+) -> None:
+    """Run CAPT/LDP and the finite-output MaSS comparison end to end."""
+    if phase not in {"pilot", "full"}:
+        raise typer.BadParameter("phase must be pilot or full", param_hint="--phase")
+    cfg = _load(
+        config,
+        {
+            "comparison_output_dir": (
+                str(comparison_output_dir) if comparison_output_dir is not None else None
+            )
+        },
+    )
+    if not cfg.get("prior_art_comparison", False):
+        raise typer.BadParameter(
+            "dedicated comparison runner requires prior_art_comparison: true",
+            param_hint="--config",
+        )
+    from capt12.experiments.prior_art_comparison import run_prior_art_comparison
+
+    path = run_prior_art_comparison(cfg, phase=phase, resume=resume)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "phase": phase,
+                "run": str(path),
+                "results": str(
+                    Path(cfg.get("comparison_output_dir", "outputs/prior_art_comparison"))
+                    / "results.csv"
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 @app.command("render-prior-art-comparison")
 def render_prior_art_comparison(
     results: Path = typer.Option(..., "--results", exists=True),
@@ -480,6 +539,25 @@ def render_prior_art_comparison(
             sort_keys=True,
         )
     )
+
+
+@app.command("verify-prior-art-certificate")
+def verify_prior_art_certificate(
+    certificate: Path = typer.Argument(..., exists=True),
+    tolerance: float | None = typer.Option(
+        None,
+        "--verification-tolerance",
+        min=0,
+        max=1e-8,
+    ),
+) -> None:
+    """Reconstruct Q from a compact comparison bundle and recheck every constraint."""
+    from capt12.comparison.certificate import verify_factorized_certificate
+
+    result = verify_factorized_certificate(certificate, tolerance=tolerance)
+    typer.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+    if not result.valid:
+        raise typer.Exit(code=1)
 
 
 @app.command("verify-certificate")

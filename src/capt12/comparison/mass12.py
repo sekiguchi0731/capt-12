@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Hashable, Mapping
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -256,6 +256,7 @@ def fit_mass12_finite(
     temperature: float = 1.0,
     source_split: str = "D_design",
     objective_name: str = "teacher_kl",
+    frozen_context_values: Sequence[Hashable] | None = None,
 ) -> Mass12FiniteChannel:
     """Fit the finite-output MaSS adaptation using D_design only.
 
@@ -296,7 +297,19 @@ def fit_mass12_finite(
         contexts = np.asarray(public_context).astype(str)
         if contexts.shape != token_array.shape:
             raise ValueError("public_context must align with D_design tokens")
-    context_values = tuple(sorted(np.unique(contexts).tolist()))
+    observed_contexts = set(np.unique(contexts).tolist())
+    if frozen_context_values is None:
+        context_values = tuple(sorted(observed_contexts))
+    else:
+        context_values = tuple(sorted({str(value) for value in frozen_context_values}))
+        missing_contexts = sorted(observed_contexts - set(context_values))
+        if missing_contexts:
+            raise ValueError(
+                "D_design contains public contexts outside the frozen vocabulary: "
+                f"{missing_contexts}"
+            )
+        if not context_values:
+            raise ValueError("frozen_context_values must not be empty")
     context_index = {value: index for index, value in enumerate(context_values)}
 
     sensitive = _label_mapping(

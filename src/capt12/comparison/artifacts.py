@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import zipfile
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ RESULT_COLUMNS = (
     "display_name",
     "cost",
     "seed",
+    "mass_seed",
     "target_epsilon",
     "L",
     "mass_m",
@@ -65,13 +67,167 @@ RESULT_COLUMNS = (
 
 _METHOD_COLORS = {
     "capt": "#2563A6",
-    "optimal_ldp": "#D97706",
+    "optimal_ldp": "#4B5563",
     "pbp_common_nominal_calibrated": "#7C3AED",
-    "mass12_calibrated": "#059669",
-    "mass12_raw": "#10B981",
+    "mass12_calibrated": "#D97706",
+    "mass12_raw": "#F59E0B",
     "pbp_oracle": "#9CA3AF",
     "best_constant_cover": "#4B5563",
 }
+
+
+def _ldp_relative_utility(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach the same-seed/same-target optimal-LDP log-loss reference."""
+    keys = ["cost", "seed", "target_epsilon", "L"]
+    ldp = frame.loc[frame["method"] == "optimal_ldp", [*keys, "empirical_log_loss"]].rename(
+        columns={"empirical_log_loss": "ldp_empirical_log_loss"}
+    )
+    result = frame.merge(ldp, on=keys, how="left", validate="many_to_one")
+    result["utility_gain_micro_nats"] = 1e6 * (
+        result["ldp_empirical_log_loss"] - result["empirical_log_loss"]
+    )
+    return result
+
+
+def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, Path]:
+    empirical = frame.loc[frame["cost"] == "empirical_logloss"].copy()
+    empirical = _ldp_relative_utility(empirical)
+    formal = empirical["certificate_valid"] & empirical["formal_comparable"]
+    empirical = empirical.loc[formal].copy()
+    has_frontier = empirical.loc[empirical["L"] == 16, "target_epsilon"].nunique() >= 2
+    has_sensitivity = empirical.loc[
+        np.isclose(empirical["target_epsilon"].astype(float), 1.0), "L"
+    ].nunique() >= 2
+    panel_count = int(has_frontier) + int(has_sensitivity)
+    if panel_count == 0:
+        # A pilot has only epsilon=1 and L=16. Keep a valid one-panel preview
+        # rather than fabricating an epsilon path or an L sensitivity curve.
+        has_frontier = True
+        panel_count = 1
+    fig, raw_axes = plt.subplots(1, panel_count, figsize=(6.1 * panel_count, 4.5), squeeze=False)
+    axes = raw_axes[0]
+    axis_index = 0
+
+    if has_frontier:
+        axis = axes[axis_index]
+        axis_index += 1
+        rows = empirical.loc[
+            (empirical["L"] == 16)
+            & empirical["method"].isin({"capt", "mass12_raw", "mass12_calibrated"})
+            & np.isfinite(empirical["certified_upper_epsilon"].astype(float))
+            & np.isfinite(empirical["utility_gain_micro_nats"].astype(float))
+        ].copy()
+        for method, group in rows.groupby("method", sort=True):
+            color = _METHOD_COLORS[method]
+            label = str(group["display_name"].iloc[0])
+            for row in group.itertuples():
+                filled = float(row.certified_upper_epsilon) <= 1.0 + 1e-12
+                axis.scatter(
+                    row.certified_upper_epsilon,
+                    row.utility_gain_micro_nats,
+                    s=25,
+                    marker="o",
+                    facecolor=color if filled else "none",
+                    edgecolor=color,
+                    linewidth=0.9,
+                    alpha=0.34,
+                )
+            if method.startswith("mass12"):
+                control_keys = [
+                    "mass_m",
+                    "mass_n",
+                    "mass_privacy_weight",
+                    "mass_utility_weight",
+                    "mass_temperature",
+                    "target_epsilon",
+                ]
+                means = group.groupby(control_keys, dropna=False, sort=True)[
+                    ["certified_upper_epsilon", "utility_gain_micro_nats"]
+                ].mean()
+                for mean_index, mean in enumerate(means.itertuples()):
+                    filled = float(mean.certified_upper_epsilon) <= 1.0 + 1e-12
+                    axis.scatter(
+                        mean.certified_upper_epsilon,
+                        mean.utility_gain_micro_nats,
+                        facecolor=color if filled else "none",
+                        edgecolor=color,
+                        marker="o",
+                        s=38,
+                        linewidth=1.4,
+                        label=label if mean_index == 0 else None,
+                    )
+            else:
+                means = (
+                    group.groupby("target_epsilon", sort=True)[
+                        ["certified_upper_epsilon", "utility_gain_micro_nats"]
+                    ]
+                    .mean()
+                    .sort_values("certified_upper_epsilon")
+                )
+                axis.plot(
+                    means["certified_upper_epsilon"],
+                    means["utility_gain_micro_nats"],
+                    color=color,
+                    marker="o",
+                    linewidth=2.1,
+                    label=label,
+                )
+        axis.axhline(0, color=_METHOD_COLORS["optimal_ldp"], linewidth=1.2, label="optimal LDP")
+        axis.axvline(1.0, color="#9CA3AF", linestyle="--", linewidth=1)
+        axis.set_xlabel("Actual robust certified upper ε")
+        axis.set_ylabel(r"$10^6(\mathrm{LogLoss}_{LDP}-\mathrm{LogLoss}_{method})$")
+        axis.set_title("(a) Certified privacy–utility frontier", loc="left")
+        axis.grid(alpha=0.2)
+        handles, labels = axis.get_legend_handles_labels()
+        if handles:
+            axis.legend(handles, labels, frameon=False, fontsize=8)
+
+    if has_sensitivity:
+        axis = axes[axis_index]
+        rows = empirical.loc[
+            np.isclose(empirical["target_epsilon"].astype(float), 1.0)
+            & empirical["method"].eq("capt")
+            & empirical["L"].isin([8, 16, 32])
+            & np.isfinite(empirical["utility_gain_micro_nats"].astype(float))
+        ].copy()
+        for seed, group in rows.groupby("seed", sort=True):
+            ordered = group.sort_values("L")
+            axis.plot(
+                ordered["L"],
+                ordered["utility_gain_micro_nats"],
+                color=_METHOD_COLORS["capt"],
+                linewidth=0.8,
+                alpha=0.24,
+            )
+            axis.scatter(
+                ordered["L"],
+                ordered["utility_gain_micro_nats"],
+                color=_METHOD_COLORS["capt"],
+                s=25,
+                alpha=0.45,
+            )
+        means = rows.groupby("L", sort=True)["utility_gain_micro_nats"].mean()
+        for block_count, mean in means.items():
+            axis.hlines(mean, block_count - 0.8, block_count + 0.8, color="#111827", linewidth=2.4)
+        axis.axhline(0, color=_METHOD_COLORS["optimal_ldp"], linewidth=1.2)
+        axis.set_xticks([8, 16, 32])
+        axis.set_xlabel("Block count L")
+        axis.set_ylabel(r"$10^6(\mathrm{LogLoss}_{LDP}-\mathrm{LogLoss}_{CAPT})$")
+        axis.set_title("(b) Block-size sensitivity at ε=1", loc="left")
+        axis.grid(alpha=0.2)
+
+    fig.suptitle("Privacy-matched held-out CTR utility", y=0.99)
+    fig.text(
+        0.5,
+        0.01,
+        "Light points/lines are paired frozen-design seeds; heavy marks are means. "
+        "They are design perturbations, not independent test samples.",
+        ha="center",
+        fontsize=8,
+        color="#4B5563",
+    )
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.17, top=0.86, wspace=0.28)
+    return _save_figure(fig, output / "main_privacy_utility_comparison")
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
@@ -384,10 +540,12 @@ def render_prior_art_figures(
     frame = validate_results(results)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
+    paths: list[Path] = list(_main_publication_figure(frame, output))
+    supplementary = output / "supplementary"
+    supplementary.mkdir(parents=True, exist_ok=True)
     for renderer in (_figure_a, _figure_b, _figure_c, _figure_d):
-        paths.extend(renderer(frame, output))
-    paths.extend(_figure_e(frame, contracts, output))
+        paths.extend(renderer(frame, supplementary))
+    paths.extend(_figure_e(frame, contracts, supplementary))
     return paths
 
 
@@ -409,14 +567,21 @@ def load_method_contracts(path: Path) -> list[MethodContract]:
     return contracts
 
 
-def write_review_packet(output_dir: Path, metadata: dict[str, Any]) -> Path:
+def write_review_packet(
+    output_dir: Path,
+    metadata: dict[str, Any],
+    *,
+    exclude_top_level: Sequence[str] = (),
+) -> Path:
     output = Path(output_dir)
     packet = output / "prior_art_comparison_review_packet.zip"
     manifest_path = output / "review_packet_manifest.json"
     members = [
         candidate
         for candidate in sorted(output.rglob("*"))
-        if candidate.is_file() and candidate not in {packet, manifest_path}
+        if candidate.is_file()
+        and candidate not in {packet, manifest_path}
+        and candidate.relative_to(output).parts[0] not in set(exclude_top_level)
     ]
     manifest = {
         **metadata,

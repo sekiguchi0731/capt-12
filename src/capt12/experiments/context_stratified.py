@@ -889,10 +889,14 @@ def _channel_manifest(
         cells = cells_by_design[design.name]
         ordered = sorted(cells, key=lambda cell: cell.objective.context)
         channels = np.stack([cell.capt_solution.channel for cell in ordered])
+        ldp_channels = np.stack([cell.ldp_solution.channel for cell in ordered])
+        constant_channels = np.stack([cell.constant_channel for cell in ordered])
         np.savez_compressed(
             path / "mechanism" / f"context_channels-{design.name}.npz",
             contexts=np.asarray([cell.objective.context for cell in ordered], dtype=str),
             channels=channels,
+            ldp_channels=ldp_channels,
+            constant_channels=constant_channels,
             assignment=design.assignment,
             decoder=design.decoder,
         )
@@ -906,6 +910,12 @@ def _channel_manifest(
             "table_entries": int(len(ordered) * len(design.block_weights) ** 2),
             "contexts": {
                 cell.objective.context: hash_array(cell.capt_solution.channel) for cell in ordered
+            },
+            "ldp_contexts": {
+                cell.objective.context: hash_array(cell.ldp_solution.channel) for cell in ordered
+            },
+            "constant_contexts": {
+                cell.objective.context: hash_array(cell.constant_channel) for cell in ordered
             },
             "context_repairs": {
                 cell.objective.context: {

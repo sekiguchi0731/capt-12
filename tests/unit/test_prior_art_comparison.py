@@ -18,6 +18,10 @@ from capt12.comparison.calibration import (
     design_cover_distribution,
     mix_with_common_cover,
 )
+from capt12.comparison.certificate import (
+    verify_factorized_certificate,
+    write_factorized_certificate,
+)
 from capt12.comparison.contracts import default_method_contracts
 from capt12.comparison.empirical_privacy import (
     evaluate_attack_cmi_proxy,
@@ -31,7 +35,7 @@ from capt12.comparison.utility import (
 )
 from capt12.confidence.boxes import ConfidenceBox
 from capt12.config import validate_config
-from capt12.privacy.adjacency import AdjacentPair, hybrid_epsilon
+from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency, hybrid_epsilon
 
 
 def _point_boxes() -> tuple[dict[str, ConfidenceBox], list[AdjacentPair]]:
@@ -166,6 +170,19 @@ def test_mass12_channel_is_exact_stochastic_and_has_no_sensitive_inference_input
     assert np.allclose(first.block_probabilities(0).sum(), 1)
     assert first.provenance()["official_code_reused"] is False
     assert first.display_name == "MaSS-12 (finite-output adaptation)"
+    frozen = fit_mass12_finite(
+        tokens,
+        np.array(["seen"] * len(tokens)),
+        sensitive,
+        decoder,
+        cost,
+        loss_m=0.1,
+        seed=7,
+        epochs=1,
+        frozen_context_values=("seen", "unseen"),
+    )
+    assert frozen.context_values == ("seen", "unseen")
+    assert np.allclose(frozen.channel("unseen").sum(axis=1), 1)
     with pytest.raises(ValueError, match="D_design"):
         fit_mass12_finite(
             tokens,
@@ -364,16 +381,57 @@ def test_results_claim_gate_and_deterministic_plot_bytes(tmp_path: Path) -> None
     assert first_hashes == second_hashes
 
 
+def test_factorized_comparison_certificate_reconstructs_exact_q(tmp_path: Path) -> None:
+    groups = [Group("a", ("left",)), Group("a", ("right",))]
+    left = np.array([1.0, 0.0, 0.0])
+    right = np.array([0.0, 1.0, 0.0])
+    boxes = {
+        groups[0].key(): ConfidenceBox(left, left, left, "point", 1.0),
+        groups[1].key(): ConfidenceBox(right, right, right, "point", 1.0),
+    }
+    adjacency = build_adjacency(groups, "tuple_adjacent", 1.0)
+    input_to_block = np.array(
+        [
+            [0.5, 0.5],
+            [0.5, 0.5],
+            [0.5, 0.5],
+        ]
+    )
+    decoder = np.array([[0.5, 0.5, 0.0], [0.0, 0.0, 1.0]])
+    path, written = write_factorized_certificate(
+        tmp_path / "certificate.json",
+        input_to_block={"all": input_to_block},
+        decoder=decoder,
+        cover_distribution=np.ones(3) / 3,
+        mixing_weights={"all": 0.0},
+        boxes={"all": boxes},
+        adjacency={"all": adjacency},
+        groups={"all": groups},
+        adjacency_spec={"mode": "tuple_adjacent", "epsilon": 1.0, "epsilon_by_attr": {}},
+        metadata={"method": "toy"},
+    )
+    assert written.valid
+    verified = verify_factorized_certificate(path)
+    assert verified.valid
+    assert verified.realized_epsilon == pytest.approx(0)
+
+
 def test_external_source_commit_and_license_metadata() -> None:
     path = Path("reports/external_provenance_manifest.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    mass = next(item for item in payload["sources"] if item["name"] == "MaSS official implementation")
+    mass = next(
+        item
+        for item in payload["sources"]
+        if item["name"] == "MaSS official implementation"
+    )
     assert mass["repository_url"] == "https://github.com/jpmorganchase/MaSS"
     assert mass["commit_sha"] == "6fbe9be1ff155b3fdd2677de7977d801d10000b5"
     assert mass["license"] == "Apache-2.0"
 
 
-def test_prior_art_config_and_cli_accept_all_mass_controls(monkeypatch) -> None:
+def test_prior_art_config_and_cli_reject_ordinary_grid_and_dispatch_dedicated_runner(
+    monkeypatch,
+) -> None:
     config = validate_config(
         {
             "dataset": "synthetic",
@@ -393,14 +451,7 @@ def test_prior_art_config_and_cli_accept_all_mass_controls(monkeypatch) -> None:
     assert config["mass_m_list"] == [0.0, 0.1]
     assert config["mass_temperature_list"] == [0.5, 1.0]
 
-    captured = {}
-
-    def fake_grid(config, **kwargs):
-        captured.update(config)
-        return pd.DataFrame()
-
-    monkeypatch.setattr("capt12.cli.run_grid", fake_grid)
-    result = CliRunner().invoke(
+    ordinary = CliRunner().invoke(
         app,
         [
             "run-grid",
@@ -425,6 +476,30 @@ def test_prior_art_config_and_cli_accept_all_mass_controls(monkeypatch) -> None:
             "--dry-run",
         ],
     )
-    assert result.exit_code == 0, result.output
-    assert captured["mass_m_list"] == [0.0, 0.1]
-    assert captured["mass_output_mode"] == "finite_block"
+    assert ordinary.exit_code != 0
+    assert "cannot run through run-grid" in ordinary.output
+
+    captured = {}
+
+    def fake_comparison(config, *, phase, resume):
+        captured.update({"config": config, "phase": phase, "resume": resume})
+        return Path("outputs/fake-prior-art-run")
+
+    monkeypatch.setattr(
+        "capt12.experiments.prior_art_comparison.run_prior_art_comparison",
+        fake_comparison,
+    )
+    dedicated = CliRunner().invoke(
+        app,
+        [
+            "prior-art-comparison",
+            "--config",
+            "configs/criteo_prior_art_privacy_matched.yaml",
+            "--phase",
+            "pilot",
+        ],
+    )
+    assert dedicated.exit_code == 0, dedicated.output
+    assert captured["phase"] == "pilot"
+    assert captured["resume"] is True
+    assert captured["config"]["prior_art_comparison"] is True
