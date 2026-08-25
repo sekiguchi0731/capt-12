@@ -189,6 +189,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("solver_heartbeat_seconds must be positive")
     if not isinstance(cfg.get("solver_verbose", False), bool):
         raise ValueError("solver_verbose must be a boolean")
+    if cfg.get("time_limit") is not None:
+        time_limit = float(cfg["time_limit"])
+        if time_limit <= 0:
+            raise ValueError("time_limit must be positive")
+        cfg["time_limit"] = time_limit
     cut_formulation = cfg.get("robust_cut_formulation", "paired_witness")
     if cut_formulation not in {"paired_witness", "shared_support_bounds"}:
         raise ValueError("robust_cut_formulation must be paired_witness or shared_support_bounds")

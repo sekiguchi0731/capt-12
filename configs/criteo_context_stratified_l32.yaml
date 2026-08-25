@@ -2,3 +2,6 @@ base_config: criteo_context_stratified.yaml
 output_dir: outputs/context_stratified_l32_runs
 context_designs:
   - joint_kmedoids_cost_medoid_L32
+# Bound each HiGHS algorithm attempt. A timed-out dual-simplex master is
+# retried as the identical strict-tolerance IPM without crossover.
+time_limit: 300

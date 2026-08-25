@@ -325,6 +325,60 @@ def _solve_channel_lp(
 
             result = solve_once("highs", options)
             attempts = [("highs", result)]
+            # Dual simplex can spend hours pivoting on a degenerate robust
+            # master even though the IPM solves the same mathematical LP much
+            # faster. With an explicit per-attempt time limit, status 1 is not
+            # accepted as a channel: retry the identical LP through IPM and
+            # disable crossover so that it cannot fall back into another long
+            # simplex phase. Feasibility/optimality tolerances and every
+            # privacy constraint remain unchanged.
+            if not result.success and int(result.status) == 1:
+                no_crossover_options = {
+                    **options,
+                    "run_crossover": "off",
+                }
+                solver_state.update(method="highs-ipm", attempt=2)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="primary_time_or_iteration_limit",
+                    failed_method="highs",
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover",
+                    retry_attempt=2,
+                    time_limit_seconds=time_limit,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ipm", no_crossover_options)
+                attempts.append(("highs-ipm-no-crossover", result))
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover",
+                    retry_attempt=2,
+                    success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    crossover_iterations=getattr(result, "crossover_nit", None),
+                    time_limit_seconds=time_limit,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
             # HiGHS' dual simplex may find an apparently optimal solution and
             # then downgrade it to status 4/Unknown during its stricter final
             # feasibility check on badly scaled robust masters.  Retrying the
@@ -332,7 +386,11 @@ def _solve_channel_lp(
             # deterministic and does not relax any constraint or tolerance.
             # The returned channel still has to pass the support oracle,
             # independent robust verifier, and pure-epsilon post-solve repair.
-            if not result.success and int(result.status) == 4:
+            if (
+                attempts[-1][0] == "highs"
+                and not result.success
+                and int(result.status) == 4
+            ):
                 solver_state.update(method="highs-ipm", attempt=2)
                 _emit_progress(
                     progress,
@@ -371,7 +429,11 @@ def _solve_channel_lp(
             # optimality tolerance changes. Acceptance still requires the
             # support oracle, independent robust verification, strict channel
             # repair, and Decimal verification downstream.
-            if not result.success and int(result.status) == 4:
+            if (
+                attempts[-1][0] == "highs-ipm"
+                and not result.success
+                and int(result.status) == 4
+            ):
                 no_crossover_options = {
                     **options,
                     "run_crossover": "off",
