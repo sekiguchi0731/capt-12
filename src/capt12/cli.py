@@ -771,6 +771,63 @@ def context_paper_figure(
     )
 
 
+@app.command("context-global-token-ldp")
+def context_global_token_ldp(
+    epsilon_grid_bundle: Path = typer.Option(
+        ...,
+        "--epsilon-grid-bundle",
+        exists=True,
+        dir_okay=False,
+    ),
+    block_comparison_bundles: list[Path] = typer.Option(
+        ...,
+        "--block-comparison-bundle",
+        exists=True,
+        dir_okay=False,
+        help="Repeat for the certified L=8 and L=16 comparison bundles.",
+    ),
+    data_root: Path | None = typer.Option(
+        None,
+        "--data-root",
+        exists=True,
+        file_okay=False,
+        help="Override the D_test data root stored in the source runs.",
+    ),
+    solver_time_limit: float = typer.Option(
+        300,
+        "--solver-time-limit",
+        min=1,
+        help="Per-attempt HiGHS time limit in seconds.",
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/global_token_ldp_comparisons"),
+        "--output-root",
+    ),
+) -> None:
+    """Solve and compare the unrestricted K=64 global optimal-LDP baseline."""
+    from capt12.experiments.context_global_token_ldp import (
+        run_global_token_ldp_comparison,
+    )
+
+    path = run_global_token_ldp_comparison(
+        epsilon_grid_bundle,
+        block_comparison_bundles,
+        data_root=data_root,
+        solver_time_limit=solver_time_limit,
+        output_root=output_root,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "comparison": str(path),
+                "sol_review_bundle": str(path / "sol_global_token_ldp_comparison_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),

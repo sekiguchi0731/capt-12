@@ -170,6 +170,25 @@ gain over the context-specific optimal-LDP baseline. The renderer rejects
 invalid certificates and mismatched objectives, seed families, source SHAs,
 or encoders; it does not treat seed spread as a confidence interval.
 
+For the stronger end-to-end baseline, solve one unrestricted global K=64
+token-level optimal-LDP channel per paired seed and privacy budget, then
+compare the same CAPT results against it:
+
+```bash
+uv run capt12 context-global-token-ldp \
+  --epsilon-grid-bundle outputs/context_epsilon_grids/<id>/sol_context_epsilon_grid_bundle.zip \
+  --block-comparison-bundle outputs/context_cost_comparisons/<L8-id>/sol_context_cost_comparison_bundle.zip \
+  --block-comparison-bundle outputs/context_cost_comparisons/<L16-id>/sol_context_cost_comparison_bundle.zip
+```
+
+This baseline has a singleton partition, identity decoder, and an unrestricted
+64 by 64 channel. It is global: public context is used to aggregate the frozen
+empirical-log-loss objective but is not an online channel selector. The command
+reuses the frozen encoder, objective, and probability grid embedded in the
+certified epsilon-grid bundle, loads only D_test, solves the 15 LDP LPs
+sequentially, directly verifies the released channels, and emits a main-figure
+candidate plus a compact Sol review bundle.
+
 For empirical and hybrid objectives, plots normalize the CAPT-LDP gain by the
 excess objective after subtracting the channel-invariant empirical entropy
 floor. Exact raw objective, floor, excess objective, and absolute gain in
