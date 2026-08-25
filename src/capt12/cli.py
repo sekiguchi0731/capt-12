@@ -730,6 +730,47 @@ def context_cost_stability(
     )
 
 
+@app.command("context-paper-figure")
+def context_paper_figure(
+    epsilon_grid_bundle: Path = typer.Option(
+        ...,
+        "--epsilon-grid-bundle",
+        exists=True,
+        dir_okay=False,
+        help="Certified L=16 epsilon-grid Sol bundle.",
+    ),
+    block_comparison_bundles: list[Path] = typer.Option(
+        ...,
+        "--block-comparison-bundle",
+        exists=True,
+        dir_okay=False,
+        help="Certified cost-comparison bundle; repeat for each available L.",
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/paper_figures/context_capt_main"),
+        "--output-root",
+    ),
+) -> None:
+    """Render the two-panel certified frontier and block-size paper figure."""
+    from capt12.experiments.context_paper_figure import run_context_paper_figure
+
+    path = run_context_paper_figure(
+        epsilon_grid_bundle,
+        block_comparison_bundles,
+        output_root,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "paper_figure": str(path),
+                "review_bundle": str(path / "context_capt_main_figure_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("smoke")
 def smoke(
     config: Path = typer.Option(..., "--config", exists=True),

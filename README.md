@@ -153,6 +153,23 @@ Epsilon must be strictly positive: the current deterministic full-support
 repair obtains strict floating-point slack from `exp(epsilon)-1`; epsilon zero
 requires a separate exact-equality mechanism and is intentionally rejected.
 
+Render the compact paper figure from a completed empirical L=16 epsilon grid
+and the available certified L=8/L=16 matched-cost bundles with:
+
+```bash
+uv run capt12 context-paper-figure \
+  --epsilon-grid-bundle outputs/context_epsilon_grids/<id>/sol_context_epsilon_grid_bundle.zip \
+  --block-comparison-bundle outputs/context_cost_comparisons/<L8-id>/sol_context_cost_comparison_bundle.zip \
+  --block-comparison-bundle outputs/context_cost_comparisons/<L16-id>/sol_context_cost_comparison_bundle.zip
+```
+
+Panel (a) uses the conservative realized robust certificate epsilon on the x
+axis. Panel (b) pairs frozen-design seeds across the available block sizes at
+target epsilon one. Both panels report held-out expected randomized log-loss
+gain over the context-specific optimal-LDP baseline. The renderer rejects
+invalid certificates and mismatched objectives, seed families, source SHAs,
+or encoders; it does not treat seed spread as a confidence interval.
+
 For empirical and hybrid objectives, plots normalize the CAPT-LDP gain by the
 excess objective after subtracting the channel-invariant empirical entropy
 floor. Exact raw objective, floor, excess objective, and absolute gain in
