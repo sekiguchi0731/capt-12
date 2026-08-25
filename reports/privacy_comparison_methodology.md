@@ -24,7 +24,7 @@ The common nominal LP shares one channel across profiles and uses nominal distri
 
 ## MaSS-12 finite-output adaptation
 
-For each frozen public context, the adaptation learns logits over `L` blocks for every input token. Softmax probabilities are multiplied by the common decoder to enumerate `Q=pi D` exactly. No privacy verification samples from the mechanism.
+For each frozen public context, including predeclared contexts absent from `D_design`, the adaptation learns logits over `L` blocks for every input token. Softmax probabilities are multiplied by the common decoder to enumerate `Q=pi D` exactly. No privacy verification samples from the mechanism.
 
 Unlike the official neural MaSS implementation, this finite discrete adaptation computes `I(A;O|B,S)` exactly from `D_design` joint masses and applies the paper's same violation direction and `d^2+|d|` penalty. The selected cost supplies the utility term. If useful labels and `n` are configured, their exact discrete conditional MI uses the symmetric lower-bound penalty. This is `MaSS-12 (finite-output adaptation)`, not official or original MaSS.
 
@@ -34,6 +34,8 @@ Pilot controls are `mass_m_list`, `mass_n_list`, privacy/utility weights, traini
 
 The cover distribution is frozen once from `D_design`, assigned a strictly positive probability floor, and shared across methods/seeds. For each raw channel, bisection finds the smallest `lambda` within `1e-8` such that the existing robust verifier reports upper epsilon at most 1. The endpoint is independently reverified. Artifacts record pre/post epsilon and utility, lambda, maximum per-input row TV change, and constant-channel status. The same wrapper applies to raw MaSS-12 and common nominal PBP. It is a CAPT comparison wrapper, not part of either prior paper.
 
+The certificate bundle is factorized rather than a redundant 4096-by-4096 JSON table: it stores `pi`, the decoder, cover and per-context `lambda`, confidence boxes, and ordered adjacency. Independent verification checks hashes, reconstructs the exact square token channel for each context, and sends it to the existing robust verifier. This compression changes storage only, not the verified channel.
+
 ## Empirical diagnostic
 
 Only if no useful certified MaSS point exists, the auxiliary metric is the `cross-fitted attack-CMI proxy`: baseline conditional cross-entropy minus output-conditioned cross-entropy on `D_test`. One-hot logistic attackers use identical candidate grids and user-day group folds; hyperparameters and fold ensembles are frozen using `D_attack_train` only. User-day cluster bootstrap supplies 95% intervals. Raw and zero-clipped values, attribute-wise values, worst attribute, and profile-mass-weighted means are separate fields.
@@ -42,4 +44,4 @@ The empirical plot uses only overlapping observed leakage ranges and does not ex
 
 ## Output and claim gates
 
-The results schema refuses a `formal_comparable=true` row without a valid certificate, or a deployable row that uses `A_S` online. Figure A filters to certified formal rows; Figure D labels itself `Empirical diagnostic; not a certificate`. Deterministic plotting fixes timestamps and metadata, and review packets use sorted members with fixed ZIP timestamps. A two-render hash check remains mandatory when execution is authorized.
+The results schema refuses a `formal_comparable=true` row without a valid certificate, or a deployable row that uses `A_S` online. The main artifact uses at most two panels: an actual certified-epsilon/held-out-log-loss frontier and the paired L=8,16,32 sensitivity at epsilon 1. Frozen-design seed points and paths are shown without treating seeds as independent test samples. The detailed prior Figures A–E are Supplementary, and the empirical panel remains labeled `not a certificate`. Deterministic plotting fixes timestamps and metadata, and review packets use sorted members with fixed ZIP timestamps. A two-render hash check remains mandatory when execution is authorized.

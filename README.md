@@ -261,21 +261,45 @@ requires an independently valid robust certificate.
 
 The feasibility, methodology, implementation, and pending-results reports are
 under `reports/`. `results/prior_art_comparison/results.csv` is schema-only
-until the deferred experiment is run; it contains no zero-filled or fabricated
-measurement rows. After measured results and method contracts exist, render
-the five comparison figures with:
+and remains the checked-in contract fixture; it contains no zero-filled or
+fabricated measurement rows. Measured output goes to ignored `outputs/`. The
+ordinary `run-grid` command rejects this config so it
+cannot silently run a CAPT-only grid. The dedicated end-to-end commands are:
+
+```bash
+# Pilot: configured pilot controls at epsilon=1 and L=16.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --phase pilot
+
+# Full: allowed only if every cost shows finite raw-epsilon variation in the pilot.
+# It adds the configured epsilon grid and L=8,16,32 sensitivity.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --phase full
+```
+
+The runner resumes completed native and MaSS cells by default, trains MaSS
+only from `D_design`, constructs formal uncertainty sets only from `D_cert`,
+evaluates CTR utility only on `D_test`, writes compact factorized certificate
+bundles, independently reconstructs each exact token channel `Q`, and renders
+the publication and supplementary figures under `outputs/prior_art_comparison/`.
+Keeping generated output under the ignored `outputs/` tree preserves the clean
+source checkout required by every nested certificate run. A bundle can be
+rechecked with `capt12 verify-prior-art-certificate CERTIFICATE.json`.
+
+To render again from completed measurements without rerunning training:
 
 ```bash
 capt12 render-prior-art-comparison \
-  --results results/prior_art_comparison/results.csv \
-  --method-contracts results/prior_art_comparison/method_contracts.json \
-  --output-dir results/prior_art_comparison/figures
+  --results outputs/prior_art_comparison/results.csv \
+  --method-contracts outputs/prior_art_comparison/method_contracts.json \
+  --output-dir outputs/prior_art_comparison/figures
 ```
 
-The MaSS controls are accepted by both hyphenated and underscore CLI aliases:
-`mass_m_list`, `mass_n_list`, privacy/utility weight lists, seed list, epochs,
-`mass_output_mode=finite_block`, and temperature list. Configured `m` and `n`
-are information-theoretic controls in nats, never achieved robust epsilon.
+The MaSS controls remain available through the config. They are intentionally
+not accepted as a MaSS dispatch through `run-grid`. Configured `m` and `n` are
+information-theoretic controls in nats, never achieved robust epsilon.
 
 ## Deployment requirements
 
