@@ -54,6 +54,12 @@ def resolve_run_id(
         min=0,
         help="Override the frozen encoder/partition design seed.",
     ),
+    epsilon: float | None = typer.Option(
+        None,
+        "--epsilon",
+        min=0,
+        help="Override the privacy budget (context experiments require epsilon > 0).",
+    ),
     utility_objective: str | None = typer.Option(
         None,
         "--utility-objective",
@@ -81,6 +87,7 @@ def resolve_run_id(
         config,
         {
             "frozen_design_seed": frozen_design_seed,
+            "epsilon": epsilon,
             "context_utility_objective": utility_objective,
             "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
@@ -462,7 +469,13 @@ def context_stratified(
         None,
         "--frozen-design-seed",
         min=0,
-        help="Override frozen_design_seed while keeping the prescribed epsilon/L condition.",
+        help="Override frozen_design_seed while keeping the prescribed L condition.",
+    ),
+    epsilon: float | None = typer.Option(
+        None,
+        "--epsilon",
+        min=0,
+        help="Privacy budget; must be strictly positive for certificate-safe repair.",
     ),
     utility_objective: str | None = typer.Option(
         None,
@@ -492,6 +505,7 @@ def context_stratified(
             config,
             {
                 "frozen_design_seed": frozen_design_seed,
+                "epsilon": epsilon,
                 "context_utility_objective": utility_objective,
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
@@ -508,6 +522,12 @@ def context_seed_stability(
         "0,1,2",
         "--frozen-design-seeds",
         help="Comma-separated frozen design seeds; runs are sequential and then aggregated.",
+    ),
+    epsilon: float | None = typer.Option(
+        None,
+        "--epsilon",
+        min=0,
+        help="Privacy budget shared by every seed; must be strictly positive.",
     ),
     utility_objective: str | None = typer.Option(
         None,
@@ -527,7 +547,7 @@ def context_seed_stability(
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
 ) -> None:
-    """Run/reuse L8/L16/L32 epsilon=1 seeds and create one Sol review bundle."""
+    """Run/reuse L8/L16/L32 seeds at one epsilon and create one Sol review bundle."""
     from capt12.experiments.context_seed_stability import run_context_seed_stability
 
     try:
@@ -539,6 +559,7 @@ def context_seed_stability(
             config,
             {
                 "context_utility_objective": utility_objective,
+                "epsilon": epsilon,
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
             },
@@ -587,6 +608,78 @@ def context_cost_comparison(
     )
 
 
+@app.command("context-epsilon-grid")
+def context_epsilon_grid(
+    config: Path = typer.Option(..., "--config", exists=True),
+    epsilon_values: str = typer.Option(
+        "0.5,1,2",
+        "--epsilon-values",
+        help="Comma-separated positive privacy budgets.",
+    ),
+    frozen_design_seeds: str = typer.Option(
+        "0,1,2,3,4",
+        "--frozen-design-seeds",
+        help="Comma-separated paired frozen-design seeds used at every epsilon.",
+    ),
+    utility_objective: str | None = typer.Option(
+        None,
+        "--utility-objective",
+        help="LP objective used throughout the grid.",
+    ),
+    representation_mode: str | None = typer.Option(
+        None,
+        "--representation-mode",
+        help="Block/decoder representation used throughout the grid.",
+    ),
+    hybrid_empirical_weight: float | None = typer.Option(
+        None,
+        "--hybrid-empirical-weight",
+        min=0,
+        max=1,
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/context_epsilon_grids"),
+        "--output-root",
+    ),
+) -> None:
+    """Run/reuse a matched positive-epsilon grid and create one Sol bundle."""
+    from capt12.experiments.context_epsilon_grid import run_context_epsilon_grid
+
+    try:
+        epsilons = parse_csv_list(epsilon_values, float, minimum=0)
+        if any(value <= 0 for value in epsilons):
+            raise ValueError("epsilon values must be strictly positive")
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--epsilon-values") from error
+    try:
+        seeds = parse_csv_list(frozen_design_seeds, int, minimum=0)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
+    path = run_context_epsilon_grid(
+        _load(
+            config,
+            {
+                "context_utility_objective": utility_objective,
+                "context_representation_mode": representation_mode,
+                "hybrid_empirical_weight": hybrid_empirical_weight,
+            },
+        ),
+        seeds,
+        epsilons,
+        output_root=output_root,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "grid": str(path),
+                "sol_review_bundle": str(path / "sol_context_epsilon_grid_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("context-cost-stability")
 def context_cost_stability(
     config: Path = typer.Option(..., "--config", exists=True),
@@ -594,6 +687,12 @@ def context_cost_stability(
         "0,1,2,3,4",
         "--frozen-design-seeds",
         help="Comma-separated seeds used by every objective family.",
+    ),
+    epsilon: float | None = typer.Option(
+        None,
+        "--epsilon",
+        min=0,
+        help="Privacy budget shared by all objectives and seeds.",
     ),
     hybrid_empirical_weight: float = typer.Option(
         0.5,
@@ -614,7 +713,7 @@ def context_cost_stability(
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
     path = run_context_cost_stability(
-        _load(config),
+        _load(config, {"epsilon": epsilon}),
         seeds,
         hybrid_empirical_weight=hybrid_empirical_weight,
         output_root=output_root,

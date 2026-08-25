@@ -140,6 +140,8 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
             "configs/criteo_context_stratified.yaml",
             "--frozen-design-seed",
             "7",
+            "--epsilon",
+            "0.5",
             "--utility-objective",
             "empirical_logloss",
             "--representation-mode",
@@ -148,7 +150,7 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
     )
     assert result.exit_code == 0, result.output
     assert captured["frozen_design_seed"] == 7
-    assert captured["epsilon"] == 1.0
+    assert captured["epsilon"] == 0.5
     assert captured["context_designs"] == ["joint_kmedoids_cost_medoid_L16"]
     assert captured["context_utility_objective"] == "empirical_logloss"
     assert captured["context_representation_mode"] == "objective_aligned"
@@ -174,6 +176,8 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "configs/criteo_context_stratified.yaml",
             "--frozen-design-seeds",
             "7,2,7,4",
+            "--epsilon",
+            "2",
             "--utility-objective",
             "hybrid_logloss_kl",
             "--hybrid-empirical-weight",
@@ -184,11 +188,67 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert captured["seeds"] == [2, 4, 7]
-    assert captured["config"]["epsilon"] == 1.0
+    assert captured["config"]["epsilon"] == 2.0
     assert captured["config"]["context_utility_objective"] == "hybrid_logloss_kl"
     assert captured["config"]["hybrid_empirical_weight"] == 0.75
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
     assert "sol_seed_stability_review_bundle.zip" in result.output
+
+
+def test_context_epsilon_grid_cli_sorts_budgets_and_seeds(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_run(config, seeds, epsilons, *, output_root):
+        captured["config"] = config
+        captured["seeds"] = seeds
+        captured["epsilons"] = epsilons
+        captured["output_root"] = output_root
+        return tmp_path / "epsilon-grid"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_epsilon_grid.run_context_epsilon_grid",
+        fake_run,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-epsilon-grid",
+            "--config",
+            "configs/criteo_context_stratified.yaml",
+            "--epsilon-values",
+            "2,0.5,1,0.5",
+            "--frozen-design-seeds",
+            "4,0,2,0",
+            "--utility-objective",
+            "empirical_logloss",
+            "--representation-mode",
+            "objective_aligned",
+            "--output-root",
+            str(tmp_path / "grid-root"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["epsilons"] == [0.5, 1.0, 2.0]
+    assert captured["seeds"] == [0, 2, 4]
+    assert captured["config"]["context_utility_objective"] == "empirical_logloss"
+    assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert captured["output_root"] == tmp_path / "grid-root"
+    assert "sol_context_epsilon_grid_bundle.zip" in result.output
+
+
+def test_context_epsilon_grid_cli_rejects_zero_budget() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-epsilon-grid",
+            "--config",
+            "configs/criteo_context_stratified.yaml",
+            "--epsilon-values",
+            "0,1",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "strictly positive" in result.output
 
 
 def test_resolve_run_id_changes_with_frozen_design_seed(monkeypatch) -> None:

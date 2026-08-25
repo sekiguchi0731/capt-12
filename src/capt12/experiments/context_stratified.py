@@ -1352,6 +1352,7 @@ def _plot_results(
     aggregate: pd.DataFrame,
     contexts: pd.DataFrame,
     path: Path,
+    epsilon: float,
 ) -> None:
     method_order = ["context_capt", "context_ldp", "shared_capt", "shared_ldp"]
     labels = {
@@ -1461,7 +1462,7 @@ def _plot_results(
     objective = str(aggregate["utility_objective"].iloc[0])
     fig.suptitle(
         "Criteo constrained_2 public-context CAPT; "
-        f"unified sensitive unknown, epsilon=1; objective={objective}"
+        f"unified sensitive unknown, epsilon={epsilon:g}; objective={objective}"
     )
     fig.text(
         0.5,
@@ -1501,12 +1502,13 @@ def _write_report(
     metadata: dict[str, Any],
     path: Path,
 ) -> None:
+    epsilon = float(metadata["epsilon"])
     lines = [
         "# Public-context stratified CAPT with unified sensitive fallback",
         "",
         "## Scope",
         "",
-        f"- Profile: `features_kv_bits_constrained_2`; epsilon=1; {metadata['context_count']} frozen public-context values.",
+        f"- Profile: `features_kv_bits_constrained_2`; epsilon={epsilon:g}; {metadata['context_count']} frozen public-context values.",
         f"- D_cert: {metadata['cert_user_days']:,} one-display-per-user-day contributions; D_test: {metadata['test_rows']:,} displays.",
         f"- LP utility objective: `{metadata['context_utility_objective']}`; hybrid empirical weight: {metadata['hybrid_empirical_weight']:.6g}.",
         f"- Partition/decoder representation mode: `{metadata['context_representation_mode']}`; representation objective: `{metadata['representation_objective']}`.",
@@ -1617,7 +1619,7 @@ def _write_report(
             "",
             "## Remaining issues",
             "",
-            "This is still the single prescribed L=16, epsilon=1, joint-k-medoids condition. It does not add epsilon/L grids, multiple seeds, Avazu, or the singleton-identity positive control.",
+            f"This is one prescribed joint-k-medoids condition at epsilon={epsilon:g}. Epsilon-grid and multi-seed conclusions are produced only by their dedicated aggregation command; this run alone does not establish either.",
         ]
     )
     (path / "context_stratified_report.md").write_text("\n".join(lines) + "\n")
@@ -1644,8 +1646,11 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         *config.get("context_cols", []),
     ]:
         raise ValueError("channel selector must use only Z, profile, and public context")
-    if float(config.get("epsilon", -1)) != 1.0:
-        raise ValueError("the first context diagnostic requires epsilon=1")
+    if float(config.get("epsilon", -1)) <= 0:
+        raise ValueError(
+            "context diagnostic requires epsilon > 0 because certificate-safe uniform "
+            "mixing obtains strict slack from exp(epsilon)-1"
+        )
     if config.get("missing_group_policy") != "full_simplex":
         raise ValueError("context diagnostic requires full-simplex completion")
     if config.get("certificate_channel_repair") != "uniform_full_support_mixing":
@@ -2101,7 +2106,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     )
     progress.emit("figure_render_started", **process_memory_bytes())
     figure_started = time.perf_counter()
-    _plot_results(aggregate_frame, context_frame, path)
+    _plot_results(aggregate_frame, context_frame, path, float(config["epsilon"]))
     progress.emit(
         "figure_render_finished",
         stage_seconds=time.perf_counter() - figure_started,
@@ -2113,6 +2118,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
     metadata = {
         "experiment": "criteo_public_context_stratified_capt",
         "source_git_sha": config["source_git_sha"],
+        "epsilon": float(config["epsilon"]),
         "profile": profile,
         "public_context_column": context_column,
         "context_utility_objective": config["context_utility_objective"],

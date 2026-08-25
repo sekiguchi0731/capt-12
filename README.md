@@ -126,12 +126,32 @@ objective_aligned`. Support, adjacency, confidence sets, and certificate
 definitions do not change between these modes. Never select the objective,
 representation mode, or hybrid weight from D_test.
 
-The stability command keeps epsilon=1 and L=16 fixed. It reuses completed runs
+The seed-stability command keeps one requested epsilon and L fixed. It reuses completed runs
 from the same source commit, writes per-seed and across-seed CSVs plus one
 stability figure/report and D_attack_train-fixed privacy lower audits under
 `outputs/context_stratified_seed_summaries/`, and
 creates `sol_seed_stability_review_bundle.zip` containing all constituent
 mechanisms and certificates for one-file review.
+
+Run a matched positive-epsilon grid with the objective-aligned empirical
+log-loss design as follows:
+
+```bash
+uv run capt12 context-epsilon-grid \
+  --config configs/criteo_context_epsilon_grid.yaml \
+  --epsilon-values 0.5,1,2 \
+  --frozen-design-seeds 0,1,2,3,4
+```
+
+The command runs or reuses one complete seed-stability family per epsilon,
+then writes paired epsilon-by-seed tables, a deterministic figure/report, and
+`sol_context_epsilon_grid_bundle.zip` under
+`outputs/context_epsilon_grids/`. It verifies that each paired seed has the
+same encoder, partition, and decoder hashes across epsilon, and that every
+serialized channel passes its own conservative pure-epsilon certificate.
+Epsilon must be strictly positive: the current deterministic full-support
+repair obtains strict floating-point slack from `exp(epsilon)-1`; epsilon zero
+requires a separate exact-equality mechanism and is intentionally rejected.
 
 For empirical and hybrid objectives, plots normalize the CAPT-LDP gain by the
 excess objective after subtracting the channel-invariant empirical entropy

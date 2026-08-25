@@ -21,7 +21,7 @@ from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
 _JOINT_DESIGN_PATTERN = re.compile(r"joint_kmedoids_cost_medoid_L(8|16|32)")
-_SUMMARY_VERSION = 4
+_SUMMARY_VERSION = 5
 
 
 def _joint_design(config: dict[str, Any]) -> tuple[str, int]:
@@ -89,6 +89,7 @@ def _read_seed_run(
     design_name: str,
     block_count: int,
 ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+    target_epsilon = float(expected_config["epsilon"])
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     metadata = json.loads((path / "context_stratified_metadata.json").read_text(encoding="utf-8"))
     resolved = yaml.safe_load((path / "resolved_config.yaml").read_text(encoding="utf-8"))
@@ -125,8 +126,8 @@ def _read_seed_run(
         raise RuntimeError(f"seed {seed} changed a resolved setting other than frozen_design_seed")
     if run_id(resolved) != path.name:
         raise RuntimeError(f"seed {seed} run directory is not bound to its resolved config")
-    if float(resolved.get("epsilon", -1)) != 1.0:
-        raise RuntimeError("seed stability experiment is fixed at epsilon=1")
+    if float(resolved.get("epsilon", -1)) != target_epsilon:
+        raise RuntimeError(f"seed result changed the requested epsilon={target_epsilon:g}")
     if resolved.get("context_designs") != [design_name]:
         raise RuntimeError("seed result changed the requested joint k-medoids design")
     if set(aggregate["L"].astype(int)) != {block_count} or set(
@@ -142,8 +143,10 @@ def _read_seed_run(
     if not _boolean_values(certificates["certificate_conservative_valid"]).all():
         raise RuntimeError(f"seed {seed} has an invalid conservative certificate")
     realized = certificates["certificate_conservative_realized_epsilon"].to_numpy(float)
-    if not np.isfinite(realized).all() or float(realized.max()) > 1.0:
-        raise RuntimeError(f"seed {seed} does not satisfy finite pure epsilon=1 verification")
+    if not np.isfinite(realized).all() or float(realized.max()) > target_epsilon:
+        raise RuntimeError(
+            f"seed {seed} does not satisfy finite pure epsilon={target_epsilon:g} verification"
+        )
     if int(metadata["post_repair_zero_denominator_positive_numerator_count"]) != 0:
         raise RuntimeError(f"seed {seed} retains a positive-over-zero privacy constraint")
 
@@ -181,7 +184,7 @@ def _read_seed_run(
         "decoder_hash": design_manifest["decoder_hash"],
         "context_count": int(metadata["context_count"]),
         "L": block_count,
-        "epsilon": 1.0,
+        "epsilon": target_epsilon,
         "utility_objective": str(resolved["context_utility_objective"]),
         "representation_mode": str(resolved["context_representation_mode"]),
         "representation_objective": str(design_manifest["representation_objective"]),
@@ -334,7 +337,11 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     strict = frame["strict_advantage_context_mass"].to_numpy(float)
     degraded = frame["ldp_degraded_context_mass"].to_numpy(float)
     tie = np.maximum(0.0, 1.0 - strict - degraded)
-    ldp_ceiling = math.tanh(0.5)
+    epsilon_values = frame["epsilon"].astype(float).unique()
+    if len(epsilon_values) != 1:
+        raise ValueError("one seed-stability figure cannot mix epsilon values")
+    epsilon = float(epsilon_values[0])
+    ldp_ceiling = math.tanh(epsilon / 2)
 
     fig = plt.figure(figsize=(12.4, 8.4))
     outer = fig.add_gridspec(2, 2, hspace=0.34, wspace=0.28)
@@ -377,7 +384,7 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
         color=orange,
         ls="--",
         lw=1.6,
-        label=r"epsilon-LDP ceiling $\tanh(1/2)$",
+        label=rf"epsilon-LDP ceiling $\tanh({epsilon:g}/2)$",
     )
     tv_axis.set_xticks(x, labels)
     tv_axis.set_xlabel("Frozen design seed")
@@ -470,7 +477,7 @@ def _plot_stability(seed_results: pd.DataFrame, output_dir: Path) -> None:
     block_count = int(frame["L"].iloc[0])
     fig.suptitle(
         "Criteo public-context CAPT stability; "
-        f"epsilon=1, L={block_count}; R={objective}; representation={representation}",
+        f"epsilon={epsilon:g}, L={block_count}; R={objective}; representation={representation}",
         y=0.985,
     )
     fig.text(
@@ -512,6 +519,10 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     representation_mode = str(ordered["representation_mode"].iloc[0])
     representation_objective = str(ordered["representation_objective"].iloc[0])
     block_count = int(ordered["L"].iloc[0])
+    epsilon_values = ordered["epsilon"].astype(float).unique()
+    if len(epsilon_values) != 1:
+        raise ValueError("one seed-stability report cannot mix epsilon values")
+    epsilon = float(epsilon_values[0])
     conclusion = (
         "The CAPT-over-context-LDP design utility advantage is positive for every seed."
         if all_advantage
@@ -523,12 +534,12 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         "## Answer",
         "",
         conclusion,
-        f"All certificates valid: **{all_certified}**; all conservative realized epsilons finite and at most 1: **{all_finite and bool((ordered['conservative_max_realized_epsilon'] <= 1).all())}**.",
+        f"All certificates valid: **{all_certified}**; all conservative realized epsilons finite and at most {epsilon:g}: **{all_finite and bool((ordered['conservative_max_realized_epsilon'] <= epsilon).all())}**.",
         "",
         "## Fixed scope",
         "",
         f"- Frozen design seeds: {', '.join(map(str, ordered['frozen_design_seed']))}.",
-        f"- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon=1; joint weighted k-medoids; L={block_count}.",
+        f"- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon={epsilon:g}; joint weighted k-medoids; L={block_count}.",
         f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
         f"- Partition/decoder representation mode: `{representation_mode}`; representation objective: `{representation_objective}`.",
         "- Temporal splits, support/adjacency/privacy definition, utility objective, D_cert, and D_test are fixed. Only `frozen_design_seed` changes the frozen encoder/design realization.",
@@ -683,8 +694,9 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         raise ValueError("frozen design seeds must be nonnegative")
     base = validate_config(config)
     design_name, block_count = _joint_design(base)
-    if float(base.get("epsilon", -1)) != 1.0:
-        raise ValueError("context seed stability is fixed at epsilon=1")
+    epsilon = float(base.get("epsilon", -1))
+    if epsilon <= 0:
+        raise ValueError("context seed stability requires epsilon > 0")
     provenance = record_source_provenance(base)
     source_git_sha = str(provenance["source_git_sha"])
     signature_config = dict(provenance)
@@ -794,6 +806,7 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "frozen_design_seeds": seeds,
         "design": design_name,
         "L": block_count,
+        "epsilon": epsilon,
         "context_utility_objective": base["context_utility_objective"],
         "context_representation_mode": base["context_representation_mode"],
         "representation_objective": str(seed_results["representation_objective"].iloc[0]),

@@ -20,6 +20,7 @@ def _summary(root: Path, objective: str) -> Path:
     metadata = {
         "source_git_sha": "a" * 40,
         "L": 8,
+        "epsilon": 0.5,
         "frozen_design_seeds": [0, 1],
         "context_utility_objective": objective,
         "context_representation_mode": "objective_aligned",
@@ -29,7 +30,7 @@ def _summary(root: Path, objective: str) -> Path:
     config = {
         "base_config": {
             "source_git_sha": "a" * 40,
-            "epsilon": 1.0,
+            "epsilon": 0.5,
             "context_designs": ["joint_kmedoids_cost_medoid_L8"],
             "context_representation_mode": "objective_aligned",
             "context_utility_objective": objective,
@@ -44,7 +45,7 @@ def _summary(root: Path, objective: str) -> Path:
                 "source_git_sha": "a" * 40,
                 "encoder_sha256": f"encoder-{seed}",
                 "L": 8,
-                "epsilon": 1.0,
+                "epsilon": 0.5,
                 "utility_objective": objective,
                 "representation_mode": "objective_aligned",
                 "hybrid_empirical_weight": 0.5,
@@ -70,6 +71,7 @@ def test_cost_comparison_requires_matched_objective_aligned_inputs(tmp_path: Pat
     frame, info = _load_inputs(paths)
     assert len(frame) == 6
     assert info["L"] == 8
+    assert info["epsilon"] == 0.5
     assert info["frozen_design_seeds"] == [0, 1]
     assert set(frame["utility_objective"]) == {
         "teacher_kl",

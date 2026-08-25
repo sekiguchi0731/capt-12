@@ -1,0 +1,3 @@
+base_config: criteo_context_stratified.yaml
+context_utility_objective: empirical_logloss
+context_representation_mode: objective_aligned

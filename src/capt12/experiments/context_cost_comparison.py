@@ -22,7 +22,7 @@ _LABELS = {
     "empirical_logloss": "Empirical\nlog loss",
     "hybrid_logloss_kl": "Hybrid\nlog loss + KL",
 }
-_VERSION = 1
+_VERSION = 2
 
 
 def _boolean_values(series: pd.Series) -> pd.Series:
@@ -80,11 +80,18 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
 
     source_shas = {str(item["source_git_sha"]) for item in metadata.values()}
     dimensions = {int(item["L"]) for item in metadata.values()}
+    epsilons = {float(item["epsilon"]) for item in metadata.values()}
     seed_sets = {tuple(map(int, item["frozen_design_seeds"])) for item in metadata.values()}
-    if len(source_shas) != 1 or len(dimensions) != 1 or len(seed_sets) != 1:
-        raise ValueError("source SHA, L, and frozen seed set must match across objectives")
+    if (
+        len(source_shas) != 1
+        or len(dimensions) != 1
+        or len(epsilons) != 1
+        or len(seed_sets) != 1
+    ):
+        raise ValueError("source SHA, L, epsilon, and frozen seed set must match across objectives")
     source_sha = next(iter(source_shas))
     block_count = next(iter(dimensions))
+    epsilon = next(iter(epsilons))
     seeds = next(iter(seed_sets))
     hybrid_weights = set(
         frames["hybrid_logloss_kl"]["hybrid_empirical_weight"].astype(float)
@@ -100,7 +107,7 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
             raise ValueError(f"{objective} seed rows have inconsistent source SHA")
         if set(frame["L"].astype(int)) != {block_count} or set(
             frame["epsilon"].astype(float)
-        ) != {1.0}:
+        ) != {epsilon}:
             raise ValueError(f"{objective} changed L or epsilon")
         if tuple(sorted(frame["frozen_design_seed"].astype(int))) != seeds:
             raise ValueError(f"{objective} changed the frozen seed family")
@@ -129,7 +136,7 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
         "experiment_source_git_sha": source_sha,
         "analysis_git_sha": git_sha(),
         "L": block_count,
-        "epsilon": 1.0,
+        "epsilon": epsilon,
         "frozen_design_seeds": list(seeds),
         "objectives": list(_OBJECTIVES),
         "hybrid_empirical_weight": hybrid_weight,
@@ -285,7 +292,13 @@ def _plot(frame: pd.DataFrame, info: dict[str, Any], output_dir: Path) -> None:
                 label=label if index == 0 else None,
                 zorder=3,
             )
-    axis.axhline(math.tanh(0.5), color=orange, lw=1.6, ls="--", label="ε-LDP ceiling")
+    axis.axhline(
+        math.tanh(float(info["epsilon"]) / 2),
+        color=orange,
+        lw=1.6,
+        ls="--",
+        label="ε-LDP ceiling",
+    )
     axis.set_xticks(range(3), [_LABELS[item] for item in _OBJECTIVES])
     axis.set_ylabel("Maximum pairwise row TV")
     axis.set_title("D. CAPT channel row variation", loc="left", fontsize=11)
@@ -328,7 +341,7 @@ def _plot(frame: pd.DataFrame, info: dict[str, Any], output_dir: Path) -> None:
     axis.grid(axis="y", alpha=0.2)
 
     fig.suptitle(
-        f"Criteo public-context CAPT: objective comparison (ε=1, L={info['L']})",
+        f"Criteo public-context CAPT: objective comparison (ε={info['epsilon']:g}, L={info['L']})",
         fontsize=14,
         y=0.985,
     )
@@ -367,7 +380,7 @@ def _write_report(frame: pd.DataFrame, info: dict[str, Any], output_dir: Path) -
         "",
         f"- Experiment source SHA: `{info['experiment_source_git_sha']}`.",
         f"- Comparison-code SHA: `{info['analysis_git_sha']}`.",
-        f"- epsilon=1, L={info['L']}, frozen-design seeds: {', '.join(map(str, info['frozen_design_seeds']))}.",
+        f"- epsilon={info['epsilon']:g}, L={info['L']}, frozen-design seeds: {', '.join(map(str, info['frozen_design_seeds']))}.",
         f"- Teacher KL, empirical log loss, and hybrid (empirical weight {info['hybrid_empirical_weight']:.6g}) each use objective-aligned partition, decoder, and R cost.",
         "- All non-objective config fields, seed-specific encoders, temporal splits, support, adjacency, and privacy definitions match.",
         "",
@@ -472,6 +485,7 @@ def run_context_cost_comparison(
             "analysis_git_sha": info["analysis_git_sha"],
             "experiment_source_git_sha": info["experiment_source_git_sha"],
             "L": info["L"],
+            "epsilon": info["epsilon"],
             "seeds": info["frozen_design_seeds"],
             "summary_ids": {
                 objective: Path(path).name

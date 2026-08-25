@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from capt12.experiments.context_stratified import (
     ContextObjective,
@@ -147,7 +148,8 @@ def test_objective_aligned_mode_changes_joint_partition_or_decoder() -> None:
     )
 
 
-def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
+@pytest.mark.parametrize("epsilon", [0.5, 1.0, 2.0])
+def test_context_solver_emits_context_and_shared_progress(tmp_path, epsilon: float) -> None:
     cost = np.array([[0.0, 1.0], [1.0, 0.0]])
     weights = np.array([0.5, 0.5])
     design = UtilityDesign(
@@ -181,7 +183,7 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
         groups,
         counts,
         {
-            "epsilon": 1.0,
+            "epsilon": epsilon,
             "alpha_cert": 0.05,
             "confidence": "cp_box",
             "missing_group_policy": "full_simplex",
@@ -201,6 +203,7 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path) -> None:
     assert shared_capt.channel is not None
     assert verification.valid
     assert all(np.isfinite(cell.capt_verification.realized_epsilon) for cell in cells)
+    assert all(cell.capt_verification.realized_epsilon <= epsilon for cell in cells)
     assert all(cell.capt_repair.conservative_verification.valid for cell in cells)
     assert all(cell.capt_repair.mixing_weight > 0 for cell in cells)
     log = (tmp_path / "progress.log").read_text()
