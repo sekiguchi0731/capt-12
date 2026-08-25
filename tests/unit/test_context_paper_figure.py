@@ -84,6 +84,9 @@ def test_context_paper_figure_uses_certified_frontier_and_available_blocks(
     assert (output / "figures" / "context_capt_main.pdf").stat().st_size > 0
     assert (output / "figures" / "context_capt_main.png").stat().st_size > 0
     assert (output / "context_capt_main_figure_bundle.zip").stat().st_size > 0
+    latex_caption = (output / "caption.tex").read_text()
+    assert "Privacy--utility trade-off" in latex_caption
+    assert "no seed-level confidence interval is implied" in latex_caption
     metadata = json.loads((output / "context_capt_main_figure_metadata.json").read_text())
     assert metadata["block_counts"] == [8, 16]
     assert metadata["missing_block_counts"] == [32]

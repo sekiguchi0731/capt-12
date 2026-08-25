@@ -10,6 +10,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 
 from capt12.config import run_id
 from capt12.utils.artifacts import git_sha, sha256_file
@@ -195,16 +196,21 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
         marker="o",
         markersize=4.8,
         lw=2.1,
-        label="CAPT seed mean",
         zorder=3,
     )
-    axis.axhline(0, color=_GREY, lw=1, ls="--", label="Optimal LDP")
-    axis.set_title("(a) Certified privacy–utility frontier", loc="left", fontweight="bold")
+    axis.axhline(0, color=_GREY, lw=1, ls="--")
+    axis.set_title(
+        "(a) Certified privacy–utility trade-off\n" r"$L=16$",
+        loc="left",
+        fontweight="bold",
+    )
     axis.set_xlabel(r"Robust certified upper $\bar{\epsilon}$")
-    axis.set_ylabel(r"$10^6(\mathrm{LogLoss}_{\mathrm{LDP}}-\mathrm{LogLoss}_{\mathrm{CAPT}})$"
-                    "\n(nats/display; positive favors CAPT)")
+    axis.set_ylabel(
+        r"Improvement over optimal $\epsilon$-LDP"
+        "\n"
+        r"($\mu$nats/display; higher is better)"
+    )
     axis.grid(axis="y", color="#E5E7EB", lw=0.6)
-    axis.legend(frameon=False, loc="best")
 
     axis = axes[1]
     seeds = sorted(blocks["frozen_design_seed"].astype(int).unique())
@@ -230,15 +236,50 @@ def _plot(frontier: pd.DataFrame, blocks: pd.DataFrame, output_dir: Path) -> Non
             means.loc[block_count],
             block_count - 0.52,
             block_count + 0.52,
-            color=_INK,
+            color=_BLUE,
             lw=2.4,
             zorder=4,
         )
     axis.axhline(0, color=_GREY, lw=1, ls="--")
-    axis.set_title(r"(b) Block-size sensitivity at $\epsilon=1$", loc="left", fontweight="bold")
+    axis.set_title(
+        "(b) Block-size sensitivity\n" r"$\epsilon=1$",
+        loc="left",
+        fontweight="bold",
+    )
     axis.set_xlabel("Number of blocks L")
     axis.set_xticks(block_counts, [str(value) for value in block_counts])
     axis.grid(axis="y", color="#E5E7EB", lw=0.6)
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=_LIGHT_BLUE,
+            marker="o",
+            markerfacecolor="white",
+            markeredgecolor=_BLUE,
+            markeredgewidth=0.9,
+            lw=0.75,
+            label="Paired frozen-design seed",
+        ),
+        Line2D([0], [0], color=_BLUE, lw=2.4, label="Seed mean"),
+        Line2D(
+            [0],
+            [0],
+            color=_GREY,
+            lw=1,
+            ls="--",
+            label=r"Parity with optimal $\epsilon$-LDP",
+        ),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="outside lower center",
+        ncol=3,
+        frameon=False,
+        handlelength=2.5,
+        columnspacing=1.4,
+    )
 
     figure_dir = output_dir / "figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
@@ -337,18 +378,35 @@ def run_context_paper_figure(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     caption = (
-        "Public-context CAPT relative to the context-specific optimal-LDP baseline. "
-        "Both panels use the objective-aligned empirical-log-loss design and held-out "
-        "expected randomized log loss; positive values favor CAPT. (a) L=16 frontier "
-        "against the conservative robust certified upper privacy loss. Thin open points "
-        "and lines are five frozen-design seeds; the thick blue line is their mean. "
-        "(b) Block-size sensitivity at target epsilon=1. Thin lines pair the same seed "
-        "across L=8 and L=16; black horizontal bars are seed means. Seed variation is "
-        "not a confidence interval. Every included channel passed its serialized "
-        "pure-epsilon certificate. L=32 and MaSS are omitted because no completed, "
-        "formally matched result was available.\n"
+        "Held-out utility of CAPT relative to the context-wise optimal epsilon-LDP "
+        "baseline under the matching block representation, decoder, and "
+        "empirical-log-loss objective. Positive values favor CAPT. (a) Privacy-utility "
+        "trade-off for L=16; every CAPT mechanism satisfies its robust certificate "
+        "epsilon_bar <= epsilon for epsilon in {0.5, 1, 2}. (b) Sensitivity to the "
+        "number of blocks at epsilon=1. Open circles and thin lines show paired "
+        "frozen-design seeds, and thick lines indicate seed means. Seeds perturb the "
+        "mechanism design and are not independent test samples; no seed-level "
+        "confidence interval is implied. L=32 and MaSS are omitted because no "
+        "completed, formally matched result was available.\n"
     )
     (output_dir / "caption.txt").write_text(caption, encoding="utf-8")
+    latex_caption = r"""\caption{
+Held-out utility of CAPT relative to the context-wise optimal
+$\epsilon$-LDP baseline under the matching block representation,
+decoder, and empirical-log-loss objective.
+Positive values favor CAPT.
+(a) Privacy--utility trade-off for $L=16$; every CAPT mechanism
+satisfies its robust certificate
+$\bar{\epsilon}\leq\epsilon$ for
+$\epsilon\in\{0.5,1,2\}$.
+(b) Sensitivity to the number of blocks at $\epsilon=1$.
+Open circles and thin lines show paired frozen-design seeds, and
+thick lines indicate seed means.
+Seeds perturb the mechanism design and are not independent test
+samples; no seed-level confidence interval is implied.
+}
+"""
+    (output_dir / "caption.tex").write_text(latex_caption, encoding="utf-8")
     _plot(frontier, blocks, output_dir)
     bundle = _write_bundle(output_dir)
     manifest = {
