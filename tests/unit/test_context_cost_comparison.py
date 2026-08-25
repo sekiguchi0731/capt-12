@@ -14,18 +14,19 @@ from capt12.experiments.context_cost_comparison import (
 )
 
 
-def _summary(root: Path, objective: str) -> Path:
+def _summary(root: Path, objective: str, *, metadata_epsilon: bool = True) -> Path:
     path = root / objective
     (path / "tables").mkdir(parents=True)
     metadata = {
         "source_git_sha": "a" * 40,
         "L": 8,
-        "epsilon": 0.5,
         "frozen_design_seeds": [0, 1],
         "context_utility_objective": objective,
         "context_representation_mode": "objective_aligned",
         "all_certificates_valid": True,
     }
+    if metadata_epsilon:
+        metadata["epsilon"] = 0.5
     (path / "context_seed_stability_metadata.json").write_text(json.dumps(metadata))
     config = {
         "base_config": {
@@ -78,6 +79,16 @@ def test_cost_comparison_requires_matched_objective_aligned_inputs(tmp_path: Pat
         "empirical_logloss",
         "hybrid_logloss_kl",
     }
+
+
+def test_cost_comparison_accepts_legacy_summary_epsilon_from_seed_rows(tmp_path: Path) -> None:
+    paths = [
+        _summary(tmp_path, objective, metadata_epsilon=False)
+        for objective in ("teacher_kl", "empirical_logloss", "hybrid_logloss_kl")
+    ]
+    frame, info = _load_inputs(paths)
+    assert info["epsilon"] == 0.5
+    assert set(frame["epsilon"]) == {0.5}
 
 
 def test_cost_stability_runs_all_objectives_before_integrating(

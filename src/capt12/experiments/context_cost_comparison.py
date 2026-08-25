@@ -60,6 +60,17 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
         frame = pd.read_csv(results_path)
         if set(frame["utility_objective"].astype(str)) != {objective}:
             raise ValueError(f"{objective} seed table has inconsistent objective labels")
+        frame_epsilons = set(frame["epsilon"].astype(float))
+        if len(frame_epsilons) != 1:
+            raise ValueError(f"{objective} seed table mixes epsilon values")
+        frame_epsilon = next(iter(frame_epsilons))
+        if "epsilon" in item and float(item["epsilon"]) != frame_epsilon:
+            raise ValueError(f"{objective} metadata and seed table disagree on epsilon")
+        # Summary version 4 (before epsilon-grid orchestration) recorded epsilon
+        # in every seed row but not in the summary metadata.  Recovering that
+        # single validated value keeps already-certified L8/L16/L32 runs usable
+        # without weakening any matching check.
+        item["epsilon"] = frame_epsilon
         if set(frame["representation_mode"].astype(str)) != {"objective_aligned"}:
             raise ValueError(f"{objective} seed table is not objective-aligned")
         if not _boolean_values(frame["all_certificates_valid"]).all():
