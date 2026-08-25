@@ -250,6 +250,33 @@ reported as a successful fail-safe retreat to profile-wide common cover, not
 as evidence of a nontrivial CAPT gain. Reported Criteo utility is a frozen
 reference-score surrogate; downstream CTR or auction utility is not claimed.
 
+## Privacy-matched prior-art comparison
+
+`configs/criteo_prior_art_privacy_matched.yaml` freezes the L=16, five-seed,
+three-cost comparison grid and all MaSS-12 pilot controls. The implementation
+separates PBP oracle, common nominal PBP, `MaSS-12 (finite-output adaptation)`,
+and the `MaSS-12 + certified cover calibration` wrapper. Oracle and empirical
+rows cannot pass the formal-comparison claim gate by label alone: a formal row
+requires an independently valid robust certificate.
+
+The feasibility, methodology, implementation, and pending-results reports are
+under `reports/`. `results/prior_art_comparison/results.csv` is schema-only
+until the deferred experiment is run; it contains no zero-filled or fabricated
+measurement rows. After measured results and method contracts exist, render
+the five comparison figures with:
+
+```bash
+capt12 render-prior-art-comparison \
+  --results results/prior_art_comparison/results.csv \
+  --method-contracts results/prior_art_comparison/method_contracts.json \
+  --output-dir results/prior_art_comparison/figures
+```
+
+The MaSS controls are accepted by both hyphenated and underscore CLI aliases:
+`mass_m_list`, `mass_n_list`, privacy/utility weight lists, seed list, epochs,
+`mass_output_mode=finite_block`, and temperature list. Configured `m` and `n`
+are information-theoretic controls in nats, never achieved robust epsilon.
+
 ## Deployment requirements
 
 Distribute all profile tables as one authenticated bundle with the same URL,

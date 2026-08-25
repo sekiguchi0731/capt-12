@@ -1,0 +1,34 @@
+{
+  "retrieved_at": "2026-08-25",
+  "sources": [
+    {
+      "commit_sha": "6fbe9be1ff155b3fdd2677de7977d801d10000b5",
+      "license": "Apache-2.0",
+      "name": "MaSS official implementation",
+      "repository_url": "https://github.com/jpmorganchase/MaSS",
+      "status": "archived upstream; inspected read-only",
+      "usage": "equations, loss directions, feasibility checks, and stopping behavior audited; no upstream file is called or modified by CAPT-12"
+    },
+    {
+      "license": "CC BY 4.0",
+      "name": "MaSS ICML 2024 paper",
+      "url": "https://proceedings.mlr.press/v235/chen24f.html",
+      "version": "PMLR 235 (2024); arXiv:2405.14981v2"
+    },
+    {
+      "name": "Profile-Based Privacy for Locally Private Computations",
+      "url": "https://arxiv.org/abs/1903.09084",
+      "version": "arXiv:1903.09084v2"
+    },
+    {
+      "name": "Pufferfish Privacy Mechanisms for Correlated Data",
+      "url": "https://arxiv.org/abs/1603.03977",
+      "version": "arXiv:1603.03977v3"
+    },
+    {
+      "name": "Local Obfuscation Mechanisms for Hiding Probability Distributions",
+      "url": "https://arxiv.org/abs/1812.00939",
+      "version": "arXiv:1812.00939"
+    }
+  ]
+}
