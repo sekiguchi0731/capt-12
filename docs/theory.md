@@ -123,6 +123,13 @@ protected value is not an input. The guarantee is conditional:
 It protects the additional disclosure in `O` to an attacker who already knows
 `B`. It does not protect attribute leakage through `B` itself.
 
+When repeated-release protection is enabled, the online sanitizer memoizes by
+`(user privacy epoch, profile, public context)`, or by `(user privacy epoch,
+profile)` for a shared channel. The raw token `Z` is not part of the cache key:
+the first sanitized output is reused if `Z` changes later in the same epoch.
+Including `Z` in the key would permit multiple randomized releases and require
+an explicit composition analysis.
+
 The frozen sensitive mapper coarsens both a missing value and any value outside
 its pre-certificate known domain to one secret value `__UNKNOWN__`. Therefore
 the certified secret is `A~=c(A)`, not the original uncoarsened `A`. Comparisons

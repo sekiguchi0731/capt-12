@@ -622,8 +622,12 @@ def test_online_sanitizer_memoization_and_fallback() -> None:
         fallback_distribution=np.ones(4) / 4,
     )
     first = sanitizer.sanitize(0, "proxy", np.random.default_rng(3), "user-day")
-    second = sanitizer.sanitize(0, "proxy", np.random.default_rng(999), "user-day")
+    # A later raw token in the same privacy epoch must not trigger another
+    # randomized release.  With the identity block channel it would otherwise
+    # decode into the other block.
+    second = sanitizer.sanitize(2, "proxy", np.random.default_rng(999), "user-day")
     assert first == second
+    assert len(sanitizer._memo) == 1
     sanitizer.authenticated = False
     fallback = sanitizer.sanitize(1, "proxy", np.random.default_rng(2), "different-user-day")
     assert 0 <= fallback < 4
@@ -648,3 +652,19 @@ def test_contextual_sanitizer_selects_channel_without_sensitive_value() -> None:
     )
     assert morning == 0
     assert evening == 1
+
+
+def test_contextual_sanitizer_memoization_ignores_token_within_epoch() -> None:
+    sanitizer = ContextualSanitizer(
+        channels={("secret", "morning"): np.eye(2)},
+        token_to_block=np.array([0, 1]),
+        decoder=np.eye(2),
+    )
+    first = sanitizer.sanitize(
+        0, "secret", "morning", np.random.default_rng(1), "u-day"
+    )
+    second = sanitizer.sanitize(
+        1, "secret", "morning", np.random.default_rng(2), "u-day"
+    )
+    assert first == second == 0
+    assert len(sanitizer._memo) == 1

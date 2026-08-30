@@ -64,7 +64,12 @@ class Sanitizer:
             raise ValueError("raw token is outside [0,K)")
         memo_key = None
         if self.memoize and user_epoch_key is not None:
-            memo_key = hashlib.sha256(f"{user_epoch_key}|{profile}|{token}".encode()).hexdigest()
+            # Memoization bounds repeated releases within one privacy epoch.
+            # The raw token must not be part of the key: otherwise a changing Z
+            # would trigger fresh randomized releases and allow composition
+            # within the epoch.  The first sanitized output is therefore reused
+            # for every later token under the same epoch/profile selection.
+            memo_key = hashlib.sha256(f"{user_epoch_key}|{profile}".encode()).hexdigest()
             if memo_key in self._memo:
                 return self._memo[memo_key]
         invalid = not self.authenticated or self.expired or self.shift_detected or profile not in self.channels
@@ -121,8 +126,11 @@ class ContextualSanitizer:
         context = str(public_context)
         memo_key = None
         if self.memoize and user_epoch_key is not None:
+            # Public context may select a different certified mechanism, but the
+            # protected value and raw token are deliberately absent.  In
+            # particular, changes to Z inside an epoch reuse the first release.
             memo_key = hashlib.sha256(
-                f"{user_epoch_key}|{profile}|{context}|{token}".encode()
+                f"{user_epoch_key}|{profile}|{context}".encode()
             ).hexdigest()
             if memo_key in self._memo:
                 return self._memo[memo_key]
