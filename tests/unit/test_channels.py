@@ -8,6 +8,7 @@ import capt12.certification.robust as robust_module
 import capt12.mechanisms.lp as lp_module
 from capt12.bounds.theorem4 import fractional_knapsack_envelope, theorem4_envelope
 from capt12.certification.robust import (
+    evaluate_robust_constraints,
     repair_robust_channel_uniform,
     solve_robust_block_lp,
     verify_robust_channel,
@@ -101,6 +102,56 @@ def test_cover_is_feasible_at_epsilon_zero() -> None:
     result = verify_robust_channel(common_cover(np.array([0.7, 0.3])), boxes, adjacency)
     assert result.valid
     assert result.realized_epsilon <= 1e-12
+
+
+def test_realized_epsilon_is_nonnegative_without_denominator_floor() -> None:
+    boxes = {
+        "left": ConfidenceBox(
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            "point",
+            1.0,
+        ),
+        "right": ConfidenceBox(
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            "point",
+            1.0,
+        ),
+    }
+    adjacency = [AdjacentPair("left", "right", 2.0)]
+    channel = np.array([[0.2, 0.8], [0.8, 0.2]])
+    evaluations = evaluate_robust_constraints(channel, boxes, adjacency)
+
+    assert evaluations[0].maximum < evaluations[0].minimum
+    assert evaluations[0].realized_epsilon == 0.0
+    assert evaluations[1].realized_epsilon > 0.0
+    assert verify_robust_channel(channel, boxes, adjacency).realized_epsilon >= 0.0
+    assert (
+        verify_robust_channel_conservative(channel, boxes, adjacency).realized_epsilon
+        >= 0.0
+    )
+
+
+def test_jointly_zero_output_column_has_zero_realized_epsilon() -> None:
+    point = np.array([0.5, 0.5])
+    boxes = {
+        "left": ConfidenceBox(point, point, point, "point", 1.0),
+        "right": ConfidenceBox(point, point, point, "point", 1.0),
+    }
+    adjacency = [AdjacentPair("left", "right", 0.0)]
+    channel = np.array([[1.0, 0.0], [1.0, 0.0]])
+    evaluations = evaluate_robust_constraints(channel, boxes, adjacency)
+
+    assert evaluations[1].maximum == evaluations[1].minimum == 0.0
+    assert evaluations[1].realized_epsilon == 0.0
+    assert verify_robust_channel(channel, boxes, adjacency).realized_epsilon == 0.0
+    assert (
+        verify_robust_channel_conservative(channel, boxes, adjacency).realized_epsilon
+        == 0.0
+    )
 
 
 def test_uniform_postsolve_repair_changes_channel_and_removes_infinite_ratio() -> None:

@@ -516,13 +516,18 @@ def evaluate_robust_constraints(
             maximum, p_max = support(channel[:, output], boxes[pair.left], maximize=True)
             minimum, p_min = support(channel[:, output], boxes[pair.right], maximize=False)
             violation = maximum - factor * minimum
+            # A pure-epsilon privacy loss is nonnegative by definition:
+            # rho=max(1, maximum/minimum) and epsilon=log(rho).  A ratio below
+            # one needs no privacy budget, while a jointly zero output column
+            # contributes zero rather than -infinity.  Positive-over-zero is
+            # still infinite and is never hidden by a denominator floor.
             realized = (
                 math.inf
                 if minimum <= 0 < maximum
                 else (
-                    math.log(maximum / minimum)
+                    max(0.0, math.log(maximum / minimum))
                     if maximum > 0 and minimum > 0
-                    else -math.inf
+                    else 0.0
                 )
             )
             values.append(
@@ -635,9 +640,9 @@ def verify_robust_channel_conservative(
                         Decimal("Infinity")
                         if minimum <= 0 < maximum
                         else (
-                            (maximum / minimum).ln()
+                            max(Decimal(0), (maximum / minimum).ln())
                             if maximum > 0 and minimum > 0
-                            else Decimal("-Infinity")
+                            else Decimal(0)
                         )
                     )
                     checked += 1

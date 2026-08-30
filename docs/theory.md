@@ -211,6 +211,12 @@ positive additive violation rejects the certificate. Because the objective is
 linear, the distortion change is also linear in `lambda`, avoiding a larger
 arbitrary utility penalty.
 
+For each directed robust constraint, the reported realized privacy loss is
+`log(max(1, numerator/denominator))`. A ratio below one and a jointly zero
+output column therefore contribute zero. A positive numerator over a zero
+denominator remains infinite; neither the floating-point nor Decimal verifier
+uses a denominator floor.
+
 ## Utility informativeness gate
 
 For a fixed partition, common decoder, block cost `C`, and normalized input
