@@ -1484,7 +1484,9 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
                 decoder=decoder,
                 coverage={
                     "expected_group_count": hist.expected_group_count,
-                    "observed_group_count": len(hist.groups) - hist.missing_group_count,
+                    "observed_group_count": (
+                        hist.expected_group_count - hist.missing_group_count
+                    ),
                     "missing_group_count": hist.missing_group_count,
                     "missing_groups": list(hist.missing_groups),
                     "rare_group_count": hist.rare_group_count,
