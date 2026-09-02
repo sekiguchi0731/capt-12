@@ -251,6 +251,7 @@ def _fixed_design(
         ["__token__", *contexts],
         split_id="D_model",
         sensitive_columns=sensitive,
+        categorical_columns=["__token__"],
     )
     model_support = _tuple_counter(model_frame, profile=profile, contexts=contexts)
     domains = {
@@ -439,6 +440,9 @@ def _fixed_design(
     support_path.write_text(json.dumps(support_payload, indent=2, sort_keys=True) + "\n")
     np.savez_compressed(
         path / "mechanism" / "frozen_design.npz",
+        reference_feature_schema=np.asarray(reference.feature_schema),
+        reference_feature_columns=np.asarray(reference.feature_columns, dtype=str),
+        reference_categorical_columns=np.asarray(reference.categorical_columns, dtype=str),
         frequencies=frequencies,
         objective_weights=objective_weights,
         token_scores=token_scores,
@@ -469,6 +473,9 @@ def _fixed_design(
         "mapper": mapper,
         "encoder": encoder,
         "reference": reference,
+        "reference_feature_schema": reference.feature_schema,
+        "reference_feature_columns": reference.feature_columns,
+        "reference_categorical_columns": reference.categorical_columns,
         "assignment": assignment,
         "decoder": decoder,
         "block_cost": block_cost,
@@ -1034,6 +1041,9 @@ def run_fixed_support_scaling(config: dict[str, Any]) -> Path:
         "frozen_mapper_hash": frozen["mapper_hash"],
         "frozen_encoder_hash": frozen["encoder_hash"],
         "frozen_model_hash": frozen["model_hash"],
+        "reference_feature_schema": frozen["reference_feature_schema"],
+        "reference_feature_columns": list(frozen["reference_feature_columns"]),
+        "reference_categorical_columns": list(frozen["reference_categorical_columns"]),
         "wall_seconds": total_seconds,
         "process_peak_rss_bytes": _peak_rss_bytes(),
         "created_at": datetime.now(UTC).isoformat(),

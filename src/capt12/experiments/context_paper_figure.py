@@ -13,11 +13,12 @@ import pandas as pd
 from matplotlib.lines import Line2D
 
 from capt12.config import run_id
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA
 from capt12.utils.artifacts import git_sha, sha256_file
 
 _OBJECTIVE = "empirical_logloss"
 _REPRESENTATION = "objective_aligned"
-_FIGURE_VERSION = 1
+_FIGURE_VERSION = 2
 _BLUE = "#2563A6"
 _INK = "#1F2937"
 _GREY = "#6B7280"
@@ -54,6 +55,37 @@ def _as_boolean(series: pd.Series) -> pd.Series:
 def _load_frontier(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
     metadata = _read_zip_json(path, "grid/context_epsilon_grid_metadata.json")
     frame = _read_zip_csv(path, "grid/tables/epsilon_seed_results.csv")
+    required_columns = {
+        "source_git_sha",
+        "encoder_sha256",
+        "reference_model_sha256",
+        "reference_feature_schema",
+        "representation_token_cost_hash",
+    }
+    missing_columns = required_columns - set(frame.columns)
+    if missing_columns or metadata.get("reference_feature_schema") != (
+        TOKEN_REFERENCE_FEATURE_SCHEMA
+    ):
+        raise ValueError("main frontier predates categorical-token f_ref provenance")
+    if set(frame["reference_feature_schema"].astype(str)) != {
+        TOKEN_REFERENCE_FEATURE_SCHEMA
+    }:
+        raise ValueError("main frontier does not use categorical-token f_ref")
+    if set(frame["source_git_sha"].astype(str)) != {str(metadata["source_git_sha"])}:
+        raise ValueError("main frontier rows do not match their source Git SHA")
+    identity_columns = [
+        "encoder_sha256",
+        "reference_model_sha256",
+        "representation_token_cost_hash",
+    ]
+    if (
+        frame.groupby("frozen_design_seed")[identity_columns]
+        .nunique(dropna=False)
+        .to_numpy()
+        .max()
+        > 1
+    ):
+        raise ValueError("main frontier f_ref design changes across epsilon")
     if int(metadata["L"]) != 16:
         raise ValueError("main frontier requires L=16")
     if metadata["context_utility_objective"] != _OBJECTIVE:
@@ -86,6 +118,27 @@ def _load_block_bundle(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
     selected = frame.loc[frame["utility_objective"].astype(str) == _OBJECTIVE].copy()
     if len(selected) == 0:
         raise ValueError(f"{path} does not contain {_OBJECTIVE}")
+    required_columns = {
+        "source_git_sha",
+        "encoder_sha256",
+        "reference_model_sha256",
+        "reference_feature_schema",
+        "representation_token_cost_hash",
+    }
+    if required_columns - set(selected.columns) or metadata.get(
+        "reference_feature_schema"
+    ) != TOKEN_REFERENCE_FEATURE_SCHEMA:
+        raise ValueError(f"{path} predates categorical-token f_ref provenance")
+    if set(selected["reference_feature_schema"].astype(str)) != {
+        TOKEN_REFERENCE_FEATURE_SCHEMA
+    }:
+        raise ValueError(f"{path} does not use categorical-token f_ref")
+    if set(selected["source_git_sha"].astype(str)) != {
+        str(metadata["experiment_source_git_sha"])
+    }:
+        raise ValueError(f"{path} rows do not match their source Git SHA")
+    if selected["frozen_design_seed"].duplicated().any():
+        raise ValueError(f"{path} repeats an empirical seed row")
     if set(selected["representation_mode"].astype(str)) != {_REPRESENTATION}:
         raise ValueError(f"{path} is not objective-aligned")
     if not _as_boolean(selected["all_certificates_valid"]).all():
@@ -121,15 +174,23 @@ def _load_block_sensitivity(paths: list[Path]) -> tuple[pd.DataFrame, dict[str, 
     }
     if len(seed_sets) != 1:
         raise ValueError("block-size inputs must share one paired seed family")
-    reference_encoders: dict[int, str] | None = None
+    reference_design: dict[int, tuple[str, str, str]] | None = None
     for frame in frames:
-        encoders = {
-            int(row.frozen_design_seed): str(row.encoder_sha256) for row in frame.itertuples()
+        design = {
+            int(row.frozen_design_seed): (
+                str(row.encoder_sha256),
+                str(row.reference_model_sha256),
+                str(row.representation_token_cost_hash),
+            )
+            for row in frame.itertuples()
         }
-        if reference_encoders is None:
-            reference_encoders = encoders
-        elif encoders != reference_encoders:
-            raise ValueError("encoder hashes differ across block sizes")
+        if reference_design is None:
+            reference_design = design
+        elif design != reference_design:
+            raise ValueError(
+                "encoder, reference-model, or representation-cost hashes differ "
+                "across block sizes"
+            )
     combined = pd.concat(frames, ignore_index=True).sort_values(
         ["frozen_design_seed", "L"]
     )
@@ -137,6 +198,7 @@ def _load_block_sensitivity(paths: list[Path]) -> tuple[pd.DataFrame, dict[str, 
         "block_counts": sorted(block_counts),
         "source_git_sha": next(iter(source_shas)),
         "frozen_design_seeds": list(next(iter(seed_sets))),
+        "reference_design_by_seed": reference_design,
     }
 
 
@@ -337,11 +399,25 @@ def run_context_paper_figure(
     """Create the two-panel paper figure from independently certified bundles."""
     frontier, frontier_metadata = _load_frontier(epsilon_grid_bundle)
     blocks, block_metadata = _load_block_sensitivity(block_comparison_bundles)
+    if str(frontier_metadata["source_git_sha"]) != str(block_metadata["source_git_sha"]):
+        raise ValueError("frontier and block-size inputs must share one source Git SHA")
     frontier_seeds = tuple(
         int(value) for value in sorted(frontier["frozen_design_seed"].astype(int).unique())
     )
     if frontier_seeds != tuple(block_metadata["frozen_design_seeds"]):
         raise ValueError("frontier and block-size panels must share one seed family")
+    frontier_design = {
+        int(seed): (
+            str(group["encoder_sha256"].iloc[0]),
+            str(group["reference_model_sha256"].iloc[0]),
+            str(group["representation_token_cost_hash"].iloc[0]),
+        )
+        for seed, group in frontier.groupby("frozen_design_seed", sort=True)
+    }
+    if frontier_design != block_metadata["reference_design_by_seed"]:
+        raise ValueError(
+            "frontier and block-size inputs do not share the same categorical f_ref design"
+        )
     signature = {
         "experiment": "context_capt_main_paper_figure",
         "version": _FIGURE_VERSION,
@@ -361,6 +437,7 @@ def run_context_paper_figure(
         "analysis_git_sha": git_sha(),
         "frontier_source_git_sha": frontier_metadata["source_git_sha"],
         "block_sensitivity_source_git_sha": block_metadata["source_git_sha"],
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
         "epsilon_values": sorted(frontier["epsilon"].astype(float).unique()),
         "block_counts": block_metadata["block_counts"],
         "frozen_design_seeds": list(frontier_seeds),

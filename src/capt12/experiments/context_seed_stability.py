@@ -17,11 +17,12 @@ import yaml
 
 from capt12.config import canonical_json, run_id, validate_config
 from capt12.experiments.context_stratified import run_context_stratified_diagnostic
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA, ReferenceModel
 from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
 _JOINT_DESIGN_PATTERN = re.compile(r"joint_kmedoids_cost_medoid_L(8|16|32)")
-_SUMMARY_VERSION = 5
+_SUMMARY_VERSION = 6
 
 
 def _joint_design(config: dict[str, Any]) -> tuple[str, int]:
@@ -150,6 +151,26 @@ def _read_seed_run(
     if int(metadata["post_repair_zero_denominator_positive_numerator_count"]) != 0:
         raise RuntimeError(f"seed {seed} retains a positive-over-zero privacy constraint")
 
+    reference_path = path / "models" / "reference.joblib"
+    reference_hash = sha256_file(reference_path)
+    reference = ReferenceModel.load(reference_path)
+    expected_reference_columns = ("__token__", *map(str, resolved["context_cols"]))
+    if (
+        reference.feature_schema != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or reference.feature_columns != expected_reference_columns
+        or reference.categorical_columns != ("__token__",)
+    ):
+        raise RuntimeError(f"seed {seed} does not contain the categorical-token f_ref")
+    if (
+        metadata.get("reference_model_sha256") != reference_hash
+        or metadata.get("reference_feature_schema") != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or tuple(metadata.get("reference_feature_columns", ()))
+        != reference.feature_columns
+        or tuple(metadata.get("reference_categorical_columns", ()))
+        != reference.categorical_columns
+    ):
+        raise RuntimeError(f"seed {seed} reference-model metadata is inconsistent")
+
     capt = _method_row(aggregate, "context_capt")
     capt_pre = _method_row(aggregate, "context_capt_pre_repair")
     ldp = _method_row(aggregate, "context_ldp")
@@ -180,6 +201,8 @@ def _read_seed_run(
         "run_path": str(path),
         "source_git_sha": source_git_sha,
         "encoder_sha256": sha256_file(path / "models" / "encoder.joblib"),
+        "reference_model_sha256": reference_hash,
+        "reference_feature_schema": reference.feature_schema,
         "assignment_hash": design_manifest["assignment_hash"],
         "decoder_hash": design_manifest["decoder_hash"],
         "context_count": int(metadata["context_count"]),
@@ -813,6 +836,11 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "representation_token_cost_hashes": sorted(
             seed_results["representation_token_cost_hash"].astype(str).unique().tolist()
         ),
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
+        "reference_model_sha256_by_seed": {
+            str(int(row.frozen_design_seed)): str(row.reference_model_sha256)
+            for row in seed_results.itertuples()
+        },
         "hybrid_empirical_weight": base["hybrid_empirical_weight"],
         "seed_count": len(seeds),
         "run_ids": {str(seed): path.name for seed, path in sorted(seed_paths.items())},

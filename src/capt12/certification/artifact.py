@@ -22,6 +22,7 @@ from capt12.confidence.boxes import (
 )
 from capt12.decoders.registry import validate_decoder
 from capt12.mechanisms.lp import lift_block_channel
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA
 from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
 from capt12.utils.artifacts import require_clean_worktree, sha256_file
 
@@ -351,6 +352,15 @@ def _verify_context_channel_manifest(
         return "context-channel manifest permits a protected online selector"
     if manifest.get("runtime_mapper_hash") != certificate.component_hashes.get("mapper"):
         return "context-channel manifest runtime mapper does not match the certificate"
+    if int(manifest.get("version", 0)) >= 4:
+        if manifest.get("reference_model_hash") != certificate.component_hashes.get("model"):
+            return "context-channel manifest reference model does not match the certificate"
+        if manifest.get("reference_feature_schema") != TOKEN_REFERENCE_FEATURE_SCHEMA:
+            return "context-channel manifest does not declare categorical-token f_ref"
+        if manifest.get("reference_feature_columns") != ["__token__", context_column]:
+            return "context-channel manifest reference inputs do not match token and context"
+        if manifest.get("reference_categorical_columns") != ["__token__"]:
+            return "context-channel manifest does not mark the token categorical"
     if manifest.get("sensitive_coarsening") != {
         "missing": "__UNKNOWN__",
         "unseen": "__UNKNOWN__",

@@ -362,13 +362,20 @@ def test_context_certificate_binds_mapper_and_manifest_semantics(tmp_path) -> No
     mapper_path = tmp_path / "models" / "category_mapper.joblib"
     mapper_path.write_bytes(b"frozen mapper")
     mapper_hash = sha256_file(mapper_path)
+    reference_path = tmp_path / "models" / "reference.joblib"
+    reference_path.write_bytes(b"categorical token reference")
+    reference_hash = sha256_file(reference_path)
     manifest = {
-        "version": 1,
+        "version": 4,
         "profile": "a",
         "public_context_column": "b",
         "channel_selector_inputs": ["Z", "profile", "b"],
         "protected_value_used_online": False,
         "runtime_mapper_hash": mapper_hash,
+        "reference_model_hash": reference_hash,
+        "reference_feature_schema": "categorical_token_v1",
+        "reference_feature_columns": ["__token__", "b"],
+        "reference_categorical_columns": ["__token__"],
         "sensitive_coarsening": {
             "missing": "__UNKNOWN__",
             "unseen": "__UNKNOWN__",
@@ -415,6 +422,7 @@ def test_context_certificate_binds_mapper_and_manifest_semantics(tmp_path) -> No
         solver=SolverInfo("optimal", 0, 0, 1, primal_gap=0),
         component_hashes={
             "mapper": mapper_hash,
+            "model": reference_hash,
             "context_channel_manifest": sha256_file(manifest_path),
         },
         split_identifiers={},
@@ -442,6 +450,16 @@ def test_context_certificate_binds_mapper_and_manifest_semantics(tmp_path) -> No
     certificate.write(certificate_path)
     assert verify_certificate(certificate_path).valid
 
+    manifest["reference_model_hash"] = "wrong"
+    manifest_path.write_text(json.dumps(manifest))
+    payload = json.loads(certificate_path.read_text())
+    payload["component_hashes"]["context_channel_manifest"] = sha256_file(manifest_path)
+    certificate_path.write_text(json.dumps(payload))
+    rejected = verify_certificate(certificate_path)
+    assert not rejected.valid
+    assert "reference model" in rejected.worst_case["error"]
+
+    manifest["reference_model_hash"] = reference_hash
     manifest["designs"]["test-design"]["contexts"]["public-b"] = "wrong"
     manifest_path.write_text(json.dumps(manifest))
     payload = json.loads(certificate_path.read_text())

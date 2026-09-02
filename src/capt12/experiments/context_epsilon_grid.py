@@ -15,10 +15,11 @@ import pandas as pd
 
 from capt12.config import canonical_json, run_id, validate_config
 from capt12.experiments.context_seed_stability import run_context_seed_stability
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA
 from capt12.pipeline import record_source_provenance
 from capt12.utils.artifacts import sha256_file
 
-_GRID_VERSION = 1
+_GRID_VERSION = 2
 
 
 def _boolean_values(series: pd.Series) -> pd.Series:
@@ -52,6 +53,17 @@ def _load_epsilon_summaries(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dic
         if not bool(item.get("all_certificates_valid")):
             raise ValueError(f"epsilon={epsilon:g} contains an invalid certificate")
         frame = pd.read_csv(results_path)
+        required_columns = {
+            "reference_model_sha256",
+            "reference_feature_schema",
+            "representation_token_cost_hash",
+        }
+        missing_columns = required_columns - set(frame.columns)
+        if missing_columns:
+            raise ValueError(
+                "epsilon-grid input predates categorical-token f_ref provenance: "
+                f"{sorted(missing_columns)}"
+            )
         if set(frame["epsilon"].astype(float)) != {epsilon}:
             raise ValueError(f"epsilon={epsilon:g} seed table has inconsistent budgets")
         if not _boolean_values(frame["all_certificates_valid"]).all():
@@ -82,7 +94,7 @@ def _load_epsilon_summaries(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dic
     seeds = next(iter(seed_sets))
     objective = next(iter(objectives))
     representation = next(iter(representations))
-    reference_design: dict[int, tuple[str, str, str]] | None = None
+    reference_design: dict[int, tuple[str, str, str, str, str]] | None = None
     for epsilon, frame in frames.items():
         if tuple(sorted(frame["frozen_design_seed"].astype(int))) != seeds:
             raise ValueError(f"epsilon={epsilon:g} changed the frozen seed family")
@@ -94,9 +106,15 @@ def _load_epsilon_summaries(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dic
             frame["representation_mode"].astype(str)
         ) != {representation}:
             raise ValueError(f"epsilon={epsilon:g} changed the utility design")
+        if set(frame["reference_feature_schema"].astype(str)) != {
+            TOKEN_REFERENCE_FEATURE_SCHEMA
+        }:
+            raise ValueError(f"epsilon={epsilon:g} does not use categorical-token f_ref")
         design = {
             int(row.frozen_design_seed): (
                 str(row.encoder_sha256),
+                str(row.reference_model_sha256),
+                str(row.representation_token_cost_hash),
                 str(row.assignment_hash),
                 str(row.decoder_hash),
             )
@@ -105,7 +123,10 @@ def _load_epsilon_summaries(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dic
         if reference_design is None:
             reference_design = design
         elif design != reference_design:
-            raise ValueError("encoder, partition, or decoder hashes differ across epsilon")
+            raise ValueError(
+                "encoder, reference, representation cost, partition, or decoder "
+                "hashes differ across epsilon"
+            )
 
     combined = pd.concat([frames[value] for value in sorted(frames)], ignore_index=True)
     combined["design_excess_reduction_percent"] = (
@@ -130,6 +151,10 @@ def _load_epsilon_summaries(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dic
         "frozen_design_seeds": list(seeds),
         "context_utility_objective": objective,
         "context_representation_mode": representation,
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
+        "reference_model_sha256_by_seed": {
+            str(seed): reference_design[seed][1] for seed in seeds
+        },
         "summary_directories": {
             format(epsilon, ".12g"): str(Path(frames[epsilon]["epsilon_summary_path"].iloc[0]))
             for epsilon in sorted(frames)

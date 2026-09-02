@@ -15,6 +15,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+LEGACY_REFERENCE_FEATURE_SCHEMA = "legacy_auto_v0"
+TABULAR_REFERENCE_FEATURE_SCHEMA = "tabular_auto_v1"
+TOKEN_REFERENCE_FEATURE_SCHEMA = "categorical_token_v1"
+
 
 @dataclass
 class ReferenceModel:
@@ -22,6 +26,8 @@ class ReferenceModel:
     eta: float = 1e-6
     model: Any | None = None
     feature_columns: tuple[str, ...] = ()
+    categorical_columns: tuple[str, ...] = ()
+    feature_schema: str = LEGACY_REFERENCE_FEATURE_SCHEMA
     fit_split: str | None = None
     prediction_column: str | None = None
     input_manifest: dict[str, Any] | None = None
@@ -35,6 +41,7 @@ class ReferenceModel:
         split_id: str = "D_model",
         sensitive_columns: Sequence[str] = (),
         include_sensitive: bool = False,
+        categorical_columns: Sequence[str] = (),
     ) -> ReferenceModel:
         if split_id != "D_model":
             raise ValueError("f_ref may only be fit on D_model")
@@ -43,14 +50,42 @@ class ReferenceModel:
             forbidden = set(columns).intersection(sensitive_columns)
             if forbidden:
                 raise ValueError(f"protected proxy columns cannot enter default f_ref: {sorted(forbidden)}")
-        categorical = [c for c in columns if not pd.api.types.is_numeric_dtype(frame[c])]
-        numeric = [c for c in columns if c not in categorical]
+        forced_categorical_set = set(categorical_columns)
+        unknown_categorical = forced_categorical_set - set(columns)
+        if unknown_categorical:
+            raise ValueError(
+                "categorical reference columns are outside feature_columns: "
+                f"{sorted(unknown_categorical)}"
+            )
+        forced_categorical = [c for c in columns if c in forced_categorical_set]
+        inferred_categorical = [
+            c
+            for c in columns
+            if c not in forced_categorical_set
+            and not pd.api.types.is_numeric_dtype(frame[c])
+        ]
+        numeric = [
+            c for c in columns if c not in forced_categorical_set and c not in inferred_categorical
+        ]
         transformers = []
         if numeric:
             transformers.append(
                 ("numeric", Pipeline([("impute", SimpleImputer()), ("scale", StandardScaler())]), numeric)
             )
-        if categorical:
+        if forced_categorical:
+            transformers.append(
+                (
+                    "forced_categorical",
+                    Pipeline(
+                        [
+                            ("impute", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                        ]
+                    ),
+                    forced_categorical,
+                )
+            )
+        if inferred_categorical:
             transformers.append(
                 (
                     "categorical",
@@ -60,7 +95,7 @@ class ReferenceModel:
                             ("onehot", OneHotEncoder(handle_unknown="ignore", max_categories=128)),
                         ]
                     ),
-                    categorical,
+                    inferred_categorical,
                 )
             )
         preprocess = ColumnTransformer(transformers)
@@ -72,6 +107,12 @@ class ReferenceModel:
         )
         self.model.fit(frame[columns], frame[label_col].astype(int))
         self.feature_columns = tuple(columns)
+        self.categorical_columns = tuple(forced_categorical)
+        self.feature_schema = (
+            TOKEN_REFERENCE_FEATURE_SCHEMA
+            if "__token__" in forced_categorical
+            else TABULAR_REFERENCE_FEATURE_SCHEMA
+        )
         self.fit_split = split_id
         return self
 

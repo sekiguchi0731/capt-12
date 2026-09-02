@@ -63,6 +63,41 @@ reconstructs this mixed uncertainty policy.
 `merge_to_other` is disabled until an identical frozen runtime coarsening map
 can be included in the deployment certificate.
 
+For example, suppose a sensitive attribute has the following group counts:
+
+```text
+A = a     1000
+A = b      800
+A = c        3
+A = d        2
+```
+
+The groups `c` and `d` are extremely sparse, so their finite-sample confidence
+sets can become very wide. A merge_to_other policy would coarsen these rare
+values into a shared fallback category:
+
+```text
+c -> __OTHER__
+d -> __OTHER__
+```
+
+so that the resulting grouped count becomes:
+
+```text
+__OTHER__ = 5
+```
+
+The important requirement is that this coarsening rule must be frozen and
+applied identically at certification time and at runtime. If `c` is treated as
+`__OTHER__` when constructing the certificate but is treated as `c` itself
+during deployment, the certified privacy guarantee would no longer correspond to
+the actually deployed mechanism. This is why `merge_to_other` is currently
+disabled until the same frozen coarsening map can be included in the deployment
+certificate and enforced at runtime.
+
+This version makes the reason for disabling `merge_to_other` explicit, rather
+than only stating that a frozen runtime coarsening map is required.
+
 The first fixed-design full-simplex comparison is run with:
 
 ```bash
@@ -270,7 +305,11 @@ be regenerated after the final implementation commit.
 Serialized external `f_ref` artifacts must declare feature columns, and a
 precomputed prediction column requires `prediction_manifest_path` declaring
 its upstream features. Certified Criteo runs reject either path if protected
-columns are declared or inputs fall outside `phi_source_cols`.
+columns are declared or inputs fall outside `phi_source_cols`. The built-in
+token-conditioned `f_ref` treats the integer hash-token ID as an uncapped
+categorical feature and records this schema plus the reference-model hash in
+downstream context artifacts. Pre-schema context artifacts must be regenerated;
+they are not mixed with categorical-token results.
 
 For exact-token retention,
 

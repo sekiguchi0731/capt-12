@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import io
 import json
 import math
@@ -18,6 +19,7 @@ import pandas as pd
 import yaml
 from matplotlib.lines import Line2D
 
+from capt12.certification.artifact import hash_array
 from capt12.config import run_id
 from capt12.data.loader import load_parquet_sample
 from capt12.evaluation.metrics import prediction_metrics
@@ -26,12 +28,13 @@ from capt12.experiments.context_paper_figure import (
     _load_frontier,
 )
 from capt12.mechanisms.lp import solve_ldp_block_lp, validate_channel
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA, ReferenceModel
 from capt12.utils.artifacts import git_sha, sha256_file
 
 _BLUE = "#2563A6"
 _GREY = "#6B7280"
 _LIGHT_BLUE = "#93B7D5"
-_VERSION = 2
+_VERSION = 3
 
 
 def _emit(event: str, **fields: Any) -> None:
@@ -162,19 +165,90 @@ def _load_seed_artifact(
     epsilon: float,
     seed: int,
     run_id_value: str,
+    expected_source_git_sha: str,
+    expected_encoder_hash: str,
+    expected_reference_hash: str,
+    expected_representation_cost_hash: str,
 ) -> dict[str, Any]:
     with zipfile.ZipFile(epsilon_grid_bundle) as outer:
         with _nested_seed_bundle(outer, epsilon) as seed_bundle:
             prefix = _seed_prefix(seed_bundle, seed, run_id_value)
             config = yaml.safe_load(seed_bundle.read(prefix + "resolved_config.yaml"))
-            mapper = joblib.load(
-                io.BytesIO(seed_bundle.read(prefix + "models/category_mapper.joblib"))
+            channel_manifest = json.loads(
+                seed_bundle.read(
+                    prefix + "mechanism/context_channel_manifest.json"
+                ).decode("utf-8")
             )
-            encoder = joblib.load(io.BytesIO(seed_bundle.read(prefix + "models/encoder.joblib")))
+            mapper_payload = seed_bundle.read(prefix + "models/category_mapper.joblib")
+            mapper = joblib.load(io.BytesIO(mapper_payload))
+            encoder_payload = seed_bundle.read(prefix + "models/encoder.joblib")
+            encoder = joblib.load(io.BytesIO(encoder_payload))
+            reference_payload = seed_bundle.read(prefix + "models/reference.joblib")
+            reference = joblib.load(io.BytesIO(reference_payload))
             with np.load(
                 io.BytesIO(seed_bundle.read(prefix + "mechanism/frozen_design.npz"))
             ) as stored:
                 arrays = {name: np.asarray(stored[name]).copy() for name in stored.files}
+    if str(config.get("source_git_sha")) != expected_source_git_sha:
+        raise ValueError("seed bundle resolved config does not match the frontier source Git SHA")
+    if run_id(config) != run_id_value:
+        raise ValueError("seed bundle run directory does not match its resolved config")
+    mapper_hash = hashlib.sha256(mapper_payload).hexdigest()
+    if channel_manifest.get("runtime_mapper_hash") != mapper_hash:
+        raise ValueError("seed bundle mapper does not match its context-channel manifest")
+    encoder_hash = hashlib.sha256(encoder_payload).hexdigest()
+    if encoder_hash != expected_encoder_hash:
+        raise ValueError("seed bundle encoder hash does not match its frontier row")
+    reference_hash = hashlib.sha256(reference_payload).hexdigest()
+    if reference_hash != expected_reference_hash:
+        raise ValueError("seed bundle reference-model hash does not match its frontier row")
+    if not isinstance(reference, ReferenceModel) or (
+        reference.feature_schema != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or reference.categorical_columns != ("__token__",)
+    ):
+        raise ValueError("seed bundle does not contain the categorical-token f_ref")
+    expected_reference_columns = ("__token__", *map(str, config.get("context_cols", ())))
+    if reference.feature_columns != expected_reference_columns:
+        raise ValueError("seed bundle reference inputs do not match token and context")
+    if (
+        int(channel_manifest.get("version", 0)) < 4
+        or channel_manifest.get("reference_model_hash") != reference_hash
+        or channel_manifest.get("reference_feature_schema")
+        != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or tuple(channel_manifest.get("reference_feature_columns", ()))
+        != reference.feature_columns
+        or tuple(channel_manifest.get("reference_categorical_columns", ()))
+        != reference.categorical_columns
+    ):
+        raise ValueError("seed bundle reference does not match its context-channel manifest")
+    required_reference_arrays = {
+        "reference_feature_schema",
+        "reference_feature_columns",
+        "reference_categorical_columns",
+        "representation_token_cost_hash",
+    }
+    missing_reference_arrays = required_reference_arrays - set(arrays)
+    if missing_reference_arrays:
+        raise ValueError(
+            "seed bundle predates categorical-token f_ref provenance: "
+            f"{sorted(missing_reference_arrays)}"
+        )
+    if (
+        str(arrays["reference_feature_schema"].item())
+        != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or tuple(map(str, arrays["reference_feature_columns"].tolist()))
+        != reference.feature_columns
+        or tuple(map(str, arrays["reference_categorical_columns"].tolist()))
+        != reference.categorical_columns
+    ):
+        raise ValueError("seed bundle frozen-design reference metadata is inconsistent")
+    stored_cost_hash = str(arrays["representation_token_cost_hash"].item())
+    actual_cost_hash = hash_array(arrays["representation_token_cost"])
+    if (
+        stored_cost_hash != actual_cost_hash
+        or actual_cost_hash != expected_representation_cost_hash
+    ):
+        raise ValueError("seed bundle representation-cost hash does not match its frontier row")
     if int(config.get("K", -1)) != 64:
         raise ValueError("global token-LDP baseline requires K=64")
     if str(arrays["representation_mode"].item()) != "objective_aligned":
@@ -185,7 +259,14 @@ def _load_seed_artifact(
         raise ValueError("global token cost must be 64 by 64")
     if arrays["representation_probability_grid"].shape[0] != 64:
         raise ValueError("global probability grid must use the 64-token alphabet")
-    return {"config": config, "mapper": mapper, "encoder": encoder, "arrays": arrays}
+    return {
+        "config": config,
+        "mapper": mapper,
+        "encoder": encoder,
+        "encoder_hash": encoder_hash,
+        "reference_hash": reference_hash,
+        "arrays": arrays,
+    }
 
 
 def _test_columns(config: dict[str, Any]) -> list[str]:
@@ -477,10 +558,24 @@ def run_global_token_ldp_comparison(
     started = time.perf_counter()
     frontier, frontier_metadata = _load_frontier(epsilon_grid_bundle)
     blocks, block_metadata = _load_block_sensitivity(block_comparison_bundles)
+    if str(frontier_metadata["source_git_sha"]) != str(block_metadata["source_git_sha"]):
+        raise ValueError("epsilon and block inputs must share one source Git SHA")
     epsilons = sorted(frontier["epsilon"].astype(float).unique())
     seeds = sorted(frontier["frozen_design_seed"].astype(int).unique())
     if tuple(seeds) != tuple(block_metadata["frozen_design_seeds"]):
         raise ValueError("epsilon and block inputs must share the paired seed family")
+    frontier_design = {
+        int(seed): (
+            str(group["encoder_sha256"].iloc[0]),
+            str(group["reference_model_sha256"].iloc[0]),
+            str(group["representation_token_cost_hash"].iloc[0]),
+        )
+        for seed, group in frontier.groupby("frozen_design_seed", sort=True)
+    }
+    if frontier_design != block_metadata["reference_design_by_seed"]:
+        raise ValueError(
+            "epsilon and block inputs do not share the same categorical f_ref design"
+        )
     signature = {
         "experiment": "global_token_ldp_comparison",
         "version": _VERSION,
@@ -503,6 +598,10 @@ def run_global_token_ldp_comparison(
         float(first["epsilon"]),
         int(first["frozen_design_seed"]),
         str(first["run_id"]),
+        str(frontier_metadata["source_git_sha"]),
+        str(first["encoder_sha256"]),
+        str(first["reference_model_sha256"]),
+        str(first["representation_token_cost_hash"]),
     )
     reference_config = first_artifact["config"]
     resolved_data_root = data_root or Path(reference_config["data_root"])
@@ -522,15 +621,31 @@ def run_global_token_ldp_comparison(
         seed_rows = frontier.loc[frontier["frozen_design_seed"] == seed].set_index("epsilon")
         token_cache: tuple[pd.DataFrame, np.ndarray, np.ndarray] | None = None
         expected_encoder_hash = str(seed_rows.iloc[0]["encoder_sha256"])
+        expected_reference_hash = str(seed_rows.iloc[0]["reference_model_sha256"])
+        expected_representation_cost_hash = str(
+            seed_rows.iloc[0]["representation_token_cost_hash"]
+        )
         for epsilon in epsilons:
             row = seed_rows.loc[epsilon]
-            if str(row["encoder_sha256"]) != expected_encoder_hash:
-                raise ValueError(f"seed {seed} encoder changed across epsilon")
+            if (
+                str(row["encoder_sha256"]) != expected_encoder_hash
+                or str(row["reference_model_sha256"]) != expected_reference_hash
+                or str(row["representation_token_cost_hash"])
+                != expected_representation_cost_hash
+            ):
+                raise ValueError(
+                    f"seed {seed} encoder, reference, or representation cost changed "
+                    "across epsilon"
+                )
             artifact = _load_seed_artifact(
                 epsilon_grid_bundle,
                 epsilon,
                 seed,
                 str(row["run_id"]),
+                str(frontier_metadata["source_git_sha"]),
+                expected_encoder_hash,
+                expected_reference_hash,
+                expected_representation_cost_hash,
             )
             config = artifact["config"]
             if config["splits"]["D_test"] != reference_config["splits"]["D_test"]:
@@ -609,7 +724,11 @@ def run_global_token_ldp_comparison(
                     "decoder": "identity",
                     "channel_selector": "global_Z_only",
                     "utility_objective": "empirical_logloss",
+                    "source_git_sha": frontier_metadata["source_git_sha"],
                     "encoder_sha256": expected_encoder_hash,
+                    "reference_model_sha256": artifact["reference_hash"],
+                    "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
+                    "representation_token_cost_hash": expected_representation_cost_hash,
                     "source_run_id": str(row["run_id"]),
                     "objective_value": objective,
                     "solver": asdict(solution.solver),
@@ -669,6 +788,10 @@ def run_global_token_ldp_comparison(
         ),
         "epsilon_values": epsilons,
         "frozen_design_seeds": seeds,
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
+        "reference_model_sha256_by_seed": {
+            str(seed): frontier_design[seed][1] for seed in seeds
+        },
         "all_global_ldp_checks_valid": bool(
             np.isfinite(baselines["realized_epsilon"]).all()
             and (baselines["realized_epsilon"] <= baselines["epsilon"] + 1e-10).all()

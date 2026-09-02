@@ -362,6 +362,7 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
     metrics["problem_signature"] = problem_signature
     metrics["decoder_cover_retention"] = decoder_cover_retention
     metrics["certificate_audit_gap"] = np.nan
+    metrics["source_git_sha"] = config["source_git_sha"]
     metrics.to_parquet(path / "metrics.parquet", index=False)
     metrics.to_csv(path / "tables" / "metrics.csv", index=False)
     finish_run(path, {"dataset": "synthetic", "rows": len(population.frame)})
@@ -369,7 +370,8 @@ def run_synthetic(config: dict[str, Any]) -> tuple[Path, pd.DataFrame]:
 
 
 def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFrame:
-    base = dict(config)
+    base = record_source_provenance(dict(config))
+    source_git_sha = str(base["source_git_sha"])
     all_rows: list[pd.DataFrame] = []
     dimensions = itertools.product(
         base.get("seeds", [base.get("seed", 0)]),
@@ -403,6 +405,13 @@ def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFr
             frame = pd.read_parquet(target)
         else:
             _, frame = run_synthetic(cfg)
+        if "source_git_sha" not in frame.columns or set(
+            frame["source_git_sha"].dropna().astype(str)
+        ) != {source_git_sha} or frame["source_git_sha"].isna().any():
+            raise ValueError(
+                "resumed Theorem-4 metrics do not match the current "
+                f"source_git_sha: {target}"
+            )
         all_rows.append(frame)
     result = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
     # Always include the requested strict counterexample as a standardized run.
@@ -439,6 +448,7 @@ def run_theorem4_grid(config: dict[str, Any], resume: bool = False) -> pd.DataFr
                 "partition": str(partition),
                 "decoder": str(decoder_name),
                 "confidence": "point",
+                "source_git_sha": source_git_sha,
                 "problem_signature": counter_problem_signature,
                 "feasible": mechanism == "capt_full",
                 "is_universal_channel": (
@@ -762,6 +772,7 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
             ["__token__", *contexts],
             split_id="D_model",
             sensitive_columns=sensitive,
+            categorical_columns=["__token__"],
         )
     for frame in frames.values():
         frame["__ref_probability__"] = model.predict(frame)
@@ -1492,6 +1503,7 @@ def run_criteo(config: dict[str, Any], *, max_rows: int | None = None) -> tuple[
             certificate.write(cert_path)
             certificates.append(str(cert_path.name))
     metrics = pd.DataFrame(all_rows)
+    metrics["source_git_sha"] = config["source_git_sha"]
     protect_profile = config.get("protect_profile", "off")
     if protect_profile not in {False, None, "off"}:
         if protect_profile == "counterfactual":

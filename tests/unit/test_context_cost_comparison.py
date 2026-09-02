@@ -23,6 +23,11 @@ def _summary(root: Path, objective: str, *, metadata_epsilon: bool = True) -> Pa
         "frozen_design_seeds": [0, 1],
         "context_utility_objective": objective,
         "context_representation_mode": "objective_aligned",
+        "reference_feature_schema": "categorical_token_v1",
+        "reference_model_sha256_by_seed": {
+            "0": "reference-0",
+            "1": "reference-1",
+        },
         "all_certificates_valid": True,
     }
     if metadata_epsilon:
@@ -45,6 +50,9 @@ def _summary(root: Path, objective: str, *, metadata_epsilon: bool = True) -> Pa
                 "frozen_design_seed": seed,
                 "source_git_sha": "a" * 40,
                 "encoder_sha256": f"encoder-{seed}",
+                "reference_model_sha256": f"reference-{seed}",
+                "reference_feature_schema": "categorical_token_v1",
+                "representation_token_cost_hash": f"representation-{objective}-{seed}",
                 "L": 8,
                 "epsilon": 0.5,
                 "utility_objective": objective,
@@ -89,6 +97,18 @@ def test_cost_comparison_accepts_legacy_summary_epsilon_from_seed_rows(tmp_path:
     frame, info = _load_inputs(paths)
     assert info["epsilon"] == 0.5
     assert set(frame["epsilon"]) == {0.5}
+
+
+def test_cost_comparison_rejects_reference_model_drift(tmp_path: Path) -> None:
+    paths = [
+        _summary(tmp_path, objective)
+        for objective in ("teacher_kl", "empirical_logloss", "hybrid_logloss_kl")
+    ]
+    frame = pd.read_csv(paths[1] / "tables" / "seed_results.csv")
+    frame.loc[frame["frozen_design_seed"] == 0, "reference_model_sha256"] = "different"
+    frame.to_csv(paths[1] / "tables" / "seed_results.csv", index=False)
+    with pytest.raises(ValueError, match="reference-model hashes"):
+        _load_inputs(paths)
 
 
 def test_cost_stability_runs_all_objectives_before_integrating(

@@ -35,6 +35,7 @@ def test_synthetic_pipeline_and_all_paper_figures(tmp_path) -> None:
     path, metrics = run_synthetic(config)
     assert (path / "certificate.json").exists()
     assert len(metrics) >= 3
+    assert set(metrics["source_git_sha"]) == {"test-source-sha"}
     generated = plot_paper_suite(tmp_path / "runs")
     assert len(generated) == (8 + 6) * 3
     assert all(item.exists() for item in generated)
@@ -64,6 +65,7 @@ def test_theorem4_grid_enumerates_decoder_and_marks_verified_full(tmp_path) -> N
         "solver_tolerance": 1e-9,
     }
     result = run_theorem4_grid(config)
+    assert set(result["source_git_sha"]) == {"test-source-sha"}
     capt = result[
         (result["mechanism"] == "capt_block") & (result["case"] == "standard")
     ]

@@ -257,9 +257,15 @@ inside its declared radius but does not repair sampling dependence.
 ## Utility cost
 
 The frozen reference model is clipped to `[eta,1-eta]`, with `eta=10^-6`, and
-uses `(Z,B)` inputs without direct protected attributes by default. Because
-Criteo contains no observed profile-selection variable, design data estimate a
-profile-common utility table
+uses `(Z,B)` inputs without direct protected attributes by default. Criteo
+token identifiers are hash-bucket labels rather than ordered measurements, so
+the built-in reference model encodes `Z` as an uncapped nominal one-hot
+feature. Its predictions are therefore equivariant to a permutation of token
+IDs; no ordinal distance such as `|z-z'|` enters `f_ref`. Other string context
+columns retain the bounded-cardinality categorical preprocessing.
+
+Because Criteo contains no observed profile-selection variable, design data
+estimate a profile-common utility table
 
 `c(z,o)=E[d(z,o,B)|Z=z]`
 

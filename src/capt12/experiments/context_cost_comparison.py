@@ -14,6 +14,7 @@ import pandas as pd
 
 from capt12.config import canonical_json
 from capt12.experiments.context_seed_stability import run_context_seed_stability
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA
 from capt12.utils.artifacts import git_sha, sha256_file
 
 _OBJECTIVES = ("teacher_kl", "empirical_logloss", "hybrid_logloss_kl")
@@ -22,7 +23,7 @@ _LABELS = {
     "empirical_logloss": "Empirical\nlog loss",
     "hybrid_logloss_kl": "Hybrid\nlog loss + KL",
 }
-_VERSION = 2
+_VERSION = 3
 
 
 def _boolean_values(series: pd.Series) -> pd.Series:
@@ -58,6 +59,17 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
         if not bool(item.get("all_certificates_valid")):
             raise ValueError(f"{objective} contains an invalid certificate")
         frame = pd.read_csv(results_path)
+        required_columns = {
+            "reference_model_sha256",
+            "reference_feature_schema",
+            "representation_token_cost_hash",
+        }
+        missing_columns = required_columns - set(frame.columns)
+        if missing_columns:
+            raise ValueError(
+                "cost-comparison input predates categorical-token f_ref provenance: "
+                f"{sorted(missing_columns)}"
+            )
         if set(frame["utility_objective"].astype(str)) != {objective}:
             raise ValueError(f"{objective} seed table has inconsistent objective labels")
         frame_epsilons = set(frame["epsilon"].astype(float))
@@ -111,7 +123,7 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
         raise ValueError("hybrid seed rows do not use one fixed empirical weight")
     hybrid_weight = next(iter(hybrid_weights))
 
-    reference_encoders: dict[int, str] | None = None
+    reference_models: dict[int, tuple[str, str]] | None = None
     for objective in _OBJECTIVES:
         frame = frames[objective]
         if set(frame["source_git_sha"].astype(str)) != {source_sha}:
@@ -122,14 +134,23 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
             raise ValueError(f"{objective} changed L or epsilon")
         if tuple(sorted(frame["frozen_design_seed"].astype(int))) != seeds:
             raise ValueError(f"{objective} changed the frozen seed family")
-        encoders = {
-            int(row.frozen_design_seed): str(row.encoder_sha256)
+        if set(frame["reference_feature_schema"].astype(str)) != {
+            TOKEN_REFERENCE_FEATURE_SCHEMA
+        }:
+            raise ValueError(f"{objective} does not use categorical-token f_ref")
+        models = {
+            int(row.frozen_design_seed): (
+                str(row.encoder_sha256),
+                str(row.reference_model_sha256),
+            )
             for row in frame.itertuples()
         }
-        if reference_encoders is None:
-            reference_encoders = encoders
-        elif encoders != reference_encoders:
-            raise ValueError("encoder hashes differ across utility objectives")
+        if reference_models is None:
+            reference_models = models
+        elif models != reference_models:
+            raise ValueError(
+                "encoder or reference-model hashes differ across utility objectives"
+            )
 
     combined = pd.concat([frames[objective] for objective in _OBJECTIVES], ignore_index=True)
     combined["objective_label"] = combined["utility_objective"].map(_LABELS)
@@ -151,6 +172,10 @@ def _load_inputs(summary_dirs: list[Path]) -> tuple[pd.DataFrame, dict[str, Any]
         "frozen_design_seeds": list(seeds),
         "objectives": list(_OBJECTIVES),
         "hybrid_empirical_weight": hybrid_weight,
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
+        "reference_model_sha256_by_seed": {
+            str(seed): reference_models[seed][1] for seed in seeds
+        },
         "summary_directories": {
             objective: str(Path(frames[objective]["summary_path"].iloc[0]))
             for objective in _OBJECTIVES

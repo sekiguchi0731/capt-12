@@ -29,15 +29,41 @@ FIGURE_NAMES = {
 }
 
 
+def _result_source_git_sha(frame: pd.DataFrame, source: Path) -> str:
+    if "source_git_sha" not in frame.columns:
+        raise ValueError(
+            f"result table has no source_git_sha provenance: {source}; "
+            "regenerate it with the current pipeline"
+        )
+    values = frame["source_git_sha"]
+    if frame.empty or values.isna().any():
+        raise ValueError(
+            f"result table has incomplete source_git_sha provenance: {source}; "
+            "regenerate it with the current pipeline"
+        )
+    source_shas = {str(value).strip() for value in values}
+    if "" in source_shas or len(source_shas) != 1:
+        raise ValueError(
+            f"result table mixes source_git_sha values: {source} "
+            f"({sorted(source_shas)!r})"
+        )
+    return next(iter(source_shas))
+
+
 def read_results(input_path: str | Path) -> pd.DataFrame:
     path = Path(input_path)
     if path.is_file():
-        return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+        frame = (
+            pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+        )
+        _result_source_git_sha(frame, path)
+        return frame
     files = sorted(path.rglob("metrics.parquet"))
     summary = path / "synthetic_theorem4_results.parquet"
     if summary.exists():
         files.append(summary)
     frames = []
+    source_shas: dict[str, list[str]] = {}
     seen = set()
     for file in files:
         resolved = file.resolve()
@@ -45,13 +71,28 @@ def read_results(input_path: str | Path) -> pd.DataFrame:
             continue
         seen.add(resolved)
         frame = pd.read_parquet(file)
+        source_sha = _result_source_git_sha(frame, file)
+        source_shas.setdefault(source_sha, []).append(str(file))
         frame["source_file"] = str(file)
         frames.append(frame)
     if not frames:
         csvs = sorted(path.rglob("metrics.csv"))
-        frames = [pd.read_csv(file).assign(source_file=str(file)) for file in csvs]
+        for file in csvs:
+            frame = pd.read_csv(file)
+            source_sha = _result_source_git_sha(frame, file)
+            source_shas.setdefault(source_sha, []).append(str(file))
+            frames.append(frame.assign(source_file=str(file)))
     if not frames:
         raise FileNotFoundError(f"no standardized metrics tables under {path}")
+    if len(source_shas) != 1:
+        details = "; ".join(
+            f"{source_sha}: {', '.join(source_files)}"
+            for source_sha, source_files in sorted(source_shas.items())
+        )
+        raise ValueError(
+            "refusing to aggregate result tables from different source_git_sha "
+            f"values; select a single-source directory ({details})"
+        )
     return pd.concat(frames, ignore_index=True, sort=False)
 
 

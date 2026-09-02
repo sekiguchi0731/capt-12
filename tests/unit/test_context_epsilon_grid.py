@@ -24,6 +24,11 @@ def _epsilon_summary(root: Path, epsilon: float) -> Path:
         "frozen_design_seeds": [0, 1],
         "context_utility_objective": "empirical_logloss",
         "context_representation_mode": "objective_aligned",
+        "reference_feature_schema": "categorical_token_v1",
+        "reference_model_sha256_by_seed": {
+            "0": "reference-0",
+            "1": "reference-1",
+        },
         "all_certificates_valid": True,
     }
     (path / "context_seed_stability_metadata.json").write_text(json.dumps(metadata))
@@ -44,6 +49,9 @@ def _epsilon_summary(root: Path, epsilon: float) -> Path:
                 "frozen_design_seed": seed,
                 "source_git_sha": "a" * 40,
                 "encoder_sha256": f"encoder-{seed}",
+                "reference_model_sha256": f"reference-{seed}",
+                "reference_feature_schema": "categorical_token_v1",
+                "representation_token_cost_hash": f"representation-{seed}",
                 "assignment_hash": f"assignment-{seed}",
                 "decoder_hash": f"decoder-{seed}",
                 "L": 16,
@@ -93,5 +101,27 @@ def test_epsilon_grid_rejects_design_drift(tmp_path: Path) -> None:
     frame = pd.read_csv(paths[1] / "tables" / "seed_results.csv")
     frame.loc[frame["frozen_design_seed"] == 0, "decoder_hash"] = "different"
     frame.to_csv(paths[1] / "tables" / "seed_results.csv", index=False)
-    with pytest.raises(ValueError, match="encoder, partition, or decoder"):
+    with pytest.raises(
+        ValueError,
+        match="encoder, reference, representation cost, partition, or decoder",
+    ):
+        _load_epsilon_summaries(paths)
+
+
+def test_epsilon_grid_rejects_reference_model_drift(tmp_path: Path) -> None:
+    paths = [_epsilon_summary(tmp_path, epsilon) for epsilon in (0.5, 1.0)]
+    frame = pd.read_csv(paths[1] / "tables" / "seed_results.csv")
+    frame.loc[frame["frozen_design_seed"] == 0, "reference_model_sha256"] = "different"
+    frame.to_csv(paths[1] / "tables" / "seed_results.csv", index=False)
+    with pytest.raises(ValueError, match="reference"):
+        _load_epsilon_summaries(paths)
+
+
+def test_epsilon_grid_rejects_source_sha_drift(tmp_path: Path) -> None:
+    paths = [_epsilon_summary(tmp_path, epsilon) for epsilon in (0.5, 1.0)]
+    metadata_path = paths[1] / "context_seed_stability_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["source_git_sha"] = "b" * 40
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="source SHA"):
         _load_epsilon_summaries(paths)

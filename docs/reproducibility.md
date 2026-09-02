@@ -42,6 +42,16 @@ requires it to equal the certificate's `code_git_sha`. Verification rejects a
 bundle whose two SHA fields disagree. Generated artifacts must therefore be
 rerun after the last source commit; an older certificate is not relabeled.
 
+The built-in token-conditioned `f_ref` records the feature schema
+`categorical_token_v1`, its ordered input columns, and the explicitly
+categorical `__token__` column. Context-run manifests and aggregate bundles bind
+that schema to the SHA-256 of `models/reference.joblib` and to the frozen
+representation-cost hash. Aggregators reject inputs from different source Git
+revisions or reference-model lineages. Artifacts made before this schema cannot
+be migrated by editing metadata: refit `f_ref` on `D_model`, then regenerate the
+frozen design, partition/decoder, CAPT or global-LDP channels, summaries, and
+figures in dependency order from one clean committed revision.
+
 Version-2 certificates embed histogram counts, structured groups, partition,
 and common decoder. `verify-certificate` reconstructs adjacency and confidence
 boxes, validates the block-to-token lift and component hashes, and rechecks the

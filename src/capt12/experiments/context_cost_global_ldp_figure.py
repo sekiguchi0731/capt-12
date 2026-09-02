@@ -16,11 +16,12 @@ from capt12.experiments.context_cost_comparison import (
     _OBJECTIVES,
     _seed_positions,
 )
+from capt12.models.reference import TOKEN_REFERENCE_FEATURE_SCHEMA
 from capt12.utils.artifacts import git_sha, sha256_file
 
 _BLUE = "#2563A6"
 _GREY = "#6B7280"
-_VERSION = 1
+_VERSION = 2
 
 _METRICS = (
     (
@@ -69,10 +70,36 @@ def _load_and_join(
 
     cost_metadata = json.loads(cost_metadata_path.read_text(encoding="utf-8"))
     global_metadata = json.loads(global_metadata_path.read_text(encoding="utf-8"))
+    source_shas = {
+        str(cost_metadata.get("experiment_source_git_sha")),
+        str(global_metadata.get("frontier_source_git_sha")),
+        str(global_metadata.get("block_source_git_sha")),
+    }
+    if len(source_shas) != 1 or "None" in source_shas:
+        raise ValueError("cost and global comparisons must share one source Git SHA")
+    if (
+        cost_metadata.get("reference_feature_schema")
+        != TOKEN_REFERENCE_FEATURE_SCHEMA
+        or global_metadata.get("reference_feature_schema")
+        != TOKEN_REFERENCE_FEATURE_SCHEMA
+    ):
+        raise ValueError("comparison input predates categorical-token f_ref provenance")
     if not bool(global_metadata.get("all_global_ldp_checks_valid")):
         raise ValueError("global token-LDP input did not pass its direct checks")
     cost = pd.read_csv(cost_table)
     global_ldp = pd.read_csv(global_table)
+    required_cost_columns = {
+        "source_git_sha",
+        "encoder_sha256",
+        "reference_model_sha256",
+        "reference_feature_schema",
+        "representation_token_cost_hash",
+    }
+    required_global_columns = required_cost_columns
+    if required_cost_columns - set(cost.columns) or required_global_columns - set(
+        global_ldp.columns
+    ):
+        raise ValueError("comparison table predates categorical-token f_ref provenance")
     epsilon = float(cost_metadata["epsilon"])
     global_ldp = global_ldp.loc[np.isclose(global_ldp["epsilon"], epsilon)].copy()
     if len(global_ldp) != len(cost_metadata["frozen_design_seeds"]):
@@ -93,6 +120,10 @@ def _load_and_join(
         "max_additive_violation": "global_ldp_max_additive_violation",
         "channel_sha256": "global_ldp_channel_sha256",
         "encoder_sha256": "global_ldp_encoder_sha256",
+        "reference_model_sha256": "global_ldp_reference_model_sha256",
+        "reference_feature_schema": "global_ldp_reference_feature_schema",
+        "representation_token_cost_hash": "global_ldp_representation_token_cost_hash",
+        "source_git_sha": "global_ldp_source_git_sha",
     }
     baseline = global_ldp[
         ["frozen_design_seed", "epsilon", *baseline_columns]
@@ -110,8 +141,31 @@ def _load_and_join(
         == joined["global_ldp_encoder_sha256"].astype(str)
     ).all():
         raise ValueError("CAPT and global token-LDP encoder hashes do not match by seed")
+    if not (
+        joined["reference_model_sha256"].astype(str)
+        == joined["global_ldp_reference_model_sha256"].astype(str)
+    ).all():
+        raise ValueError("CAPT and global token-LDP reference hashes do not match by seed")
+    if set(joined["reference_feature_schema"].astype(str)) != {
+        TOKEN_REFERENCE_FEATURE_SCHEMA
+    } or set(joined["global_ldp_reference_feature_schema"].astype(str)) != {
+        TOKEN_REFERENCE_FEATURE_SCHEMA
+    }:
+        raise ValueError("CAPT or global token-LDP does not use categorical-token f_ref")
+    if set(joined["global_ldp_source_git_sha"].astype(str)) != source_shas:
+        raise ValueError("global token-LDP rows do not match comparison source Git SHA")
+    if set(joined["source_git_sha"].astype(str)) != source_shas:
+        raise ValueError("CAPT rows do not match comparison source Git SHA")
     if set(joined["utility_objective"].astype(str)) != set(_OBJECTIVES):
         raise ValueError("cost comparison does not contain all three aligned objectives")
+    empirical = joined["utility_objective"].astype(str) == "empirical_logloss"
+    if not (
+        joined.loc[empirical, "representation_token_cost_hash"].astype(str)
+        == joined.loc[empirical, "global_ldp_representation_token_cost_hash"].astype(str)
+    ).all():
+        raise ValueError(
+            "empirical CAPT and global token-LDP representation costs do not match"
+        )
 
     joined["global_ldp_minus_capt_logloss_micro"] = 1e6 * (
         joined["global_ldp_expected_randomized_log_loss"]
@@ -138,6 +192,8 @@ def _load_and_join(
             "same-seed unrestricted global K=64 singleton/identity optimal-LDP channel."
         ),
         "global_ldp_optimization_objective": "empirical_logloss",
+        "source_git_sha": next(iter(source_shas)),
+        "reference_feature_schema": TOKEN_REFERENCE_FEATURE_SCHEMA,
         "cost_comparison_dir": str(cost_comparison_dir.resolve()),
         "global_comparison_dir": str(global_comparison_dir.resolve()),
         "cost_bundle_sha256": sha256_file(cost_bundle),
