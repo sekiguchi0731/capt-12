@@ -67,7 +67,7 @@ def test_fixed_channel_upper_epsilon_zero_denominators_and_ordered_edges() -> No
     assert len(evaluations) == 2 * channel.shape[1]
     impossible = [value for value in evaluations if value.output_block == 2]
     assert all(value.maximum == value.minimum == 0 for value in impossible)
-    assert all(value.realized_epsilon == -math.inf for value in impossible)
+    assert all(value.realized_epsilon == 0.0 for value in impossible)
 
     identity = np.eye(3)
     assert verify_robust_channel(identity, boxes, adjacency).realized_epsilon == math.inf
