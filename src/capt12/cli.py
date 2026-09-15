@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -308,6 +309,24 @@ def run_grid_command(
     resume: bool = typer.Option(False, "--resume"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     target_ctr_list: str | None = typer.Option(None, "--target-ctr-list"),
+    mass_m_list: str | None = typer.Option(None, "--mass-m-list", "--mass_m_list"),
+    mass_n_list: str | None = typer.Option(None, "--mass-n-list", "--mass_n_list"),
+    mass_privacy_weight_list: str | None = typer.Option(
+        None, "--mass-privacy-weight-list", "--mass_privacy_weight_list"
+    ),
+    mass_utility_weight_list: str | None = typer.Option(
+        None, "--mass-utility-weight-list", "--mass_utility_weight_list"
+    ),
+    mass_seed_list: str | None = typer.Option(
+        None, "--mass-seed-list", "--mass_seed_list"
+    ),
+    mass_epochs: int | None = typer.Option(None, "--mass-epochs", "--mass_epochs", min=1),
+    mass_output_mode: str | None = typer.Option(
+        None, "--mass-output-mode", "--mass_output_mode"
+    ),
+    mass_temperature_list: str | None = typer.Option(
+        None, "--mass-temperature-list", "--mass_temperature_list"
+    ),
 ) -> None:
     overrides: dict[str, Any] = {
         "data_root": str(data_root) if data_root else None,
@@ -369,8 +388,41 @@ def run_grid_command(
         "target_ctr_list": parse_csv_list(target_ctr_list, float, minimum=0, maximum=1)
         if target_ctr_list
         else None,
+        "mass_m_list": parse_csv_list(mass_m_list, float, minimum=0)
+        if mass_m_list
+        else None,
+        "mass_n_list": parse_csv_list(mass_n_list, float, minimum=0)
+        if mass_n_list
+        else None,
+        "mass_privacy_weight_list": parse_csv_list(
+            mass_privacy_weight_list, float, minimum=0
+        )
+        if mass_privacy_weight_list
+        else None,
+        "mass_utility_weight_list": parse_csv_list(
+            mass_utility_weight_list, float, minimum=0
+        )
+        if mass_utility_weight_list
+        else None,
+        "mass_seed_list": parse_csv_list(mass_seed_list, int, minimum=0)
+        if mass_seed_list
+        else None,
+        "mass_epochs": mass_epochs,
+        "mass_output_mode": mass_output_mode,
+        "mass_temperature_list": parse_csv_list(
+            mass_temperature_list, float, minimum=0
+        )
+        if mass_temperature_list
+        else None,
     }
     cfg = _load(config, overrides)
+    if cfg.get("prior_art_comparison", False) or any(
+        key.startswith("mass_") for key in cfg
+    ):
+        raise typer.BadParameter(
+            "prior-art/MaSS configs cannot run through run-grid; use "
+            "`capt12 prior-art-comparison --config ...`"
+        )
     result = run_grid(cfg, resume=resume, dry_run=dry_run, max_rows=max_rows)
     typer.echo(
         json.dumps(
@@ -405,6 +457,107 @@ def plot(
             indent=2,
         )
     )
+
+
+@app.command("prior-art-comparison")
+def prior_art_comparison(
+    config: Path = typer.Option(..., "--config", exists=True),
+    phase: str = typer.Option(
+        "pilot",
+        "--phase",
+        help="pilot runs epsilon=1/L=16; full adds the epsilon and L grids.",
+    ),
+    comparison_output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Publication results directory (defaults to comparison_output_dir in config).",
+    ),
+    resume: bool = typer.Option(True, "--resume/--no-resume"),
+) -> None:
+    """Run CAPT/LDP and the finite-output MaSS comparison end to end."""
+    if phase not in {"pilot", "full"}:
+        raise typer.BadParameter("phase must be pilot or full", param_hint="--phase")
+    cfg = _load(
+        config,
+        {
+            "comparison_output_dir": (
+                str(comparison_output_dir) if comparison_output_dir is not None else None
+            )
+        },
+    )
+    if not cfg.get("prior_art_comparison", False):
+        raise typer.BadParameter(
+            "dedicated comparison runner requires prior_art_comparison: true",
+            param_hint="--config",
+        )
+    from capt12.experiments.prior_art_comparison import run_prior_art_comparison
+
+    path = run_prior_art_comparison(cfg, phase=phase, resume=resume)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "phase": phase,
+                "run": str(path),
+                "results": str(
+                    Path(cfg.get("comparison_output_dir", "outputs/prior_art_comparison"))
+                    / "results.csv"
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@app.command("render-prior-art-comparison")
+def render_prior_art_comparison(
+    results: Path = typer.Option(..., "--results", exists=True),
+    method_contracts: Path = typer.Option(..., "--method-contracts", exists=True),
+    output_dir: Path = typer.Option(..., "--output-dir"),
+) -> None:
+    """Render validated prior-art figures after comparison runs finish."""
+    import pandas as pd
+
+    from capt12.comparison.artifacts import (
+        figure_hash_manifest,
+        load_method_contracts,
+        render_prior_art_figures,
+    )
+
+    paths = render_prior_art_figures(
+        pd.read_csv(results), load_method_contracts(method_contracts), output_dir
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "generated": len(paths),
+                "output_dir": str(output_dir),
+                "sha256": figure_hash_manifest(paths),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@app.command("verify-prior-art-certificate")
+def verify_prior_art_certificate(
+    certificate: Path = typer.Argument(..., exists=True),
+    tolerance: float | None = typer.Option(
+        None,
+        "--verification-tolerance",
+        min=0,
+        max=1e-8,
+    ),
+) -> None:
+    """Reconstruct Q from a compact comparison bundle and recheck every constraint."""
+    from capt12.comparison.certificate import verify_factorized_certificate
+
+    result = verify_factorized_certificate(certificate, tolerance=tolerance)
+    typer.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+    if not result.valid:
+        raise typer.Exit(code=1)
 
 
 @app.command("verify-certificate")

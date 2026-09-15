@@ -4,6 +4,13 @@ outputs/
 cache/
 checkpoints/
 results/
+!results/
+results/*
+!results/prior_art_comparison/
+results/prior_art_comparison/*
+!results/prior_art_comparison/README.md
+!results/prior_art_comparison/results.csv
+!results/prior_art_comparison/method_contracts.json
 artifacts/
 *.joblib
 *.pkl

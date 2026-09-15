@@ -325,6 +325,57 @@ reported as a successful fail-safe retreat to profile-wide common cover, not
 as evidence of a nontrivial CAPT gain. Reported Criteo utility is a frozen
 reference-score surrogate; downstream CTR or auction utility is not claimed.
 
+## Privacy-matched prior-art comparison
+
+`configs/criteo_prior_art_privacy_matched.yaml` freezes the L=16, five-seed,
+three-cost comparison grid and all MaSS-12 pilot controls. The implementation
+separates PBP oracle, common nominal PBP, `MaSS-12 (finite-output adaptation)`,
+and the `MaSS-12 + certified cover calibration` wrapper. Oracle and empirical
+rows cannot pass the formal-comparison claim gate by label alone: a formal row
+requires an independently valid robust certificate.
+
+The feasibility, methodology, implementation, and pending-results reports are
+under `reports/`. `results/prior_art_comparison/results.csv` is schema-only
+and remains the checked-in contract fixture; it contains no zero-filled or
+fabricated measurement rows. Measured output goes to ignored `outputs/`. The
+ordinary `run-grid` command rejects this config so it
+cannot silently run a CAPT-only grid. The dedicated end-to-end commands are:
+
+```bash
+# Pilot: configured pilot controls at epsilon=1 and L=16.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --phase pilot
+
+# Full: allowed only if every cost shows finite raw-epsilon variation in the pilot.
+# It adds the configured epsilon grid and L=8,16,32 sensitivity.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --phase full
+```
+
+The runner resumes completed native and MaSS cells by default, trains MaSS
+only from `D_design`, constructs formal uncertainty sets only from `D_cert`,
+evaluates CTR utility only on `D_test`, writes compact factorized certificate
+bundles, independently reconstructs each exact token channel `Q`, and renders
+the publication and supplementary figures under `outputs/prior_art_comparison/`.
+Keeping generated output under the ignored `outputs/` tree preserves the clean
+source checkout required by every nested certificate run. A bundle can be
+rechecked with `capt12 verify-prior-art-certificate CERTIFICATE.json`.
+
+To render again from completed measurements without rerunning training:
+
+```bash
+capt12 render-prior-art-comparison \
+  --results outputs/prior_art_comparison/results.csv \
+  --method-contracts outputs/prior_art_comparison/method_contracts.json \
+  --output-dir outputs/prior_art_comparison/figures
+```
+
+The MaSS controls remain available through the config. They are intentionally
+not accepted as a MaSS dispatch through `run-grid`. Configured `m` and `n` are
+information-theoretic controls in nats, never achieved robust epsilon.
+
 ## Deployment requirements
 
 Distribute all profile tables as one authenticated bundle with the same URL,

@@ -42,12 +42,11 @@ def utility_informativeness(
     free_distortion = float(weights @ np.min(matrix, axis=1))
     constant_distortion = float(np.min(weights @ matrix))
     information_gap = max(0.0, constant_distortion - free_distortion)
-    no_privacy = np.zeros_like(matrix)
-    no_privacy[np.arange(len(matrix)), row_argmins] = 1.0
-    row_tv = float(
-        np.max(np.abs(no_privacy[:, None, :] - no_privacy[None, :, :]).sum(axis=2) / 2)
-    )
     unique_argmins = len(np.unique(row_argmins))
+    # Each no-privacy optimum is a one-hot row at its row-wise argmin.  The
+    # maximum pairwise TV is therefore exactly zero when all argmins agree and
+    # one otherwise; materializing every pairwise row difference would be O(n^3).
+    row_tv = float(unique_argmins > 1)
     reasons: list[str] = []
     if information_gap <= tolerance:
         reasons.append("information_gap_at_or_below_tolerance")

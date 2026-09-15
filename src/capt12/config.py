@@ -86,6 +86,20 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         ("shift_tv_list", float, 0, 1),
         ("seeds", int, 0, None),
         ("target_ctr_list", float, 0, 1),
+        ("mass_m_list", float, 0, None),
+        ("mass_n_list", float, 0, None),
+        ("mass_privacy_weight_list", float, 0, None),
+        ("mass_utility_weight_list", float, 0, None),
+        ("mass_seed_list", int, 0, None),
+        ("mass_temperature_list", float, 0, None),
+        ("comparison_L_list", int, 1, 4096),
+        ("comparison_pilot_seeds", int, 0, None),
+        ("mass_pilot_m_list", float, 0, None),
+        ("mass_pilot_n_list", float, 0, None),
+        ("mass_pilot_privacy_weight_list", float, 0, None),
+        ("mass_pilot_utility_weight_list", float, 0, None),
+        ("mass_pilot_seed_list", int, 0, None),
+        ("mass_pilot_temperature_list", float, 0, None),
     ):
         if key in cfg:
             cfg[key] = parse_csv_list(cfg[key], cast, minimum=low, maximum=high)
@@ -228,6 +242,76 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if frozen_design_seed < 0:
             raise ValueError("frozen_design_seed must be nonnegative")
         cfg["frozen_design_seed"] = frozen_design_seed
+    prior_art_comparison = bool(cfg.get("prior_art_comparison", False)) or any(
+        key.startswith("mass_") for key in cfg
+    )
+    if prior_art_comparison:
+        if bool(cfg.get("prior_art_comparison", False)):
+            if int(cfg.get("K", 0)) != 4096:
+                raise ValueError(
+                    "the primary prior-art comparison requires the fixed 12-bit K=4096 token"
+                )
+            if int(cfg.get("L", 0)) != 16:
+                raise ValueError("the primary prior-art comparison requires L=16")
+        if cfg.get("mass_output_mode", "finite_block") != "finite_block":
+            raise ValueError("MaSS-12 comparison requires mass_output_mode: finite_block")
+        cfg["mass_output_mode"] = "finite_block"
+        mass_epochs = int(cfg.get("mass_epochs", 100))
+        if mass_epochs < 1:
+            raise ValueError("mass_epochs must be positive")
+        cfg["mass_epochs"] = mass_epochs
+        temperatures = cfg.get("mass_temperature_list", [1.0])
+        if not temperatures or any(float(value) <= 0 for value in temperatures):
+            raise ValueError("mass_temperature_list values must be positive")
+        cfg["mass_temperature_list"] = list(map(float, temperatures))
+        for key in ("mass_privacy_weight_list", "mass_utility_weight_list"):
+            values = cfg.get(key, [1.0])
+            if not values or all(float(value) == 0 for value in values):
+                raise ValueError(f"{key} must contain at least one positive value")
+            cfg[key] = list(map(float, values))
+        calibration_tolerance = float(cfg.get("cover_bisection_tolerance", 1e-8))
+        if not 0 < calibration_tolerance <= 1e-8:
+            raise ValueError("cover_bisection_tolerance must be in (0, 1e-8]")
+        cfg["cover_bisection_tolerance"] = calibration_tolerance
+        cover_floor = float(cfg.get("cover_probability_floor", 1e-12))
+        if not 0 < cover_floor < 1 / int(cfg.get("K", 4096)):
+            raise ValueError("cover_probability_floor must be in (0, 1/K)")
+        cfg["cover_probability_floor"] = cover_floor
+        mass_learning_rate = float(cfg.get("mass_learning_rate", 0.05))
+        if mass_learning_rate <= 0:
+            raise ValueError("mass_learning_rate must be positive")
+        cfg["mass_learning_rate"] = mass_learning_rate
+        utility_bootstrap = int(cfg.get("utility_cluster_bootstrap_replicates", 2000))
+        if utility_bootstrap < 1:
+            raise ValueError("utility_cluster_bootstrap_replicates must be positive")
+        cfg["utility_cluster_bootstrap_replicates"] = utility_bootstrap
+        if not isinstance(cfg.get("require_mass_pilot_for_full", True), bool):
+            raise ValueError("require_mass_pilot_for_full must be a boolean")
+        pilot_range = float(cfg.get("mass_pilot_min_epsilon_range", 1e-6))
+        if pilot_range <= 0:
+            raise ValueError("mass_pilot_min_epsilon_range must be positive")
+        cfg["mass_pilot_min_epsilon_range"] = pilot_range
+        comparison_blocks = cfg.get("comparison_L_list", [8, 16, 32])
+        if not comparison_blocks or any(
+            int(value) not in {8, 16, 32} for value in comparison_blocks
+        ):
+            raise ValueError("comparison_L_list must contain only L=8, L=16, or L=32")
+        cfg["comparison_L_list"] = list(map(int, comparison_blocks))
+        cost_list = list(
+            dict.fromkeys(
+                map(
+                    str,
+                    cfg.get(
+                        "cost_list",
+                        ["teacher_kl", "empirical_logloss", "hybrid_logloss_kl"],
+                    ),
+                )
+            )
+        )
+        allowed_costs = {"teacher_kl", "empirical_logloss", "hybrid_logloss_kl"}
+        if not cost_list or not set(cost_list).issubset(allowed_costs):
+            raise ValueError("cost_list contains an unsupported privacy-comparison objective")
+        cfg["cost_list"] = cost_list
     context_experiment = public_context_policy == "stratified" or any(
         key in cfg
         for key in (
