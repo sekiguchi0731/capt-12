@@ -292,7 +292,9 @@ def fit_mass12_finite(
         raise ValueError("cost must be a finite K by K matrix")
 
     if public_context is None:
-        contexts = np.full(len(token_array), "all", dtype=str)
+        # ``dtype=str`` without an explicit width produces ``<U1`` here and
+        # silently truncates the sentinel to ``"a"``.
+        contexts = np.full(len(token_array), "all", dtype=object)
     else:
         contexts = np.asarray(public_context).astype(str)
         if contexts.shape != token_array.shape:
