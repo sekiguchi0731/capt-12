@@ -5,11 +5,15 @@ from pathlib import Path
 
 import pandas as pd
 
+import capt12.experiments.context_seed_stability as seed_stability
+from capt12.config import run_id
 from capt12.experiments.context_seed_stability import (
     _joint_design,
     _plot_stability,
+    _run_or_reuse_context_seed,
     _stability_table,
     _write_review_bundle,
+    run_context_fixed_mechanism,
 )
 from capt12.utils.artifacts import sha256_file
 
@@ -105,3 +109,62 @@ def test_seed_review_bundle_is_deterministic_and_expands_runs(tmp_path: Path) ->
     assert "runs/seed-0/run-0/certificate.json" in names
     assert "runs/seed-1/run-1/certificate.json" in names
     assert "sol_seed_stability_review_bundle_manifest.json" in names
+
+
+def test_context_seed_run_reuses_one_complete_canonical_run(monkeypatch, tmp_path) -> None:
+    base = {"output_dir": str(tmp_path), "epsilon": 1.0}
+
+    def fake_provenance(config):
+        return {**config, "source_git_sha": "abc", "source_worktree_clean": True}
+
+    monkeypatch.setattr(seed_stability, "record_source_provenance", fake_provenance)
+    monkeypatch.setattr(seed_stability, "_completed_run", lambda path: True)
+
+    def fail_if_called(config):
+        raise AssertionError("a complete fixed mechanism must be reused, not optimized again")
+
+    monkeypatch.setattr(seed_stability, "run_context_stratified_diagnostic", fail_if_called)
+    path, resolved = _run_or_reuse_context_seed(base, 7, index=1, total=1)
+    assert resolved["frozen_design_seed"] == 7
+    assert path == tmp_path / run_id(resolved)
+
+
+def test_fixed_mechanism_uses_exactly_one_canonical_design_seed(monkeypatch, tmp_path) -> None:
+    calls = []
+    expected = {
+        "context_designs": ["joint_kmedoids_cost_medoid_L32"],
+        "epsilon": 1.0,
+        "source_git_sha": "abc",
+        "frozen_design_seed": 4,
+    }
+    run_path = tmp_path / "fixed-run"
+
+    monkeypatch.setattr(seed_stability, "validate_config", lambda config: dict(config))
+    monkeypatch.setattr(
+        seed_stability,
+        "record_source_provenance",
+        lambda config: {**config, "source_git_sha": "abc"},
+    )
+
+    def fake_resolve(base, seed, *, index, total):
+        calls.append((seed, index, total))
+        return run_path, expected
+
+    monkeypatch.setattr(seed_stability, "_run_or_reuse_context_seed", fake_resolve)
+    monkeypatch.setattr(
+        seed_stability,
+        "_read_seed_run",
+        lambda *args: (
+            {"certificate_count": 33, "certificate_checked_constraints": 100},
+            {},
+        ),
+    )
+    path = run_context_fixed_mechanism(
+        {
+            "context_designs": ["joint_kmedoids_cost_medoid_L32"],
+            "epsilon": 1.0,
+        },
+        4,
+    )
+    assert path == run_path
+    assert calls == [(4, 1, 1)]

@@ -193,6 +193,7 @@ condition, use:
 ```bash
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
+  --mechanism-seed-mode per-seed \
   --frozen-design-seeds 0,1,2,3,4 \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
@@ -206,6 +207,40 @@ expands every per-seed review bundle. This experiment changes only
 `frozen_design_seed`; it is a design-sensitivity check, not a resampling or
 temporal-split uncertainty estimate.
 
+The seed policy is explicit. `--mechanism-seed-mode per-seed` rebuilds and
+certifies the entire mechanism for every listed frozen-design seed. The
+deployment-style alternative is
+`--mechanism-seed-mode fixed --fixed-mechanism-seed SEED`: it builds or reuses
+one canonical run and fixes the mapper, encoder, categorical-token reference
+model, partition, decoder, context-specific `R` matrices, and certificates
+together. It does not transplant one numeric `R` into another seed's block
+coordinates, and it does not make a multi-seed stability claim.
+
+For L=32 at the prescribed epsilon=1 teacher-KL condition, run either:
+
+```bash
+# Reoptimize and recertify the full mechanism for every design seed.
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified_l32.yaml \
+  --mechanism-seed-mode per-seed \
+  --frozen-design-seeds 0,1,2,3,4 \
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
+
+# Optimize and certify one canonical mechanism, then keep it fixed.
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified_l32.yaml \
+  --mechanism-seed-mode fixed \
+  --fixed-mechanism-seed 0 \
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
+```
+
+Choose the fixed seed before inspecting `D_test`. A completed matching
+canonical run is reused rather than optimized again. Fixed mode returns that
+run's `sol_review_bundle.zip`; per-seed mode writes the aggregated
+`sol_seed_stability_review_bundle.zip`.
+
 Use `--utility-objective empirical_logloss` to build the fixed linear R LP cost
 from D_design click labels, or `--utility-objective hybrid_logloss_kl
 --hybrid-empirical-weight 0.5` for a predeclared blend with teacher KL.
@@ -218,6 +253,7 @@ For example, the cost-matched empirical condition is:
 ```bash
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
+  --mechanism-seed-mode per-seed \
   --frozen-design-seeds 0,1,2,3,4 \
   --utility-objective empirical_logloss \
   --representation-mode objective_aligned

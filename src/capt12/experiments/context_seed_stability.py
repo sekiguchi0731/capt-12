@@ -66,6 +66,49 @@ def _completed_run(path: Path) -> bool:
     )
 
 
+def _run_or_reuse_context_seed(
+    base: dict[str, Any],
+    seed: int,
+    *,
+    index: int,
+    total: int,
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve one complete context mechanism for a frozen design seed."""
+    seed_config = dict(base)
+    seed_config["frozen_design_seed"] = int(seed)
+    expected_config = record_source_provenance(seed_config)
+    expected_path = Path(expected_config.get("output_dir", "outputs/runs")) / run_id(
+        expected_config
+    )
+    if _completed_run(expected_path):
+        _emit(
+            "seed_reused",
+            seed=seed,
+            index=f"{index}/{total}",
+            run_id=expected_path.name,
+            path=expected_path.resolve(),
+        )
+        seed_path = expected_path
+    else:
+        _emit(
+            "seed_run_started",
+            seed=seed,
+            index=f"{index}/{total}",
+            expected_run_id=expected_path.name,
+        )
+        seed_started = time.perf_counter()
+        seed_path = run_context_stratified_diagnostic(seed_config)
+        _emit(
+            "seed_run_finished",
+            seed=seed,
+            run_id=seed_path.name,
+            seconds=f"{time.perf_counter() - seed_started:.1f}",
+        )
+    if seed_path.resolve() != expected_path.resolve() or not _completed_run(seed_path):
+        raise RuntimeError(f"seed {seed} did not produce the expected complete run")
+    return seed_path, expected_config
+
+
 def _method_row(frame: pd.DataFrame, method: str) -> pd.Series:
     rows = frame.loc[frame["method"] == method]
     if len(rows) != 1:
@@ -707,8 +750,55 @@ def _write_review_bundle(output_dir: Path, seed_paths: dict[int, Path]) -> Path:
     return bundle_path
 
 
+def run_context_fixed_mechanism(config: dict[str, Any], seed: int) -> Path:
+    """Build or reuse one certified mechanism at a canonical design seed."""
+    started = time.perf_counter()
+    seed = int(seed)
+    if seed < 0:
+        raise ValueError("fixed mechanism seed must be nonnegative")
+    base = validate_config(config)
+    design_name, block_count = _joint_design(base)
+    epsilon = float(base.get("epsilon", -1))
+    if epsilon <= 0:
+        raise ValueError("fixed context mechanism requires epsilon > 0")
+    provenance = record_source_provenance(base)
+    source_git_sha = str(provenance["source_git_sha"])
+    _emit(
+        "fixed_mechanism_started",
+        seed=seed,
+        source_git_sha=source_git_sha,
+        design=design_name,
+        L=block_count,
+        epsilon=epsilon,
+    )
+    path, expected_config = _run_or_reuse_context_seed(
+        base,
+        seed,
+        index=1,
+        total=1,
+    )
+    row, _ = _read_seed_run(
+        seed,
+        path,
+        source_git_sha,
+        expected_config,
+        design_name,
+        block_count,
+    )
+    _emit(
+        "fixed_mechanism_finished",
+        seed=seed,
+        run_id=path.name,
+        path=path.resolve(),
+        certificates=row["certificate_count"],
+        constraints=row["certificate_checked_constraints"],
+        seconds=f"{time.perf_counter() - started:.1f}",
+    )
+    return path
+
+
 def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path:
-    """Run/reuse prescribed context CAPT seeds, then make one review packet."""
+    """Rebuild/certify the full context mechanism for every design seed."""
     started = time.perf_counter()
     seeds = sorted(set(map(int, seeds)))
     if len(seeds) < 2:
@@ -745,39 +835,13 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
     seed_paths: dict[int, Path] = {}
     expected_configs: dict[int, dict[str, Any]] = {}
     for index, seed in enumerate(seeds, start=1):
-        seed_config = dict(base)
-        seed_config["frozen_design_seed"] = seed
-        expected_config = record_source_provenance(seed_config)
-        expected_configs[seed] = expected_config
-        expected_path = Path(expected_config.get("output_dir", "outputs/runs")) / run_id(
-            expected_config
+        seed_path, expected_config = _run_or_reuse_context_seed(
+            base,
+            seed,
+            index=index,
+            total=len(seeds),
         )
-        if _completed_run(expected_path):
-            _emit(
-                "seed_reused",
-                seed=seed,
-                index=f"{index}/{len(seeds)}",
-                run_id=expected_path.name,
-                path=expected_path.resolve(),
-            )
-            seed_path = expected_path
-        else:
-            _emit(
-                "seed_run_started",
-                seed=seed,
-                index=f"{index}/{len(seeds)}",
-                expected_run_id=expected_path.name,
-            )
-            seed_started = time.perf_counter()
-            seed_path = run_context_stratified_diagnostic(seed_config)
-            _emit(
-                "seed_run_finished",
-                seed=seed,
-                run_id=seed_path.name,
-                seconds=f"{time.perf_counter() - seed_started:.1f}",
-            )
-        if seed_path.resolve() != expected_path.resolve() or not _completed_run(seed_path):
-            raise RuntimeError(f"seed {seed} did not produce the expected complete run")
+        expected_configs[seed] = expected_config
         seed_paths[seed] = seed_path
 
     result_rows: list[dict[str, Any]] = []

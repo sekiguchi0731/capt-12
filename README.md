@@ -137,10 +137,44 @@ run the seeds sequentially and aggregate them in one command:
 ```bash
 uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified.yaml \
+  --mechanism-seed-mode per-seed \
   --frozen-design-seeds 0,1,2,3,4 \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
 ```
+
+`--mechanism-seed-mode per-seed` rebuilds the complete mechanism for every
+listed design seed, including the encoder, reference model, partition,
+decoder, context-specific `R` matrices, and certificates. To select one
+canonical deployable mechanism and optimize it only once, use
+`--mechanism-seed-mode fixed --fixed-mechanism-seed SEED`. Fixed mode does not
+copy a numeric `R` into designs from other seeds; it fixes the complete design
+at the canonical seed and reuses an already completed matching run.
+
+For the prescribed L=32 condition, the two execution policies are:
+
+```bash
+# Full design-sensitivity run: reoptimize R as part of every seeded mechanism.
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified_l32.yaml \
+  --mechanism-seed-mode per-seed \
+  --frozen-design-seeds 0,1,2,3,4 \
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
+
+# Canonical deployment run: optimize/certify the whole mechanism once at seed 0.
+uv run capt12 context-seed-stability \
+  --config configs/criteo_context_stratified_l32.yaml \
+  --mechanism-seed-mode fixed \
+  --fixed-mechanism-seed 0 \
+  --utility-objective teacher_kl \
+  --representation-mode teacher_kl_fixed
+```
+
+The fixed command returns the ordinary single-run `sol_review_bundle.zip`;
+the per-seed command returns the aggregated
+`sol_seed_stability_review_bundle.zip`. Choose the fixed seed before inspecting
+`D_test`; fixed mode is a single-mechanism result, not a seed-stability claim.
 
 The R LP objective supports `teacher_kl`, `empirical_logloss` (D_design click
 labels only), and `hybrid_logloss_kl`; the hybrid additionally accepts

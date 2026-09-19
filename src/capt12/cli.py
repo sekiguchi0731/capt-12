@@ -671,26 +671,46 @@ def context_stratified(
 @app.command("context-seed-stability")
 def context_seed_stability(
     config: Path = typer.Option(..., "--config", exists=True),
-    frozen_design_seeds: str = typer.Option(
-        "0,1,2",
+    mechanism_seed_mode: str = typer.Option(
+        "per-seed",
+        "--mechanism-seed-mode",
+        help=(
+            "per-seed rebuilds and reoptimizes the complete mechanism for every design "
+            "seed; fixed builds/reuses one complete canonical mechanism."
+        ),
+    ),
+    frozen_design_seeds: str | None = typer.Option(
+        None,
         "--frozen-design-seeds",
-        help="Comma-separated frozen design seeds; runs are sequential and then aggregated.",
+        help=(
+            "Comma-separated design seeds for per-seed mode (default: 0,1,2); "
+            "not allowed in fixed mode."
+        ),
+    ),
+    fixed_mechanism_seed: int | None = typer.Option(
+        None,
+        "--fixed-mechanism-seed",
+        min=0,
+        help=(
+            "Canonical design seed for fixed mode. The encoder, partition, decoder, and "
+            "all context-specific R matrices are fixed together."
+        ),
     ),
     epsilon: float | None = typer.Option(
         None,
         "--epsilon",
         min=0,
-        help="Privacy budget shared by every seed; must be strictly positive.",
+        help="Privacy budget used by the selected run or runs; must be strictly positive.",
     ),
     utility_objective: str | None = typer.Option(
         None,
         "--utility-objective",
-        help="LP objective used by every seed.",
+        help="LP objective used by the selected run or runs.",
     ),
     representation_mode: str | None = typer.Option(
         None,
         "--representation-mode",
-        help="Block/decoder cost used by every seed.",
+        help="Block/decoder cost used by the selected run or runs.",
     ),
     hybrid_empirical_weight: float | None = typer.Option(
         None,
@@ -700,29 +720,68 @@ def context_seed_stability(
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
 ) -> None:
-    """Run/reuse L8/L16/L32 seeds at one epsilon and create one Sol review bundle."""
-    from capt12.experiments.context_seed_stability import run_context_seed_stability
+    """Run per-seed design sensitivity or one fixed canonical mechanism."""
+    from capt12.experiments.context_seed_stability import (
+        run_context_fixed_mechanism,
+        run_context_seed_stability,
+    )
 
+    mode = mechanism_seed_mode.strip().lower()
+    if mode not in {"per-seed", "fixed"}:
+        raise typer.BadParameter(
+            "must be per-seed or fixed",
+            param_hint="--mechanism-seed-mode",
+        )
+    resolved = _load(
+        config,
+        {
+            "context_utility_objective": utility_objective,
+            "epsilon": epsilon,
+            "context_representation_mode": representation_mode,
+            "hybrid_empirical_weight": hybrid_empirical_weight,
+        },
+    )
+    if mode == "fixed":
+        if frozen_design_seeds is not None:
+            raise typer.BadParameter(
+                "cannot be used when --mechanism-seed-mode=fixed",
+                param_hint="--frozen-design-seeds",
+            )
+        if fixed_mechanism_seed is None:
+            raise typer.BadParameter(
+                "is required when --mechanism-seed-mode=fixed",
+                param_hint="--fixed-mechanism-seed",
+            )
+        path = run_context_fixed_mechanism(resolved, fixed_mechanism_seed)
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "mechanism_seed_mode": mode,
+                    "fixed_mechanism_seed": fixed_mechanism_seed,
+                    "run": str(path),
+                    "sol_review_bundle": str(path / "sol_review_bundle.zip"),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if fixed_mechanism_seed is not None:
+        raise typer.BadParameter(
+            "can only be used when --mechanism-seed-mode=fixed",
+            param_hint="--fixed-mechanism-seed",
+        )
     try:
-        seeds = parse_csv_list(frozen_design_seeds, int, minimum=0)
+        seeds = parse_csv_list(frozen_design_seeds or "0,1,2", int, minimum=0)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
-    path = run_context_seed_stability(
-        _load(
-            config,
-            {
-                "context_utility_objective": utility_objective,
-                "epsilon": epsilon,
-                "context_representation_mode": representation_mode,
-                "hybrid_empirical_weight": hybrid_empirical_weight,
-            },
-        ),
-        seeds,
-    )
+    path = run_context_seed_stability(resolved, seeds)
     typer.echo(
         json.dumps(
             {
                 "status": "ok",
+                "mechanism_seed_mode": mode,
                 "summary": str(path),
                 "sol_review_bundle": str(path / "sol_seed_stability_review_bundle.zip"),
             },

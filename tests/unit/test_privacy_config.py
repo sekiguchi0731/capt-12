@@ -174,6 +174,8 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "context-seed-stability",
             "--config",
             "configs/criteo_context_stratified.yaml",
+            "--mechanism-seed-mode",
+            "per-seed",
             "--frozen-design-seeds",
             "7,2,7,4",
             "--epsilon",
@@ -192,7 +194,112 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
     assert captured["config"]["context_utility_objective"] == "hybrid_logloss_kl"
     assert captured["config"]["hybrid_empirical_weight"] == 0.75
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert '"mechanism_seed_mode": "per-seed"' in result.output
     assert "sol_seed_stability_review_bundle.zip" in result.output
+
+
+def test_context_seed_stability_cli_runs_one_fixed_mechanism(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_run(config, seed):
+        captured["config"] = config
+        captured["seed"] = seed
+        return tmp_path / "fixed-run"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_seed_stability.run_context_fixed_mechanism",
+        fake_run,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "7",
+            "--epsilon",
+            "2",
+            "--utility-objective",
+            "teacher_kl",
+            "--representation-mode",
+            "objective_aligned",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["seed"] == 7
+    assert captured["config"]["epsilon"] == 2.0
+    assert captured["config"]["context_designs"] == ["joint_kmedoids_cost_medoid_L32"]
+    assert captured["config"]["context_utility_objective"] == "teacher_kl"
+    assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert '"mechanism_seed_mode": "fixed"' in result.output
+    assert '"fixed_mechanism_seed": 7' in result.output
+    assert "sol_review_bundle.zip" in result.output
+
+
+def test_context_seed_stability_cli_rejects_conflicting_seed_modes() -> None:
+    runner = CliRunner()
+    fixed_with_seed_list = runner.invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "0",
+            "--frozen-design-seeds",
+            "0,1",
+        ],
+    )
+    assert fixed_with_seed_list.exit_code != 0
+    assert "--frozen-design-seeds" in fixed_with_seed_list.output
+
+    fixed_without_seed = runner.invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+        ],
+    )
+    assert fixed_without_seed.exit_code != 0
+    assert "--fixed-mechanism-seed" in fixed_without_seed.output
+
+    per_seed_with_fixed_seed = runner.invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "per-seed",
+            "--fixed-mechanism-seed",
+            "0",
+        ],
+    )
+    assert per_seed_with_fixed_seed.exit_code != 0
+    assert "--fixed-mechanism-seed" in per_seed_with_fixed_seed.output
+
+
+def test_context_seed_stability_cli_rejects_unknown_mechanism_seed_mode() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "copy-r",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "per-seed or fixed" in result.output
 
 
 def test_context_epsilon_grid_cli_sorts_budgets_and_seeds(monkeypatch, tmp_path) -> None:
