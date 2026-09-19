@@ -232,6 +232,7 @@ uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified_l32.yaml \
   --mechanism-seed-mode fixed \
   --fixed-mechanism-seed 0 \
+  --test-seeds 0,1,2,3,4 \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
 ```
@@ -240,6 +241,16 @@ Choose the fixed seed before inspecting `D_test`. A completed matching
 canonical run is reused rather than optimized again. Fixed mode returns that
 run's `sol_review_bundle.zip`; per-seed mode writes the aggregated
 `sol_seed_stability_review_bundle.zip`.
+
+`--test-seeds` does not refit or recertify the mechanism. It keeps the
+canonical encoder, reference model, partition, decoder, and all context
+channels fixed, then draws released tokens on the same `D_test` rows for each
+listed Monte Carlo seed. CAPT and LDP use common uniforms within a seed. The
+result directory under `outputs/context_fixed_test_seed_evaluations/` contains
+per-seed sampled log loss, ROC-AUC, PR-AUC, ECE, paired CAPT-minus-LDP tables,
+and across-seed summaries. These are finite-release Monte Carlo diagnostics;
+the primary expected randomized log loss and expected-score metrics in the
+canonical run are analytic and therefore independent of `--test-seeds`.
 
 Use `--utility-objective empirical_logloss` to build the fixed linear R LP cost
 from D_design click labels, or `--utility-objective hybrid_logloss_kl

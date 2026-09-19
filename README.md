@@ -167,6 +167,7 @@ uv run capt12 context-seed-stability \
   --config configs/criteo_context_stratified_l32.yaml \
   --mechanism-seed-mode fixed \
   --fixed-mechanism-seed 0 \
+  --test-seeds 0,1,2,3,4 \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
 ```
@@ -175,6 +176,13 @@ The fixed command returns the ordinary single-run `sol_review_bundle.zip`;
 the per-seed command returns the aggregated
 `sol_seed_stability_review_bundle.zip`. Choose the fixed seed before inspecting
 `D_test`; fixed mode is a single-mechanism result, not a seed-stability claim.
+When `--test-seeds` is present, the fixed mechanism is still optimized only
+once. The additional seeds draw released tokens on the same fixed `D_test`
+rows using common random numbers for CAPT and LDP, and write per-seed sampled
+log loss, ROC-AUC, PR-AUC, ECE, paired differences, and summaries under
+`outputs/context_fixed_test_seed_evaluations/`. The primary expected randomized
+log loss and expected-score metrics remain analytic and seed-invariant; the
+seeded table is a Monte Carlo variation diagnostic.
 
 The R LP objective supports `teacher_kl`, `empirical_logloss` (D_design click
 labels only), and `hybrid_logloss_kl`; the hybrid additionally accepts

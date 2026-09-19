@@ -696,6 +696,14 @@ def context_seed_stability(
             "all context-specific R matrices are fixed together."
         ),
     ),
+    test_seeds: str | None = typer.Option(
+        None,
+        "--test-seeds",
+        help=(
+            "Comma-separated Monte Carlo release seeds for D_test after the complete "
+            "mechanism is fixed; fixed mode only and at least two distinct seeds."
+        ),
+    ),
     epsilon: float | None = typer.Option(
         None,
         "--epsilon",
@@ -752,21 +760,45 @@ def context_seed_stability(
                 "is required when --mechanism-seed-mode=fixed",
                 param_hint="--fixed-mechanism-seed",
             )
-        path = run_context_fixed_mechanism(resolved, fixed_mechanism_seed)
-        typer.echo(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "mechanism_seed_mode": mode,
-                    "fixed_mechanism_seed": fixed_mechanism_seed,
-                    "run": str(path),
-                    "sol_review_bundle": str(path / "sol_review_bundle.zip"),
-                },
-                indent=2,
+        try:
+            parsed_test_seeds = parse_csv_list(test_seeds, int, minimum=0)
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--test-seeds") from error
+        if test_seeds is not None and len(parsed_test_seeds) < 2:
+            raise typer.BadParameter(
+                "requires at least two distinct seeds",
+                param_hint="--test-seeds",
             )
-        )
+        path = run_context_fixed_mechanism(resolved, fixed_mechanism_seed)
+        test_seed_path = None
+        if parsed_test_seeds:
+            from capt12.experiments.context_fixed_test_seeds import (
+                run_fixed_mechanism_test_seeds,
+            )
+
+            test_seed_path = run_fixed_mechanism_test_seeds(path, parsed_test_seeds)
+        payload = {
+            "status": "ok",
+            "mechanism_seed_mode": mode,
+            "fixed_mechanism_seed": fixed_mechanism_seed,
+            "run": str(path),
+            "sol_review_bundle": str(path / "sol_review_bundle.zip"),
+        }
+        if test_seed_path is not None:
+            payload.update(
+                {
+                    "test_seeds": parsed_test_seeds,
+                    "test_seed_evaluation": str(test_seed_path),
+                }
+            )
+        typer.echo(json.dumps(payload, indent=2))
         return
 
+    if test_seeds is not None:
+        raise typer.BadParameter(
+            "can only be used when --mechanism-seed-mode=fixed",
+            param_hint="--test-seeds",
+        )
     if fixed_mechanism_seed is not None:
         raise typer.BadParameter(
             "can only be used when --mechanism-seed-mode=fixed",

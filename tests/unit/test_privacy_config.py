@@ -239,6 +239,47 @@ def test_context_seed_stability_cli_runs_one_fixed_mechanism(monkeypatch, tmp_pa
     assert "sol_review_bundle.zip" in result.output
 
 
+def test_context_seed_stability_cli_evaluates_fixed_mechanism_over_test_seeds(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured = {}
+    run_path = tmp_path / "fixed-run"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_seed_stability.run_context_fixed_mechanism",
+        lambda config, seed: run_path,
+    )
+
+    def fake_test_seeds(path, seeds):
+        captured["path"] = path
+        captured["seeds"] = seeds
+        return tmp_path / "test-seed-evaluation"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.run_fixed_mechanism_test_seeds",
+        fake_test_seeds,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "0",
+            "--test-seeds",
+            "4,2,4,1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {"path": run_path, "seeds": [1, 2, 4]}
+    assert '"test_seeds": [' in result.output
+    assert '"test_seed_evaluation"' in result.output
+
+
 def test_context_seed_stability_cli_rejects_conflicting_seed_modes() -> None:
     runner = CliRunner()
     fixed_with_seed_list = runner.invoke(
@@ -285,6 +326,38 @@ def test_context_seed_stability_cli_rejects_conflicting_seed_modes() -> None:
     )
     assert per_seed_with_fixed_seed.exit_code != 0
     assert "--fixed-mechanism-seed" in per_seed_with_fixed_seed.output
+
+    per_seed_with_test_seeds = runner.invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "per-seed",
+            "--test-seeds",
+            "0,1",
+        ],
+    )
+    assert per_seed_with_test_seeds.exit_code != 0
+    assert "--test-seeds" in per_seed_with_test_seeds.output
+
+    fixed_with_one_test_seed = runner.invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "0",
+            "--test-seeds",
+            "3",
+        ],
+    )
+    assert fixed_with_one_test_seed.exit_code != 0
+    assert "at least two distinct seeds" in fixed_with_one_test_seed.output
 
 
 def test_context_seed_stability_cli_rejects_unknown_mechanism_seed_mode() -> None:
