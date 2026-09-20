@@ -604,6 +604,63 @@ def test_lp_retries_time_limit_with_strict_ipm_without_crossover(
     assert finished["solver_attempt_count"] == 2
 
 
+def test_lp_retries_unknown_after_time_limit_without_presolve(
+    monkeypatch,
+) -> None:
+    real_linprog = lp_module.linprog
+    calls: list[tuple[str, dict]] = []
+
+    def time_limit_then_unknown_then_solve(*args, **kwargs):
+        calls.append((kwargs["method"], dict(kwargs["options"])))
+        if len(calls) == 1:
+            return OptimizeResult(
+                success=False,
+                status=1,
+                message="synthetic time limit reached",
+                nit=99,
+            )
+        if len(calls) == 2:
+            return OptimizeResult(
+                success=False,
+                status=4,
+                message="synthetic numerical Unknown after IPM",
+                nit=7,
+            )
+        return real_linprog(*args, **kwargs)
+
+    monkeypatch.setattr(lp_module, "linprog", time_limit_then_unknown_then_solve)
+    events: list[tuple[str, dict]] = []
+    solution = solve_ldp_block_lp(
+        1 - np.eye(2),
+        np.array([0.4, 0.6]),
+        1.0,
+        tolerance=1e-10,
+        time_limit=0.5,
+        progress=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    assert [method for method, _ in calls] == ["highs", "highs-ipm", "highs-ipm"]
+    assert calls[1][1]["run_crossover"] == "off"
+    assert calls[1][1].get("presolve", True) is not False
+    assert calls[2][1]["run_crossover"] == "off"
+    assert calls[2][1]["presolve"] is False
+    assert calls[2][1]["primal_feasibility_tolerance"] == 1e-10
+    assert calls[2][1]["dual_feasibility_tolerance"] == 1e-10
+    assert solution.channel is not None
+    assert solution.solver.status == "optimal"
+    assert "highs-ipm-no-crossover-no-presolve(status=0)" in solution.solver.message
+    retry_events = [fields for event, fields in events if event == "lp_solver_retry_started"]
+    assert len(retry_events) == 2
+    assert retry_events[-1]["retry_reason"] == "presolve_numerical_status"
+    assert retry_events[-1]["presolve_changed"] is True
+    assert retry_events[-1]["presolve"] is False
+    assert retry_events[-1]["privacy_constraint_tolerance_changed"] is False
+    assert retry_events[-1]["optimality_tolerance_changed"] is False
+    finished = next(fields for event, fields in events if event == "lp_solver_finished")
+    assert finished["solver_method"] == "highs-ipm-no-crossover-no-presolve"
+    assert finished["solver_attempt_count"] == 3
+
+
 def test_full_simplex_pair_is_compiled_to_exact_ldp_constraints() -> None:
     boxes = {
         "g0": full_simplex_box(np.zeros(2, dtype=int)),

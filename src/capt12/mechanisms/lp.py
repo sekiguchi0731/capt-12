@@ -478,6 +478,69 @@ def _solve_channel_lp(
                     solver_elapsed_seconds=time.perf_counter() - started,
                     **process_memory_bytes(),
                 )
+            # Presolve can itself report Unknown/Infeasible on a numerically
+            # difficult but feasible robust master (a constant channel is
+            # always feasible here).  This occurs in particular when the
+            # primary simplex reaches its time limit and the first IPM run,
+            # already without crossover, is downgraded to status 4.  Retry the
+            # identical LP once more with presolve disabled.  All variables,
+            # constraints, bounds, and feasibility/optimality tolerances stay
+            # unchanged; only the HiGHS preprocessing path differs.
+            if (
+                attempts[-1][0] == "highs-ipm-no-crossover"
+                and not result.success
+                and int(result.status) == 4
+            ):
+                no_presolve_options = {
+                    **options,
+                    "run_crossover": "off",
+                    "presolve": False,
+                }
+                retry_attempt = len(attempts) + 1
+                solver_state.update(method="highs-ipm", attempt=retry_attempt)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="presolve_numerical_status",
+                    failed_method="highs-ipm-no-crossover",
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover_or_presolve",
+                    retry_attempt=retry_attempt,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    presolve_changed=True,
+                    presolve=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ipm", no_presolve_options)
+                attempts.append(("highs-ipm-no-crossover-no-presolve", result))
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ipm",
+                    retry_strategy="without_crossover_or_presolve",
+                    retry_attempt=retry_attempt,
+                    success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    crossover_iterations=getattr(result, "crossover_nit", None),
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    presolve_changed=True,
+                    presolve=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
             selected_method = attempts[-1][0]
     except BaseException as error:
         _emit_progress(
