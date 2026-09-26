@@ -88,6 +88,10 @@ class ContextCell:
     full_simplex_keys: set[str]
     full_full_edges: int
     rare_group_count: int
+    unpooled_capt_channel: np.ndarray
+    unpooled_raw_capt_channel: np.ndarray
+    context_r_pooling_weight: float = 0.0
+    context_r_pooling_target: str = "none"
 
 
 def aggregate_context_objective(
@@ -523,6 +527,8 @@ def _solve_design(
                     0 < int(value.sum()) < int(config.get("min_group_count", 20))
                     for value in context_counts.values()
                 ),
+                unpooled_capt_channel=capt.channel.copy(),
+                unpooled_raw_capt_channel=raw_capt_channel.copy(),
             )
         )
         progress.emit(
@@ -615,6 +621,125 @@ def _solve_design(
     )
     if shared_ldp.channel is None or shared_capt.channel is None or not shared_verification.valid:
         raise RuntimeError(f"shared baseline failed: {design.name}")
+    pooling_weight = float(config.get("context_r_pooling_weight", 0.0))
+    if pooling_weight > 0:
+        repair_margin = float(config.get("certificate_repair_margin", 1e-10))
+        progress.emit(
+            "context_r_pooling_started",
+            design=design.name,
+            method="convex_shared_capt_shrinkage",
+            pooling_weight=pooling_weight,
+            context_count=len(cells),
+            target="shared_capt_raw",
+            **process_memory_bytes(),
+        )
+        for context_index, cell in enumerate(cells, start=1):
+            pooled_raw_channel = (
+                (1.0 - pooling_weight) * cell.unpooled_raw_capt_channel
+                + pooling_weight * shared_capt.channel
+            )
+            pooled_raw_verification = verify_robust_channel(
+                pooled_raw_channel,
+                cell.boxes,
+                cell.adjacency,
+                tolerance=tolerance,
+            )
+            if not pooled_raw_verification.valid:
+                raise RuntimeError(
+                    "convex pooled channel failed the ordinary verifier before repair: "
+                    f"{design.name}/{cell.objective.context}"
+                )
+            pooled_repair = repair_robust_channel_uniform(
+                pooled_raw_channel,
+                cell.boxes,
+                cell.adjacency,
+                safety_margin=repair_margin,
+            )
+            target_epsilon = max((pair.epsilon for pair in cell.adjacency), default=0.0)
+            if (
+                not pooled_repair.conservative_verification.valid
+                or not np.isfinite(pooled_repair.conservative_verification.realized_epsilon)
+                or pooled_repair.conservative_verification.realized_epsilon > target_epsilon
+            ):
+                raise RuntimeError(
+                    "conservative pooled-channel verification failed: "
+                    f"{design.name}/{cell.objective.context}"
+                )
+            pooled_objective = _objective(
+                pooled_repair.channel,
+                cell.objective.block_cost,
+                cell.objective.block_weights,
+            )
+            unpooled_objective = _objective(
+                cell.unpooled_capt_channel,
+                cell.objective.block_cost,
+                cell.objective.block_weights,
+            )
+            cell.capt_solution = ChannelSolution(
+                channel=pooled_repair.channel,
+                solver=replace(
+                    cell.capt_solution.solver,
+                    status="optimal_postsolve_pooled_repaired",
+                    objective=pooled_objective,
+                    message=(
+                        "independently optimized raw context and shared CAPT channels; "
+                        f"deterministic convex context-R pooling rho={pooling_weight:.17g}; "
+                        "then deterministic uniform full-support repair "
+                        f"lambda={pooled_repair.mixing_weight:.17g}, "
+                        f"margin={pooled_repair.safety_margin:.17g}"
+                    ),
+                ),
+                cuts=[
+                    *[
+                        cut
+                        for cut in cell.capt_solution.cuts
+                        if cut.get("source")
+                        != "deterministic_uniform_full_support_repair"
+                    ],
+                    {
+                        "source": "deterministic_convex_context_r_pooling",
+                        "pooling_weight": pooling_weight,
+                        "target": "shared_capt_raw",
+                        "released_channel": False,
+                    },
+                    {
+                        "source": "deterministic_uniform_full_support_repair_after_pooling",
+                        "mixing_weight": pooled_repair.mixing_weight,
+                        "safety_margin": pooled_repair.safety_margin,
+                        "released_channel": True,
+                    },
+                ],
+                auxiliary=cell.capt_solution.auxiliary,
+            )
+            cell.capt_verification = pooled_repair.post_verification
+            cell.raw_capt_channel = pooled_raw_channel
+            cell.raw_capt_verification = pooled_raw_verification
+            cell.capt_repair = pooled_repair
+            cell.context_r_pooling_weight = pooling_weight
+            cell.context_r_pooling_target = "shared_capt_raw"
+            progress.emit(
+                "context_r_pooling_context_finished",
+                design=design.name,
+                context=cell.objective.context,
+                context_index=context_index,
+                context_count=len(cells),
+                pooling_weight=pooling_weight,
+                unpooled_objective=unpooled_objective,
+                pooled_objective=pooled_objective,
+                objective_change=pooled_objective - unpooled_objective,
+                pre_repair_max_violation=pooled_raw_verification.max_violation,
+                repair_mixing_weight=pooled_repair.mixing_weight,
+                conservative_realized_epsilon=(
+                    pooled_repair.conservative_verification.realized_epsilon
+                ),
+            )
+        progress.emit(
+            "context_r_pooling_finished",
+            design=design.name,
+            pooling_weight=pooling_weight,
+            context_count=len(cells),
+            **process_memory_bytes(),
+        )
     return cells, shared_ldp, shared_capt, shared_verification
 
 
@@ -632,6 +757,8 @@ def _aggregate_rows(
         "shared_ldp": lambda cell: shared_ldp.channel,
         "shared_capt": lambda cell: shared_capt.channel,
     }
+    if any(cell.context_r_pooling_weight > 0 for cell in cells):
+        methods["context_capt_unpooled"] = lambda cell: cell.unpooled_capt_channel
     constant_floor = sum(
         cell.objective.design_mass * cell.objective.objective_constant_floor for cell in cells
     )
@@ -693,6 +820,11 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
             cell.objective.block_cost,
             cell.objective.block_weights,
         )
+        unpooled_capt = _objective(
+            cell.unpooled_capt_channel,
+            cell.objective.block_cost,
+            cell.objective.block_weights,
+        )
         floor = cell.objective.objective_constant_floor
         rows.append(
             {
@@ -716,6 +848,15 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "D_context_ldp": ldp,
                 "D_context_capt": capt,
                 "D_context_capt_pre_repair": raw_capt,
+                "D_context_capt_unpooled": unpooled_capt,
+                "context_r_pooling_method": (
+                    "convex_shared_capt_shrinkage"
+                    if cell.context_r_pooling_weight > 0
+                    else "none"
+                ),
+                "context_r_pooling_weight": cell.context_r_pooling_weight,
+                "context_r_pooling_target": cell.context_r_pooling_target,
+                "pooling_objective_change": capt - unpooled_capt,
                 "excess_context_constant": max(0.0, constant - floor),
                 "excess_context_ldp": max(0.0, ldp - floor),
                 "excess_context_capt": max(0.0, capt - floor),
@@ -726,6 +867,7 @@ def _context_rows(cells: list[ContextCell]) -> list[dict[str, Any]]:
                 "context_ldp_row_tv": _max_row_tv(cell.ldp_solution.channel),
                 "context_capt_row_tv": _max_row_tv(cell.capt_solution.channel),
                 "context_capt_row_tv_pre_repair": _max_row_tv(cell.raw_capt_channel),
+                "context_capt_unpooled_row_tv": _max_row_tv(cell.unpooled_capt_channel),
                 "capt_equals_context_ldp_channel": bool(
                     np.allclose(
                         cell.capt_solution.channel,
@@ -876,7 +1018,7 @@ def _channel_manifest(
     cells_by_design: dict[str, list[ContextCell]],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "version": 4,
+        "version": 5,
         "profile": profile,
         "public_context_column": context_column,
         "channel_selector_inputs": ["Z", "profile", context_column],
@@ -897,16 +1039,24 @@ def _channel_manifest(
         cells = cells_by_design[design.name]
         ordered = sorted(cells, key=lambda cell: cell.objective.context)
         channels = np.stack([cell.capt_solution.channel for cell in ordered])
+        unpooled_channels = np.stack([cell.unpooled_capt_channel for cell in ordered])
         ldp_channels = np.stack([cell.ldp_solution.channel for cell in ordered])
         constant_channels = np.stack([cell.constant_channel for cell in ordered])
+        channel_arrays: dict[str, np.ndarray] = {
+            "contexts": np.asarray(
+                [cell.objective.context for cell in ordered], dtype=str
+            ),
+            "channels": channels,
+            "ldp_channels": ldp_channels,
+            "constant_channels": constant_channels,
+            "assignment": design.assignment,
+            "decoder": design.decoder,
+        }
+        if any(cell.context_r_pooling_weight > 0 for cell in ordered):
+            channel_arrays["unpooled_channels"] = unpooled_channels
         np.savez_compressed(
             path / "mechanism" / f"context_channels-{design.name}.npz",
-            contexts=np.asarray([cell.objective.context for cell in ordered], dtype=str),
-            channels=channels,
-            ldp_channels=ldp_channels,
-            constant_channels=constant_channels,
-            assignment=design.assignment,
-            decoder=design.decoder,
+            **channel_arrays,
         )
         payload["designs"][design.name] = {
             "L": len(design.block_weights),
@@ -916,8 +1066,25 @@ def _channel_manifest(
             "assignment_hash": hash_array(design.assignment),
             "decoder_hash": hash_array(design.decoder),
             "table_entries": int(len(ordered) * len(design.block_weights) ** 2),
+            "context_r_pooling": {
+                "method": (
+                    "convex_shared_capt_shrinkage"
+                    if ordered[0].context_r_pooling_weight > 0
+                    else "none"
+                ),
+                "weight": ordered[0].context_r_pooling_weight,
+                "target": ordered[0].context_r_pooling_target,
+                "formula": "(1-rho)*R_context_raw + rho*R_shared_capt_raw",
+                "certificate_repair_applied_after_pooling": bool(
+                    ordered[0].context_r_pooling_weight > 0
+                ),
+            },
             "contexts": {
                 cell.objective.context: hash_array(cell.capt_solution.channel) for cell in ordered
+            },
+            "unpooled_contexts": {
+                cell.objective.context: hash_array(cell.unpooled_capt_channel)
+                for cell in ordered
             },
             "ldp_contexts": {
                 cell.objective.context: hash_array(cell.ldp_solution.channel) for cell in ordered
@@ -1010,6 +1177,20 @@ def _write_certificates(
                 "full_simplex_group_count": len(missing),
                 "full_simplex_ordered_adjacency_count": cell.full_full_edges,
                 "design_mass": cell.objective.design_mass,
+                "context_r_pooling": {
+                    "method": (
+                        "convex_shared_capt_shrinkage"
+                        if cell.context_r_pooling_weight > 0
+                        else "none"
+                    ),
+                    "weight": cell.context_r_pooling_weight,
+                    "target": cell.context_r_pooling_target,
+                    "formula": "(1-rho)*R_context_raw + rho*R_shared_capt_raw",
+                    "privacy_basis": "convex_closure_then_strict_repair",
+                    "unpooled_released_channel_hash": hash_array(
+                        cell.unpooled_capt_channel
+                    ),
+                },
                 "post_solve_repair": {
                     "method": "uniform_full_support_mixing",
                     "uniform_output_probability": 1.0 / len(design.block_weights),
@@ -1081,6 +1262,7 @@ def _write_certificates(
                         cell.capt_repair.conservative_verification.realized_epsilon
                     ),
                     "certificate_repair_lambda": cell.capt_repair.mixing_weight,
+                    "context_r_pooling_weight": cell.context_r_pooling_weight,
                 }
             )
             completed += 1
@@ -1138,6 +1320,11 @@ def _evaluate_test(
             "shared_ldp": {context: shared_ldp.channel for context in cell_by_context},
             "shared_capt": {context: shared_capt.channel for context in cell_by_context},
         }
+        if any(cell.context_r_pooling_weight > 0 for cell in cells):
+            methods["context_capt_unpooled"] = {
+                context: cell.unpooled_capt_channel
+                for context, cell in cell_by_context.items()
+            }
         for method, channels in methods.items():
             scores = np.empty(len(test_frame), dtype=float)
             expected_loss_sum = 0.0
@@ -1530,6 +1717,7 @@ def _write_report(
         f"- D_cert: {metadata['cert_user_days']:,} one-display-per-user-day contributions; D_test: {metadata['test_rows']:,} displays.",
         f"- LP utility objective: `{metadata['context_utility_objective']}`; hybrid empirical weight: {metadata['hybrid_empirical_weight']:.6g}.",
         f"- Partition/decoder representation mode: `{metadata['context_representation_mode']}`; representation objective: `{metadata['representation_objective']}`.",
+        f"- Context-R pooling: `{metadata['context_r_pooling_method']}` with rho={metadata['context_r_pooling_weight']:.6g}; target `{metadata['context_r_pooling_target']}`.",
         "- Online selector: Z, profile, and public context B only. The protected value A is not an online input.",
         "- `__MISSING__` and unseen sensitive values are coarsened to one `__UNKNOWN__` secret.",
         "- Each design allocates alpha/B to its context certificates, giving a Bonferroni simultaneous level of at least 95% across contexts.",
@@ -1568,6 +1756,16 @@ def _write_report(
                 "",
             ]
         )
+        if metadata["context_r_pooling_weight"] > 0:
+            unpooled_objective = float(
+                aggregate_design.loc[
+                    "context_capt_unpooled", "aggregate_objective_value"
+                ]
+            )
+            lines.insert(
+                len(lines) - 1,
+                f"- Unpooled context CAPT objective: {unpooled_objective:.9g}; pooling change: {capt_objective - unpooled_objective:.9g}.",
+            )
     lines.extend(
         [
             "## Verification and interpretation",
@@ -1590,13 +1788,26 @@ def _write_report(
             "",
         ]
     )
+    if metadata["context_r_pooling_weight"] > 0:
+        lines.extend(
+            [
+                "The selected context channel is first shrunk as `R_b(rho) = (1-rho) R_b_raw + rho R_shared_raw`, then the strict uniform repair above is applied. Both raw LP endpoints are feasible for every corresponding linear robust-privacy constraint at the configured solver tolerance; the mixture is reverified before the independently verified strict repair.",
+                "",
+                "This is deterministic convex shrinkage, not a jointly optimized hierarchical-penalty LP. The unpooled endpoint is retained in the mechanism artifact and reported as a D_design/D_test ablation.",
+                "",
+            ]
+        )
     if not test_metrics.empty:
         best = test_metrics.sort_values("expected_randomized_log_loss").iloc[0]
         lines.append(
             f"The lowest expected randomized D_test log loss is {best['expected_randomized_log_loss']:.9g} for `{best['design']}/{best['method']}`."
         )
         lines.extend(["", "## D_test comparison", ""])
-        for method in ["context_capt_pre_repair", "context_capt", "context_ldp"]:
+        report_methods = ["context_capt_pre_repair", "context_capt"]
+        if metadata["context_r_pooling_weight"] > 0:
+            report_methods.append("context_capt_unpooled")
+        report_methods.append("context_ldp")
+        for method in report_methods:
             row = test_metrics.loc[test_metrics["method"] == method].iloc[0]
             lines.append(
                 f"- `{method}`: log loss {row['expected_randomized_log_loss']:.9g}; "
@@ -1700,6 +1911,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         context_utility_objective=config.get("context_utility_objective"),
         context_representation_mode=config.get("context_representation_mode"),
         hybrid_empirical_weight=config.get("hybrid_empirical_weight"),
+        context_r_pooling_weight=float(config.get("context_r_pooling_weight", 0.0)),
     )
     progress.emit_environment()
     progress.emit("fixed_design_started", **process_memory_bytes())
@@ -2001,7 +2213,9 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "test_evaluation_started",
         test_row_count=len(test_frame),
         design_count=len(designs),
-        method_count=6,
+        method_count=(
+            7 if float(config.get("context_r_pooling_weight", 0.0)) > 0 else 6
+        ),
         **process_memory_bytes(),
     )
     evaluation_started = time.perf_counter()
@@ -2152,6 +2366,17 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "representation_objective": designs[0].representation_objective,
         "representation_token_cost_hash": designs[0].representation_token_cost_hash,
         "hybrid_empirical_weight": config["hybrid_empirical_weight"],
+        "context_r_pooling_method": (
+            "convex_shared_capt_shrinkage"
+            if float(config.get("context_r_pooling_weight", 0.0)) > 0
+            else "none"
+        ),
+        "context_r_pooling_weight": float(config.get("context_r_pooling_weight", 0.0)),
+        "context_r_pooling_target": (
+            "shared_capt_raw"
+            if float(config.get("context_r_pooling_weight", 0.0)) > 0
+            else "none"
+        ),
         "context_count": int(context_frame["public_context"].nunique()),
         "cert_source_rows": len(cert_source),
         "cert_user_days": len(cert_frame),
@@ -2243,6 +2468,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
             "source_git_sha": config["source_git_sha"],
             "context_count": metadata["context_count"],
             "certificate_count": metadata["certificate_count"],
+            "context_r_pooling_weight": metadata["context_r_pooling_weight"],
             "sol_review_bundle": "sol_review_bundle.zip",
         },
     )

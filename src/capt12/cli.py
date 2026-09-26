@@ -78,6 +78,16 @@ def resolve_run_id(
         max=1,
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
+    context_r_pooling_weight: float | None = typer.Option(
+        None,
+        "--context-r-pooling-weight",
+        min=0,
+        max=1,
+        help=(
+            "Convex shrinkage rho for context R: (1-rho)R_context + "
+            "rho R_shared; 0 keeps independent context R and 1 uses the shared target."
+        ),
+    ),
 ) -> None:
     """Predict the deterministic output ID for a config and source commit."""
     try:
@@ -92,6 +102,7 @@ def resolve_run_id(
             "context_utility_objective": utility_objective,
             "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
+            "context_r_pooling_weight": context_r_pooling_weight,
         },
     )
     # Match record_source_provenance() exactly without requiring the requested
@@ -647,6 +658,16 @@ def context_stratified(
         max=1,
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
+    context_r_pooling_weight: float | None = typer.Option(
+        None,
+        "--context-r-pooling-weight",
+        min=0,
+        max=1,
+        help=(
+            "Convex shrinkage rho for context R: (1-rho)R_context + "
+            "rho R_shared; 0 keeps independent context R and 1 uses the shared target."
+        ),
+    ),
 ) -> None:
     """Run one prescribed public-context CAPT condition for one design seed."""
     from capt12.experiments.context_stratified import (
@@ -662,6 +683,7 @@ def context_stratified(
                 "context_utility_objective": utility_objective,
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
+                "context_r_pooling_weight": context_r_pooling_weight,
             },
         )
     )
@@ -727,6 +749,16 @@ def context_seed_stability(
         max=1,
         help="Empirical-label weight for hybrid_logloss_kl.",
     ),
+    context_r_pooling_weight: float | None = typer.Option(
+        None,
+        "--context-r-pooling-weight",
+        min=0,
+        max=1,
+        help=(
+            "Convex shrinkage rho for every context R: (1-rho)R_context + "
+            "rho R_shared; included in the fixed mechanism when fixed mode is used."
+        ),
+    ),
 ) -> None:
     """Run per-seed design sensitivity or one fixed canonical mechanism."""
     from capt12.experiments.context_seed_stability import (
@@ -747,6 +779,7 @@ def context_seed_stability(
             "epsilon": epsilon,
             "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
+            "context_r_pooling_weight": context_r_pooling_weight,
         },
     )
     if mode == "fixed":
@@ -881,6 +914,13 @@ def context_epsilon_grid(
         min=0,
         max=1,
     ),
+    context_r_pooling_weight: float | None = typer.Option(
+        None,
+        "--context-r-pooling-weight",
+        min=0,
+        max=1,
+        help="Fixed convex context-R pooling weight used throughout the epsilon grid.",
+    ),
     output_root: Path = typer.Option(
         Path("outputs/context_epsilon_grids"),
         "--output-root",
@@ -906,6 +946,7 @@ def context_epsilon_grid(
                 "context_utility_objective": utility_objective,
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
+                "context_r_pooling_weight": context_r_pooling_weight,
             },
         ),
         seeds,
@@ -944,6 +985,13 @@ def context_cost_stability(
         min=0,
         max=1,
     ),
+    context_r_pooling_weight: float | None = typer.Option(
+        None,
+        "--context-r-pooling-weight",
+        min=0,
+        max=1,
+        help="Fixed convex context-R pooling weight used for every objective and seed.",
+    ),
     output_root: Path = typer.Option(
         Path("outputs/context_cost_comparisons"),
         "--output-root",
@@ -957,7 +1005,13 @@ def context_cost_stability(
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--frozen-design-seeds") from error
     path = run_context_cost_stability(
-        _load(config, {"epsilon": epsilon}),
+        _load(
+            config,
+            {
+                "epsilon": epsilon,
+                "context_r_pooling_weight": context_r_pooling_weight,
+            },
+        ),
         seeds,
         hybrid_empirical_weight=hybrid_empirical_weight,
         output_root=output_root,

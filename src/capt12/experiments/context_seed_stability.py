@@ -238,6 +238,16 @@ def _read_seed_run(
     degraded_mass = float(contexts.loc[degraded, "design_mass"].sum())
 
     design_manifest = mechanism["designs"][design_name]
+    pooling_weight = float(resolved.get("context_r_pooling_weight", 0.0))
+    if float(metadata.get("context_r_pooling_weight", 0.0)) != pooling_weight:
+        raise RuntimeError(f"seed {seed} context-R pooling metadata is inconsistent")
+    manifest_pooling = design_manifest.get("context_r_pooling", {})
+    if pooling_weight > 0 and (
+        not isinstance(manifest_pooling, dict)
+        or float(manifest_pooling.get("weight", -1.0)) != pooling_weight
+        or manifest_pooling.get("method") != "convex_shared_capt_shrinkage"
+    ):
+        raise RuntimeError(f"seed {seed} context-R pooling manifest is inconsistent")
     row = {
         "frozen_design_seed": seed,
         "run_id": path.name,
@@ -256,6 +266,7 @@ def _read_seed_run(
         "representation_objective": str(design_manifest["representation_objective"]),
         "representation_token_cost_hash": str(design_manifest["representation_token_cost_hash"]),
         "hybrid_empirical_weight": float(resolved["hybrid_empirical_weight"]),
+        "context_r_pooling_weight": pooling_weight,
         "context_constant_distortion": float(constant["aggregate_distortion"]),
         "context_ldp_distortion": float(ldp["aggregate_distortion"]),
         "context_capt_pre_repair_distortion": float(capt_pre["aggregate_distortion"]),
@@ -608,6 +619,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         f"- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon={epsilon:g}; joint weighted k-medoids; L={block_count}.",
         f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
         f"- Partition/decoder representation mode: `{representation_mode}`; representation objective: `{representation_objective}`.",
+        f"- Context-R convex pooling weight rho: {ordered['context_r_pooling_weight'].iloc[0]:.6g} (0 is independent context R; 1 is the shared CAPT target).",
         "- Temporal splits, support/adjacency/privacy definition, utility objective, D_cert, and D_test are fixed. Only `frozen_design_seed` changes the frozen encoder/design realization.",
         "- Runs are sequential to bound local peak memory. A completed run with the exact source SHA and resolved seed config is reused.",
         "",
@@ -770,6 +782,7 @@ def run_context_fixed_mechanism(config: dict[str, Any], seed: int) -> Path:
         design=design_name,
         L=block_count,
         epsilon=epsilon,
+        context_r_pooling_weight=float(base.get("context_r_pooling_weight", 0.0)),
     )
     path, expected_config = _run_or_reuse_context_seed(
         base,
@@ -906,6 +919,7 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
             for row in seed_results.itertuples()
         },
         "hybrid_empirical_weight": base["hybrid_empirical_weight"],
+        "context_r_pooling_weight": float(base.get("context_r_pooling_weight", 0.0)),
         "seed_count": len(seeds),
         "run_ids": {str(seed): path.name for seed, path in sorted(seed_paths.items())},
         "all_certificates_valid": bool(seed_results["all_certificates_valid"].all()),

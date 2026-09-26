@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -318,6 +319,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "context_utility_objective",
             "context_representation_mode",
             "hybrid_empirical_weight",
+            "context_r_pooling_weight",
             "alpha_audit",
             "audit_seed",
         )
@@ -345,6 +347,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
                 "context_representation_mode must be teacher_kl_fixed or objective_aligned"
             )
         cfg["context_representation_mode"] = representation_mode
+        if "context_r_pooling_weight" in cfg:
+            pooling_weight = float(cfg["context_r_pooling_weight"])
+            if not math.isfinite(pooling_weight) or not 0 <= pooling_weight <= 1:
+                raise ValueError("context_r_pooling_weight must be finite and in [0, 1]")
+            cfg["context_r_pooling_weight"] = pooling_weight
         alpha_audit = float(cfg.get("alpha_audit", cfg.get("alpha_cert", 0.05)))
         if not 0 < alpha_audit < 1:
             raise ValueError("alpha_audit must be in (0, 1)")

@@ -128,6 +128,7 @@ def test_fixed_mechanism_test_seeds_write_and_reuse_evaluation(
         "data_root": "unused",
         "splits": {"D_test": [1]},
         "epsilon": 1.0,
+        "context_r_pooling_weight": 0.25,
     }
     arrays = {
         "contexts": np.asarray(["a"]),
@@ -174,6 +175,8 @@ def test_fixed_mechanism_test_seeds_write_and_reuse_evaluation(
     assert len(metrics) == 4
     assert metrics["test_seed"].tolist() == [0, 0, 1, 1]
     assert (output / "context_fixed_test_seed_report.md").is_file()
+    metadata = json.loads((output / "context_fixed_test_seed_metadata.json").read_text())
+    assert metadata["context_r_pooling_weight"] == 0.25
 
     monkeypatch.setattr(
         fixed_test_seeds,

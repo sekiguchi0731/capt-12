@@ -146,6 +146,8 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
             "empirical_logloss",
             "--representation-mode",
             "objective_aligned",
+            "--context-r-pooling-weight",
+            "0.25",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -154,6 +156,7 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
     assert captured["context_designs"] == ["joint_kmedoids_cost_medoid_L16"]
     assert captured["context_utility_objective"] == "empirical_logloss"
     assert captured["context_representation_mode"] == "objective_aligned"
+    assert captured["context_r_pooling_weight"] == 0.25
 
 
 def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
@@ -186,6 +189,8 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "0.75",
             "--representation-mode",
             "objective_aligned",
+            "--context-r-pooling-weight",
+            "0.5",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -194,6 +199,7 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
     assert captured["config"]["context_utility_objective"] == "hybrid_logloss_kl"
     assert captured["config"]["hybrid_empirical_weight"] == 0.75
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert captured["config"]["context_r_pooling_weight"] == 0.5
     assert '"mechanism_seed_mode": "per-seed"' in result.output
     assert "sol_seed_stability_review_bundle.zip" in result.output
 
@@ -226,6 +232,8 @@ def test_context_seed_stability_cli_runs_one_fixed_mechanism(monkeypatch, tmp_pa
             "teacher_kl",
             "--representation-mode",
             "objective_aligned",
+            "--context-r-pooling-weight",
+            "0.4",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -234,6 +242,7 @@ def test_context_seed_stability_cli_runs_one_fixed_mechanism(monkeypatch, tmp_pa
     assert captured["config"]["context_designs"] == ["joint_kmedoids_cost_medoid_L32"]
     assert captured["config"]["context_utility_objective"] == "teacher_kl"
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert captured["config"]["context_r_pooling_weight"] == 0.4
     assert '"mechanism_seed_mode": "fixed"' in result.output
     assert '"fixed_mechanism_seed": 7' in result.output
     assert "sol_review_bundle.zip" in result.output
@@ -403,6 +412,8 @@ def test_context_epsilon_grid_cli_sorts_budgets_and_seeds(monkeypatch, tmp_path)
             "empirical_logloss",
             "--representation-mode",
             "objective_aligned",
+            "--context-r-pooling-weight",
+            "0.25",
             "--output-root",
             str(tmp_path / "grid-root"),
         ],
@@ -412,6 +423,7 @@ def test_context_epsilon_grid_cli_sorts_budgets_and_seeds(monkeypatch, tmp_path)
     assert captured["seeds"] == [0, 2, 4]
     assert captured["config"]["context_utility_objective"] == "empirical_logloss"
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
+    assert captured["config"]["context_r_pooling_weight"] == 0.25
     assert captured["output_root"] == tmp_path / "grid-root"
     assert "sol_context_epsilon_grid_bundle.zip" in result.output
 
@@ -452,6 +464,27 @@ def test_resolve_run_id_changes_with_frozen_design_seed(monkeypatch) -> None:
     assert payloads[0]["run_id"] != payloads[1]["run_id"]
 
 
+def test_resolve_run_id_changes_with_context_r_pooling(monkeypatch) -> None:
+    monkeypatch.setattr("capt12.cli._resolve_git_commit", lambda revision: "c" * 40)
+    runner = CliRunner()
+    payloads = []
+    for weight in (0.25, 0.5):
+        result = runner.invoke(
+            app,
+            [
+                "resolve-run-id",
+                "HEAD",
+                "--config",
+                "configs/criteo_context_stratified.yaml",
+                "--context-r-pooling-weight",
+                str(weight),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payloads.append(json.loads(result.output))
+    assert payloads[0]["run_id"] != payloads[1]["run_id"]
+
+
 def test_context_utility_objective_validation() -> None:
     base = load_config("configs/criteo_context_stratified.yaml")
     assert base["context_utility_objective"] == "teacher_kl"
@@ -462,6 +495,19 @@ def test_context_utility_objective_validation() -> None:
         validate_config({**base, "hybrid_empirical_weight": 1.1})
     with pytest.raises(ValueError, match="context_representation_mode"):
         validate_config({**base, "context_representation_mode": "test_selected"})
+
+
+def test_context_r_pooling_weight_validation() -> None:
+    base = load_config("configs/criteo_context_stratified.yaml")
+    assert validate_config({**base, "context_r_pooling_weight": 0})[
+        "context_r_pooling_weight"
+    ] == 0.0
+    assert validate_config({**base, "context_r_pooling_weight": 1})[
+        "context_r_pooling_weight"
+    ] == 1.0
+    for invalid in (-0.01, 1.01, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="context_r_pooling_weight"):
+            validate_config({**base, "context_r_pooling_weight": invalid})
 
 
 def test_splits_reject_day_and_row_overlap() -> None:

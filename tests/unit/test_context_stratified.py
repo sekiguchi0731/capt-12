@@ -206,9 +206,95 @@ def test_context_solver_emits_context_and_shared_progress(tmp_path, epsilon: flo
     assert all(cell.capt_verification.realized_epsilon <= epsilon for cell in cells)
     assert all(cell.capt_repair.conservative_verification.valid for cell in cells)
     assert all(cell.capt_repair.mixing_weight > 0 for cell in cells)
+    assert all(cell.context_r_pooling_weight == 0 for cell in cells)
+    assert all(
+        np.array_equal(cell.capt_solution.channel, cell.unpooled_capt_channel)
+        for cell in cells
+    )
     log = (tmp_path / "progress.log").read_text()
     assert log.count("[context_started]") == 2
     assert "[cutting_plane_iteration_started]" in log
     assert "[support_checkpoint_written]" in log
     assert "[shared_capt_finished]" in log
     assert len(list((tmp_path / "checkpoints" / "tiny").glob("*.npz"))) == 3
+
+
+def test_context_solver_applies_certified_convex_r_pooling(tmp_path) -> None:
+    cost = np.array([[0.0, 1.0], [1.0, 0.0]])
+    weights = np.array([0.5, 0.5])
+    design = UtilityDesign(
+        name="tiny-pooled",
+        label="Tiny pooled",
+        partition_method="singleton",
+        decoder_method="identity",
+        assignment=np.array([0, 1]),
+        decoder=np.eye(2),
+        block_cost=cost,
+        block_weights=weights,
+        diagnostic=utility_informativeness(cost, weights),
+    )
+    objectives = [
+        ContextObjective("morning", 0.7, weights, cost, weights),
+        ContextObjective(
+            "evening",
+            0.3,
+            weights,
+            np.array([[0.0, 0.25], [2.0, 0.0]]),
+            weights,
+        ),
+    ]
+    groups = [
+        Group("secret", (value,), context)
+        for context in ("morning", "evening")
+        for value in ("a", "b")
+    ]
+    counts = {
+        group.key(): (
+            np.array([90, 10])
+            if group.values == ("a",)
+            else np.array([15, 85])
+        )
+        for group in groups
+    }
+    progress = ProgressLogger(tmp_path, name="tiny-pooled-context")
+    pooling_weight = 0.25
+
+    cells, _, shared_capt, _ = _solve_design(
+        design,
+        objectives,
+        groups,
+        counts,
+        {
+            "epsilon": 1.0,
+            "alpha_cert": 0.05,
+            "confidence": "cp_box",
+            "missing_group_policy": "full_simplex",
+            "min_group_count": 20,
+            "solver_tolerance": 1e-8,
+            "max_cutting_plane_iterations": 10,
+            "solver_heartbeat_seconds": 1,
+            "robust_cut_formulation": "shared_support_bounds",
+            "context_r_pooling_weight": pooling_weight,
+        },
+        progress,
+    )
+
+    for cell in cells:
+        np.testing.assert_allclose(
+            cell.raw_capt_channel,
+            (1 - pooling_weight) * cell.unpooled_raw_capt_channel
+            + pooling_weight * shared_capt.channel,
+            atol=1e-14,
+            rtol=0,
+        )
+        assert cell.context_r_pooling_weight == pooling_weight
+        assert cell.context_r_pooling_target == "shared_capt_raw"
+        assert cell.capt_verification.valid
+        assert cell.capt_repair.conservative_verification.valid
+        assert cell.capt_repair.conservative_verification.realized_epsilon <= 1.0
+        np.testing.assert_allclose(cell.capt_solution.channel.sum(axis=1), 1.0)
+
+    log = (tmp_path / "progress.log").read_text()
+    assert "[context_r_pooling_started]" in log
+    assert log.count("[context_r_pooling_context_finished]") == 2
+    assert "[context_r_pooling_finished]" in log
