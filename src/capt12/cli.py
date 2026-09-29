@@ -193,6 +193,29 @@ def train_ref_model(
     _stage_command(config, max_rows, "train-ref-model")
 
 
+@app.command("reference-benchmark")
+def reference_benchmark(
+    config: Path = typer.Option(..., "--config", exists=True),
+    output: Path = typer.Option(
+        Path("outputs/reference_benchmarks/nonprivate_k64.json"),
+        "--output",
+    ),
+    max_rows_per_day: int | None = typer.Option(None, "--max-rows-per-day", min=1),
+) -> None:
+    """Evaluate the frozen, unsanitized K-token f_ref on temporal D_test."""
+    from capt12.experiments.reference_benchmark import (
+        benchmark_nonprivate_reference,
+        write_reference_benchmark,
+    )
+
+    result = benchmark_nonprivate_reference(
+        _load(config),
+        max_rows_per_day=max_rows_per_day,
+    )
+    written = write_reference_benchmark(result, output)
+    typer.echo(json.dumps({**result, "output": str(written)}, indent=2, sort_keys=True))
+
+
 @app.command("build-encoder")
 def build_encoder(
     config: Path = typer.Option(..., "--config", exists=True),
