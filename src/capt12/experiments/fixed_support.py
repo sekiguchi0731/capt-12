@@ -232,6 +232,9 @@ def _fixed_design(
         seed=int(config.get("frozen_design_seed", config.get("seed", 0))),
         sensitive_policy=config.get("phi_sensitive_policy", "exclude"),
         column=config.get("precomputed_token_col", "token"),
+        max_categories=int(config.get("encoder_max_categories", 256)),
+        alpha=float(config.get("encoder_sgd_alpha", 1e-6)),
+        epochs=int(config.get("encoder_sgd_epochs", 30)),
     )
     encoder.fit(
         model_frame,

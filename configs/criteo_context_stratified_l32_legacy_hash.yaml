@@ -1,0 +1,8 @@
+base_config: criteo_context_stratified_l32.yaml
+output_dir: outputs/context_stratified_l32_legacy_hash_runs
+phi: hash
+phi_source_cols:
+  - campaign_id
+  - publisher_id
+  - display_order
+  - features_ctx_not_constrained_0

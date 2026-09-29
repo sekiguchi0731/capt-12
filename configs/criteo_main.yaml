@@ -15,7 +15,70 @@ profiles:
   - features_kv_bits_constrained_3
   - features_kv_bits_constrained_2+features_kv_bits_constrained_3
 context_cols: [features_ctx_not_constrained_0]
-phi_source_cols: [campaign_id, publisher_id, display_order, features_ctx_not_constrained_0]
+# CriteoPrivateAd stores categorical values as hashed integers and continuous
+# values after monotone transforms.  Learn a sparse CTR score on every scalar,
+# inference-available field except the declared protected attributes, then
+# quantize the frozen score into K equiprobable tokens.  Lists are excluded
+# because the released local schema needs a separate multi-value vocabulary.
+phi_source_cols:
+  - campaign_id
+  - publisher_id
+  - display_order
+  - features_kv_bits_constrained_0
+  - features_kv_bits_constrained_1
+  - features_kv_bits_constrained_4
+  - features_kv_bits_constrained_5
+  - features_kv_bits_constrained_6
+  - features_kv_bits_constrained_7
+  - features_kv_bits_constrained_8
+  - features_kv_bits_constrained_9
+  - features_kv_bits_constrained_10
+  - features_kv_bits_constrained_11
+  - features_kv_bits_constrained_12
+  - features_kv_bits_constrained_13
+  - features_kv_bits_constrained_14
+  - features_kv_bits_constrained_15
+  - features_kv_bits_constrained_16
+  - features_kv_bits_constrained_17
+  - features_kv_bits_constrained_18
+  - features_kv_bits_constrained_19
+  - features_kv_bits_constrained_20
+  - features_kv_bits_constrained_21
+  - features_kv_bits_constrained_22
+  - features_kv_bits_constrained_23
+  - features_kv_bits_constrained_24
+  - features_kv_bits_constrained_25
+  - features_kv_bits_constrained_26
+  - features_kv_bits_constrained_27
+  - features_kv_bits_constrained_28
+  - features_kv_bits_constrained_29
+  - features_kv_bits_constrained_30
+  - features_kv_not_constrained_1
+  - features_kv_not_constrained_2
+  - features_kv_not_constrained_3
+  - features_kv_not_constrained_4
+  - features_kv_not_constrained_5
+  - features_kv_not_constrained_6
+  - features_kv_not_constrained_7
+  - features_kv_not_constrained_8
+  - features_browser_bits_constrained_0
+  - features_browser_bits_constrained_1
+  - features_browser_bits_constrained_2
+  - features_browser_bits_constrained_3
+  - features_browser_bits_constrained_4
+  - features_browser_bits_constrained_5
+  - features_browser_bits_constrained_6
+  - features_browser_bits_constrained_7
+  - features_browser_bits_constrained_8
+  - features_browser_bits_constrained_9
+  - features_browser_bits_constrained_10
+  - features_ctx_not_constrained_0
+  - features_ctx_not_constrained_1
+  - features_ctx_not_constrained_3
+  - features_ctx_not_constrained_4
+  - features_ctx_not_constrained_5
+  - features_ctx_not_constrained_6
+  - features_ctx_not_constrained_7
 splits:
   D_model: [1, 2, 3, 4, 5, 6]
   D_design: [7, 8, 9, 10, 11, 12]
@@ -23,8 +86,11 @@ splits:
   D_attack_train: [19, 20, 21, 22, 23, 24]
   D_test: [25, 26, 27, 28, 29, 30]
 fixed_model: ctr_model
-phi: hash
+phi: ctr_logistic_quantile
 phi_sensitive_policy: exclude
+encoder_max_categories: 256
+encoder_sgd_alpha: 1.0e-6
+encoder_sgd_epochs: 30
 K: 64
 L: 16
 epsilon: 1.0
