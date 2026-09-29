@@ -29,12 +29,26 @@ For local CriteoPrivateAd shards:
 ```bash
 uv run capt12 inspect-data --data-root data/CriteoPrivateAd_release/data
 uv run capt12 smoke --config configs/criteo_main.yaml --max-rows 5000
+uv run capt12 reference-benchmark \
+  --config configs/criteo_context_stratified_l32.yaml \
+  --output outputs/reference_benchmarks/ctr_logistic_quantile_k64_dtest.json
 ```
 
 `configs/criteo_main.yaml` names anonymized columns as *candidate protected
 attributes* or *sensitive proxy attributes*. It never assigns real-world
 semantics such as age or region to them. Five temporal splits are disjoint:
 model fit, design, certification, attack training, and final testing.
+
+The Criteo default encoder is supervised but frozen: it fits a sparse logistic
+CTR score only on `D_model`, using inference-available scalar fields while
+excluding the declared protected columns, outcomes, delayed outcomes,
+unavailable features, row/user IDs, and list-valued fields. Integer/string fields are
+nominal one-hot inputs and floating-point fields are imputed and standardized.
+The score is quantized at `D_model` quantiles into `K` tokens; the categorical
+token plus public context is then calibrated by the ordinary `f_ref`. The
+`reference-benchmark` command evaluates this unsanitized K-token predictor on
+the untouched temporal `D_test`. The previous four-column whole-row hash is
+available as `configs/criteo_context_stratified_l32_legacy_hash.yaml`.
 
 ## Guarantees and bounds
 

@@ -86,9 +86,12 @@ results, and model artifacts are ignored by Git. Source manifests under
 - `is_clicked` is the default CTR utility label.
 - `features_kv_bits_constrained_2` and `_3` are anonymous sensitive proxies;
   `features_ctx_not_constrained_0` is an anonymous visible-context candidate.
-- A hash encoder is the Criteo default because no precomputed 12-bit token was
-  found. It is fitted/frozen on the configured source columns and never treated
-  as the research novelty.
+- No precomputed 12-bit token was found. The Criteo default therefore learns a
+  sparse logistic CTR score on `D_model`, freezes its preprocessing/model, and
+  quantizes the score at `D_model` quantiles into `K` nominal tokens. The
+  declared protected attributes, outcomes, unavailable fields, row/user IDs,
+  and list-valued fields are excluded. The earlier four-column whole-row hash
+  remains available through the explicit legacy-hash config.
 - DP-aware confidence remains experimental; certified main results use
   non-DP `cp_box`.
 - Current Criteo smoke rows that trigger incomplete/rare support use a
@@ -104,7 +107,7 @@ uv run capt12 fixed-support-scaling \
   --config configs/criteo_fixed_support_scaling.yaml
 ```
 
-This command freezes the `features_kv_bits_constrained_2` mapper, hash encoder,
+This command freezes the `features_kv_bits_constrained_2` mapper, score encoder,
 reference model, partition, decoder, common-cover distribution, utility cost,
 objective weights, support sets, and adjacency hashes from the complete
 `D_model` and `D_design` splits. It then selects one display per user-day by a
