@@ -318,11 +318,19 @@ shares each group/output support bound across all adjacent pairs and writes a
 fingerprinted witness checkpoint after every cutting-plane iteration. Repeating
 the same command after an interruption resumes those cuts; a checkpoint from a
 different cost, confidence set, adjacency family, or tolerance is rejected.
-If HiGHS dual simplex returns numerical status 4/Unknown, the identical LP is
-retried once with HiGHS IPM at the same feasibility tolerance. A retry result
-is never accepted without the usual support-oracle and independent certificate
+Before every HiGHS call, nonzero inequality rows whose largest coefficient is
+below one are scaled upward to unit magnitude; rows are never scaled downward,
+so the effective original-space feasibility tolerance is not weakened. If the
+usual HiGHS and strict IPM paths return a time or numerical status, the same
+scaled LP is retried with crossover enabled and finally with explicit primal
+simplex. Presolve choices may change between paths, but the objective,
+constraints, bounds, and feasibility/optimality tolerances do not. Every
+solver-reported optimum is recomputed against the original unscaled LP before
+and after channel cleanup, and is rejected if any equality, inequality, or
+bound residual exceeds the configured tolerance. A retry result is never
+accepted without the usual support-oracle and independent certificate
 verification stages.
-If both algorithms reject the auxiliary-variable shared-support master, CAPT
+If all solver paths reject the auxiliary-variable shared-support master, CAPT
 automatically retries the same robust feasible set with the direct
 paired-witness cutting-plane formulation. This removes the ill-conditioned
 support-bound auxiliary variables without changing the objective, privacy

@@ -6,6 +6,7 @@ import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -36,6 +37,100 @@ def _sparse_memory_bytes(matrix: sparse.spmatrix | None) -> int:
         return 0
     csr = matrix.tocsr()
     return int(csr.data.nbytes + csr.indices.nbytes + csr.indptr.nbytes)
+
+
+def _scale_small_inequality_rows(
+    matrix: sparse.spmatrix | None,
+    bounds: np.ndarray | None,
+) -> tuple[sparse.csr_matrix | None, np.ndarray | None, np.ndarray]:
+    """Scale small nonzero inequality rows without weakening solver feasibility.
+
+    HiGHS applies an absolute feasibility tolerance.  A privacy row whose
+    largest coefficient is much smaller than one can therefore be treated as
+    satisfied even when its unscaled violation is scientifically meaningful.
+    Multiplying such a row and its bound by a positive factor preserves the
+    exact feasible half-space while making the solver's absolute tolerance
+    stricter in the original units.  Rows already containing a coefficient of
+    magnitude at least one are deliberately left unchanged: scaling those
+    down would relax the effective original-space tolerance.
+    """
+    if matrix is None:
+        return None, bounds, np.empty(0, dtype=float)
+    csr = matrix.tocsr(copy=True)
+    if bounds is None or np.asarray(bounds).shape != (csr.shape[0],):
+        raise ValueError("inequality bounds must match the inequality matrix")
+    if csr.shape[0] == 0:
+        return csr, np.asarray(bounds, dtype=float), np.empty(0, dtype=float)
+    row_max = np.asarray(abs(csr).max(axis=1).toarray(), dtype=float).reshape(-1)
+    factors = np.ones(csr.shape[0], dtype=float)
+    small = (row_max > 0) & (row_max < 1.0)
+    factors[small] = 1.0 / row_max[small]
+    if np.any(small):
+        csr = sparse.diags(factors, format="csr") @ csr
+    return csr, np.asarray(bounds, dtype=float) * factors, factors
+
+
+def _primal_candidate_check(
+    result: Any,
+    *,
+    a_eq: sparse.csr_matrix,
+    b_eq: np.ndarray,
+    a_ub: sparse.csr_matrix | None,
+    b_ub: np.ndarray | None,
+    variable_count: int,
+    tolerance: float,
+) -> dict[str, Any]:
+    """Independently recompute primal feasibility in the original LP units."""
+    vector = getattr(result, "x", None)
+    if vector is None:
+        return {
+            "accepted": False,
+            "reason": "missing_primal_vector",
+            "equality_gap": math.inf,
+            "inequality_gap": math.inf,
+            "lower_bound_gap": math.inf,
+            "upper_bound_gap": math.inf,
+            "max_primal_gap": math.inf,
+        }
+    candidate = np.asarray(vector, dtype=float)
+    if candidate.shape != (variable_count,) or not np.all(np.isfinite(candidate)):
+        return {
+            "accepted": False,
+            "reason": "invalid_primal_vector",
+            "equality_gap": math.inf,
+            "inequality_gap": math.inf,
+            "lower_bound_gap": math.inf,
+            "upper_bound_gap": math.inf,
+            "max_primal_gap": math.inf,
+        }
+    equality_gap = float(np.max(np.abs(a_eq @ candidate - b_eq)))
+    inequality_gap = (
+        float(max(0.0, np.max(a_ub @ candidate - b_ub)))
+        if a_ub is not None and b_ub is not None and a_ub.shape[0]
+        else 0.0
+    )
+    lower_bound_gap = float(max(0.0, -np.min(candidate)))
+    upper_bound_gap = float(max(0.0, np.max(candidate - 1.0)))
+    max_primal_gap = max(
+        equality_gap,
+        inequality_gap,
+        lower_bound_gap,
+        upper_bound_gap,
+    )
+    solver_success = bool(getattr(result, "success", False))
+    return {
+        "accepted": solver_success and max_primal_gap <= tolerance,
+        "reason": (
+            "accepted"
+            if solver_success and max_primal_gap <= tolerance
+            else ("solver_status" if not solver_success else "independent_primal_check")
+        ),
+        "equality_gap": equality_gap,
+        "inequality_gap": inequality_gap,
+        "lower_bound_gap": lower_bound_gap,
+        "upper_bound_gap": upper_bound_gap,
+        "max_primal_gap": max_primal_gap,
+    }
 
 
 @dataclass
@@ -214,12 +309,17 @@ def _solve_channel_lp(
         matrices.append(compiled)
     if rows:
         matrices.append(sparse.vstack(rows, format="csr"))
-    a_ub = sparse.vstack(matrices, format="csr") if matrices else None
-    inequality_count = int(a_ub.shape[0]) if a_ub is not None else 0
-    b_ub = np.zeros(inequality_count) if a_ub is not None else None
-    options: dict[str, float] = {
+    original_a_ub = sparse.vstack(matrices, format="csr") if matrices else None
+    inequality_count = int(original_a_ub.shape[0]) if original_a_ub is not None else 0
+    original_b_ub = np.zeros(inequality_count) if original_a_ub is not None else None
+    a_ub, b_ub, inequality_row_scale = _scale_small_inequality_rows(
+        original_a_ub,
+        original_b_ub,
+    )
+    options: dict[str, float | bool | str | int] = {
         "dual_feasibility_tolerance": tolerance,
         "primal_feasibility_tolerance": tolerance,
+        "ipm_optimality_tolerance": max(1e-12, min(tolerance, 1e-8)),
         "small_matrix_value": small_matrix_value,
     }
     if time_limit is not None:
@@ -232,6 +332,7 @@ def _solve_channel_lp(
         + (b_ub.nbytes if b_ub is not None else 0)
         + _sparse_memory_bytes(a_eq)
         + _sparse_memory_bytes(a_ub)
+        + _sparse_memory_bytes(original_a_ub)
     )
     _emit_progress(
         progress,
@@ -247,6 +348,11 @@ def _solve_channel_lp(
         total_constraint_count=n + inequality_count,
         matrix_nonzero_count=(int(a_eq.nnz) + (int(a_ub.nnz) if a_ub is not None else 0)),
         matrix_memory_bytes=matrix_memory_bytes,
+        inequality_row_scaling="upscale_only_max_abs_to_one",
+        scaled_inequality_row_count=int(np.sum(inequality_row_scale > 1.0)),
+        max_inequality_row_scale=(
+            float(np.max(inequality_row_scale)) if inequality_row_scale.size else 1.0
+        ),
         objective_scale=objective_scale,
         raw_objective_min=float(np.min(raw_objective)),
         raw_objective_max=float(np.max(raw_objective)),
@@ -309,9 +415,17 @@ def _solve_channel_lp(
                 message="Unrecognized options detected:.*run_crossover",
                 category=OptimizeWarning,
             )
+            warnings.filterwarnings(
+                "ignore",
+                message="Unrecognized options detected:.*simplex_strategy",
+                category=OptimizeWarning,
+            )
             equality_matrix = a_eq.tocsr()
 
-            def solve_once(method: str, method_options: dict[str, float | bool]):
+            def solve_once(
+                method: str,
+                method_options: dict[str, float | bool | str | int],
+            ):
                 return linprog(
                     objective,
                     A_ub=a_ub,
@@ -323,8 +437,77 @@ def _solve_channel_lp(
                     options=method_options,
                 )
 
+            def verify_candidate(method_label: str, candidate: Any) -> dict[str, Any]:
+                raw_check = _primal_candidate_check(
+                    candidate,
+                    a_eq=equality_matrix,
+                    b_eq=b_eq,
+                    a_ub=original_a_ub,
+                    b_ub=original_b_ub,
+                    variable_count=variable_count,
+                    tolerance=tolerance,
+                )
+                check = raw_check
+                if raw_check["accepted"]:
+                    released_vector = np.asarray(candidate.x, dtype=float).copy()
+                    released_channel = np.clip(
+                        released_vector[:channel_variable_count].reshape(n, n),
+                        0.0,
+                        1.0,
+                    )
+                    cleanup_threshold = max(
+                        tolerance * 1e-3,
+                        np.finfo(float).eps * 100,
+                    )
+                    released_channel[
+                        :,
+                        np.max(released_channel, axis=0) <= cleanup_threshold,
+                    ] = 0.0
+                    row_sums = released_channel.sum(axis=1, keepdims=True)
+                    if np.any(row_sums <= 0):
+                        check = {
+                            **raw_check,
+                            "accepted": False,
+                            "reason": "postprocess_zero_row",
+                        }
+                    else:
+                        released_channel /= row_sums
+                        released_vector[:channel_variable_count] = released_channel.reshape(-1)
+                        check = _primal_candidate_check(
+                            SimpleNamespace(x=released_vector, success=True),
+                            a_eq=equality_matrix,
+                            b_eq=b_eq,
+                            a_ub=original_a_ub,
+                            b_ub=original_b_ub,
+                            variable_count=variable_count,
+                            tolerance=tolerance,
+                        )
+                        if not check["accepted"]:
+                            check["reason"] = "postprocess_primal_check"
+                check["raw_max_primal_gap"] = raw_check["max_primal_gap"]
+                _emit_progress(
+                    progress,
+                    "lp_candidate_verification_finished",
+                    label=progress_label,
+                    solver_method=method_label,
+                    solver_reported_success=bool(getattr(candidate, "success", False)),
+                    accepted=check["accepted"],
+                    reason=check["reason"],
+                    equality_gap=check["equality_gap"],
+                    inequality_gap=check["inequality_gap"],
+                    lower_bound_gap=check["lower_bound_gap"],
+                    upper_bound_gap=check["upper_bound_gap"],
+                    max_primal_gap=check["max_primal_gap"],
+                    raw_max_primal_gap=check["raw_max_primal_gap"],
+                    verification_tolerance=tolerance,
+                    verification_matrix="original_unscaled_constraints",
+                    **process_memory_bytes(),
+                )
+                return check
+
             result = solve_once("highs", options)
             attempts = [("highs", result)]
+            candidate_check = verify_candidate("highs", result)
             # Dual simplex can spend hours pivoting on a degenerate robust
             # master even though the IPM solves the same mathematical LP much
             # faster. With an explicit per-attempt time limit, status 1 is not
@@ -359,6 +542,7 @@ def _solve_channel_lp(
                 )
                 result = solve_once("highs-ipm", no_crossover_options)
                 attempts.append(("highs-ipm-no-crossover", result))
+                candidate_check = verify_candidate("highs-ipm-no-crossover", result)
                 _emit_progress(
                     progress,
                     "lp_solver_retry_finished",
@@ -366,7 +550,8 @@ def _solve_channel_lp(
                     retry_method="highs-ipm",
                     retry_strategy="without_crossover",
                     retry_attempt=2,
-                    success=bool(result.success),
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
                     scipy_status=int(result.status),
                     message=str(result.message),
                     iterations=getattr(result, "nit", None),
@@ -407,13 +592,15 @@ def _solve_channel_lp(
                 )
                 result = solve_once("highs-ipm", options)
                 attempts.append(("highs-ipm", result))
+                candidate_check = verify_candidate("highs-ipm", result)
                 _emit_progress(
                     progress,
                     "lp_solver_retry_finished",
                     label=progress_label,
                     retry_method="highs-ipm",
                     retry_attempt=2,
-                    success=bool(result.success),
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
                     scipy_status=int(result.status),
                     message=str(result.message),
                     iterations=getattr(result, "nit", None),
@@ -459,6 +646,7 @@ def _solve_channel_lp(
                 )
                 result = solve_once("highs-ipm", no_crossover_options)
                 attempts.append(("highs-ipm-no-crossover", result))
+                candidate_check = verify_candidate("highs-ipm-no-crossover", result)
                 _emit_progress(
                     progress,
                     "lp_solver_retry_finished",
@@ -466,7 +654,8 @@ def _solve_channel_lp(
                     retry_method="highs-ipm",
                     retry_strategy="without_crossover",
                     retry_attempt=3,
-                    success=bool(result.success),
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
                     scipy_status=int(result.status),
                     message=str(result.message),
                     iterations=getattr(result, "nit", None),
@@ -520,6 +709,10 @@ def _solve_channel_lp(
                 )
                 result = solve_once("highs-ipm", no_presolve_options)
                 attempts.append(("highs-ipm-no-crossover-no-presolve", result))
+                candidate_check = verify_candidate(
+                    "highs-ipm-no-crossover-no-presolve",
+                    result,
+                )
                 _emit_progress(
                     progress,
                     "lp_solver_retry_finished",
@@ -527,7 +720,8 @@ def _solve_channel_lp(
                     retry_method="highs-ipm",
                     retry_strategy="without_crossover_or_presolve",
                     retry_attempt=retry_attempt,
-                    success=bool(result.success),
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
                     scipy_status=int(result.status),
                     message=str(result.message),
                     iterations=getattr(result, "nit", None),
@@ -537,6 +731,134 @@ def _solve_channel_lp(
                     privacy_constraint_tolerance_changed=False,
                     optimality_tolerance_changed=False,
                     presolve_changed=True,
+                    presolve=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+            # A no-crossover IPM interior point can be accurate but still fail
+            # to produce a valid basis on a degenerate master.  Before changing
+            # algorithms, try the same scaled LP with crossover explicitly on
+            # and presolve off.  This is a solver-path change only: constraints,
+            # bounds, and every feasibility/optimality tolerance are identical.
+            if not candidate_check["accepted"]:
+                crossover_options = {
+                    **options,
+                    "run_crossover": "on",
+                    "presolve": False,
+                }
+                retry_attempt = len(attempts) + 1
+                failed_method = attempts[-1][0]
+                solver_state.update(method="highs-ipm", attempt=retry_attempt)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="strict_candidate_unavailable",
+                    failed_method=failed_method,
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ipm",
+                    retry_strategy="with_crossover_without_presolve",
+                    retry_attempt=retry_attempt,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    ipm_optimality_tolerance=float(options["ipm_optimality_tolerance"]),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    presolve=False,
+                    run_crossover="on",
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ipm", crossover_options)
+                attempts.append(("highs-ipm-crossover-no-presolve", result))
+                candidate_check = verify_candidate(
+                    "highs-ipm-crossover-no-presolve",
+                    result,
+                )
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ipm",
+                    retry_strategy="with_crossover_without_presolve",
+                    retry_attempt=retry_attempt,
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    crossover_iterations=getattr(result, "crossover_nit", None),
+                    max_primal_gap=candidate_check["max_primal_gap"],
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    ipm_optimality_tolerance=float(options["ipm_optimality_tolerance"]),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    presolve=False,
+                    run_crossover="on",
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+            # HiGHS normally uses dual simplex.  A final explicit primal-simplex
+            # solve supplies an algorithmically independent route through the
+            # same LP when both IPM/crossover variants are numerically rejected.
+            # SciPy forwards simplex_strategy=4 to HiGHS, where it denotes the
+            # primal strategy.  The candidate is still accepted only by the
+            # original-space check above and the robust verifiers downstream.
+            if not candidate_check["accepted"]:
+                primal_options = {
+                    **options,
+                    "presolve": False,
+                    "simplex_strategy": 4,
+                }
+                retry_attempt = len(attempts) + 1
+                failed_method = attempts[-1][0]
+                solver_state.update(method="highs-primal-simplex", attempt=retry_attempt)
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_started",
+                    label=progress_label,
+                    retry_reason="strict_candidate_unavailable",
+                    failed_method=failed_method,
+                    failed_scipy_status=int(result.status),
+                    failed_message=str(result.message),
+                    retry_method="highs-ds",
+                    retry_strategy="primal_simplex_without_presolve",
+                    retry_attempt=retry_attempt,
+                    simplex_strategy=4,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
+                    presolve=False,
+                    solver_elapsed_seconds=time.perf_counter() - started,
+                    **process_memory_bytes(),
+                )
+                result = solve_once("highs-ds", primal_options)
+                attempts.append(("highs-primal-simplex-no-presolve", result))
+                candidate_check = verify_candidate(
+                    "highs-primal-simplex-no-presolve",
+                    result,
+                )
+                _emit_progress(
+                    progress,
+                    "lp_solver_retry_finished",
+                    label=progress_label,
+                    retry_method="highs-ds",
+                    retry_strategy="primal_simplex_without_presolve",
+                    retry_attempt=retry_attempt,
+                    success=candidate_check["accepted"],
+                    solver_reported_success=bool(result.success),
+                    scipy_status=int(result.status),
+                    message=str(result.message),
+                    iterations=getattr(result, "nit", None),
+                    max_primal_gap=candidate_check["max_primal_gap"],
+                    simplex_strategy=4,
+                    primal_feasibility_tolerance=float(tolerance),
+                    dual_feasibility_tolerance=float(tolerance),
+                    privacy_constraint_tolerance_changed=False,
+                    optimality_tolerance_changed=False,
                     presolve=False,
                     solver_elapsed_seconds=time.perf_counter() - started,
                     **process_memory_bytes(),
@@ -558,6 +880,76 @@ def _solve_channel_lp(
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1.0)
     runtime = time.perf_counter() - started
+    channel: np.ndarray | None = None
+    auxiliary: np.ndarray | None = None
+    postprocess_check: dict[str, Any] | None = None
+    if candidate_check["accepted"]:
+        channel = np.clip(result.x[:channel_variable_count].reshape(n, n), 0.0, 1.0)
+        # A finite-epsilon LDP solution can only leave an output unused in every
+        # row.  HiGHS may return ~1e-13 residue in one row of such a column, which
+        # is feasible under the additive solver tolerance but makes a ratio-based
+        # realized-epsilon diagnostic spuriously infinite.  Remove only columns
+        # that are uniformly below a much smaller cleanup threshold.
+        cleanup_threshold = max(tolerance * 1e-3, np.finfo(float).eps * 100)
+        channel[:, np.max(channel, axis=0) <= cleanup_threshold] = 0.0
+        channel /= channel.sum(axis=1, keepdims=True)
+        validate_channel(channel, max(tolerance * 10, 1e-7))
+        auxiliary = (
+            np.asarray(result.x[channel_variable_count:], dtype=float)
+            if auxiliary_variable_count
+            else None
+        )
+        released_vector = np.asarray(result.x, dtype=float).copy()
+        released_vector[:channel_variable_count] = channel.reshape(-1)
+        postprocess_check = _primal_candidate_check(
+            SimpleNamespace(x=released_vector, success=True),
+            a_eq=a_eq.tocsr(),
+            b_eq=b_eq,
+            a_ub=original_a_ub,
+            b_ub=original_b_ub,
+            variable_count=variable_count,
+            tolerance=tolerance,
+        )
+        _emit_progress(
+            progress,
+            "lp_postprocess_verification_finished",
+            label=progress_label,
+            solver_method=selected_method,
+            accepted=postprocess_check["accepted"],
+            reason=postprocess_check["reason"],
+            equality_gap=postprocess_check["equality_gap"],
+            inequality_gap=postprocess_check["inequality_gap"],
+            lower_bound_gap=postprocess_check["lower_bound_gap"],
+            upper_bound_gap=postprocess_check["upper_bound_gap"],
+            max_primal_gap=postprocess_check["max_primal_gap"],
+            verification_tolerance=tolerance,
+            verification_matrix="original_unscaled_constraints",
+            **process_memory_bytes(),
+        )
+        if not postprocess_check["accepted"]:
+            channel = None
+            auxiliary = None
+    accepted = bool(
+        candidate_check["accepted"]
+        and postprocess_check is not None
+        and postprocess_check["accepted"]
+    )
+    primal_gap = (
+        float(postprocess_check["max_primal_gap"])
+        if postprocess_check is not None
+        else (
+            float(candidate_check["max_primal_gap"])
+            if math.isfinite(candidate_check["max_primal_gap"])
+            else None
+        )
+    )
+    # HiGHS reports an optimal primal/dual pair; scipy does not expose a
+    # standalone LP duality-gap field, so record zero only for a solver-optimal
+    # result that also passes both independent original-space primal checks.
+    dual_gap = 0.0 if accepted else None
+    objective_value = (
+        float(raw_objective @ channel.reshape(-1)) if accepted and channel is not None else None
+    )
     _emit_progress(
         progress,
         "lp_solver_finished",
@@ -566,7 +958,13 @@ def _solve_channel_lp(
         dimension=n,
         variable_count=variable_count,
         total_constraint_count=n + inequality_count,
-        success=bool(result.success),
+        success=accepted,
+        solver_reported_success=bool(result.success),
+        independent_candidate_accepted=candidate_check["accepted"],
+        postprocess_accepted=(
+            postprocess_check["accepted"] if postprocess_check is not None else False
+        ),
+        max_primal_gap=primal_gap,
         solver_method=selected_method,
         solver_attempt_count=len(attempts),
         fallback_used=len(attempts) > 1,
@@ -574,29 +972,15 @@ def _solve_channel_lp(
         message=str(result.message),
         iterations=getattr(result, "nit", None),
         crossover_iterations=getattr(result, "crossover_nit", None),
-        objective_value=(
-            float(raw_objective @ result.x[:channel_variable_count])
-            if result.success
-            else None
-        ),
+        objective_value=objective_value,
         **process_memory_bytes(),
     )
-    primal_gap = None
-    dual_gap = None
-    if result.success:
-        eq_gap = float(np.max(np.abs(a_eq.tocsr() @ result.x - b_eq)))
-        ub_gap = float(max(0.0, np.max(a_ub @ result.x - b_ub))) if a_ub is not None else 0.0
-        primal_gap = max(eq_gap, ub_gap, float(max(0.0, -np.min(result.x))))
-        # HiGHS reports an optimal primal/dual pair; scipy does not expose a
-        # standalone LP duality-gap field, so record zero only on optimal exit.
-        dual_gap = 0.0
+    failure_status = (
+        "verification_failed" if bool(result.success) and not accepted else "solver_failure"
+    )
     info = SolverInfo(
-        status="optimal" if result.success else "solver_failure",
-        objective=(
-            float(raw_objective @ result.x[:channel_variable_count])
-            if result.success
-            else None
-        ),
+        status="optimal" if accepted else failure_status,
+        objective=objective_value,
         runtime_seconds=runtime,
         iterations=getattr(result, "nit", None),
         primal_gap=primal_gap,
@@ -609,23 +993,8 @@ def _solve_channel_lp(
         constraint_count=n + inequality_count,
         estimated_memory_bytes=int(matrix_memory_bytes * 2),
     )
-    if not result.success:
+    if not accepted or channel is None:
         return ChannelSolution(None, info)
-    channel = np.clip(result.x[:channel_variable_count].reshape(n, n), 0.0, 1.0)
-    # A finite-epsilon LDP solution can only leave an output unused in every
-    # row.  HiGHS may return ~1e-13 residue in one row of such a column, which
-    # is feasible under the additive solver tolerance but makes a ratio-based
-    # realized-epsilon diagnostic spuriously infinite.  Remove only columns
-    # that are uniformly below a much smaller cleanup threshold.
-    cleanup_threshold = max(tolerance * 1e-3, np.finfo(float).eps * 100)
-    channel[:, np.max(channel, axis=0) <= cleanup_threshold] = 0.0
-    channel /= channel.sum(axis=1, keepdims=True)
-    validate_channel(channel, max(tolerance * 10, 1e-7))
-    auxiliary = (
-        np.asarray(result.x[channel_variable_count:], dtype=float)
-        if auxiliary_variable_count
-        else None
-    )
     return ChannelSolution(channel, info, auxiliary=auxiliary)
 
 

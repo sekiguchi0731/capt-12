@@ -471,6 +471,172 @@ def test_lp_preserves_probability_constraints_below_highs_default_cutoff() -> No
     assert np.isclose(solution.solver.objective, 0.5)
 
 
+def test_lp_upscales_only_small_inequality_rows_without_changing_halfspaces() -> None:
+    matrix = sparse.csr_matrix(
+        [
+            [5e-10, 0.0, -2.5e-10, 0.0],
+            [2.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    bounds = np.array([1e-10, 0.5, 0.0])
+
+    scaled, scaled_bounds, factors = lp_module._scale_small_inequality_rows(
+        matrix,
+        bounds,
+    )
+
+    assert scaled is not None and scaled_bounds is not None
+    np.testing.assert_allclose(factors, [2e9, 1.0, 1.0])
+    np.testing.assert_allclose(np.max(np.abs(scaled.toarray()), axis=1), [1.0, 2.0, 0.0])
+    probe = np.array([0.2, 0.3, 0.4, 0.1])
+    np.testing.assert_allclose(
+        scaled @ probe - scaled_bounds,
+        factors * (matrix @ probe - bounds),
+    )
+
+
+def test_lp_retries_failed_ipm_with_crossover_on_same_strict_problem(
+    monkeypatch,
+) -> None:
+    real_linprog = lp_module.linprog
+    calls: list[tuple[str, dict, np.ndarray, np.ndarray]] = []
+
+    def fail_three_paths_then_solve(*args, **kwargs):
+        calls.append(
+            (
+                kwargs["method"],
+                dict(kwargs["options"]),
+                kwargs["A_ub"].toarray(),
+                np.asarray(kwargs["b_ub"]).copy(),
+            )
+        )
+        if len(calls) <= 3:
+            return OptimizeResult(
+                success=False,
+                status=1 if len(calls) == 1 else 4,
+                message="synthetic numerical failure",
+                nit=9,
+            )
+        return real_linprog(*args, **kwargs)
+
+    monkeypatch.setattr(lp_module, "linprog", fail_three_paths_then_solve)
+    solution = solve_ldp_block_lp(
+        1 - np.eye(2),
+        np.array([0.4, 0.6]),
+        1.0,
+        tolerance=1e-10,
+        time_limit=0.5,
+    )
+
+    assert solution.channel is not None
+    assert [method for method, *_ in calls] == [
+        "highs",
+        "highs-ipm",
+        "highs-ipm",
+        "highs-ipm",
+    ]
+    assert calls[-1][1]["run_crossover"] == "on"
+    assert calls[-1][1]["presolve"] is False
+    assert calls[-1][1]["primal_feasibility_tolerance"] == 1e-10
+    assert calls[-1][1]["dual_feasibility_tolerance"] == 1e-10
+    assert calls[-1][1]["ipm_optimality_tolerance"] == 1e-10
+    assert calls[-1][1]["time_limit"] == 0.5
+    for _, _, matrix, bounds in calls[1:]:
+        np.testing.assert_array_equal(matrix, calls[0][2])
+        np.testing.assert_array_equal(bounds, calls[0][3])
+    assert solution.solver.status == "optimal"
+    assert "highs-ipm-crossover-no-presolve(status=0)" in solution.solver.message
+
+
+def test_lp_final_retry_uses_primal_simplex_with_strict_tolerances(monkeypatch) -> None:
+    real_linprog = lp_module.linprog
+    calls: list[tuple[str, dict]] = []
+
+    def fail_four_paths_then_solve(*args, **kwargs):
+        calls.append((kwargs["method"], dict(kwargs["options"])))
+        if len(calls) <= 4:
+            return OptimizeResult(
+                success=False,
+                status=1 if len(calls) == 1 else 4,
+                message="synthetic numerical failure",
+                nit=11,
+            )
+        return real_linprog(*args, **kwargs)
+
+    monkeypatch.setattr(lp_module, "linprog", fail_four_paths_then_solve)
+    events: list[tuple[str, dict]] = []
+    solution = solve_ldp_block_lp(
+        1 - np.eye(2),
+        np.array([0.4, 0.6]),
+        1.0,
+        tolerance=1e-10,
+        time_limit=0.5,
+        progress=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    assert solution.channel is not None
+    assert [method for method, _ in calls] == [
+        "highs",
+        "highs-ipm",
+        "highs-ipm",
+        "highs-ipm",
+        "highs-ds",
+    ]
+    primal_options = calls[-1][1]
+    assert primal_options["simplex_strategy"] == 4
+    assert primal_options["presolve"] is False
+    assert primal_options["primal_feasibility_tolerance"] == 1e-10
+    assert primal_options["dual_feasibility_tolerance"] == 1e-10
+    assert primal_options["time_limit"] == 0.5
+    assert solution.solver.status == "optimal"
+    assert "highs-primal-simplex-no-presolve(status=0)" in solution.solver.message
+    finished = next(fields for event, fields in events if event == "lp_solver_finished")
+    assert finished["solver_method"] == "highs-primal-simplex-no-presolve"
+    assert finished["solver_attempt_count"] == 5
+    assert finished["success"] is True
+
+
+def test_lp_rejects_solver_success_that_fails_original_constraint_check(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def false_success(*args, **kwargs):
+        calls.append(kwargs["method"])
+        return OptimizeResult(
+            success=True,
+            status=0,
+            message="synthetic false success",
+            nit=1,
+            crossover_nit=0,
+            x=np.array([1.0, 0.0, 0.0, 1.0]),
+        )
+
+    monkeypatch.setattr(lp_module, "linprog", false_success)
+    events: list[tuple[str, dict]] = []
+    solution = solve_ldp_block_lp(
+        1 - np.eye(2),
+        np.ones(2) / 2,
+        0.0,
+        tolerance=1e-10,
+        progress=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    assert calls == ["highs", "highs-ipm", "highs-ds"]
+    assert solution.channel is None
+    assert solution.solver.status == "verification_failed"
+    candidate_events = [
+        fields for event, fields in events if event == "lp_candidate_verification_finished"
+    ]
+    assert len(candidate_events) == 3
+    assert all(event["accepted"] is False for event in candidate_events)
+    assert all(event["inequality_gap"] == 1.0 for event in candidate_events)
+    finished = next(fields for event, fields in events if event == "lp_solver_finished")
+    assert finished["solver_reported_success"] is True
+    assert finished["success"] is False
+
+
 def test_lp_retries_numerical_unknown_with_ipm_without_relaxing_constraints(
     monkeypatch,
 ) -> None:
