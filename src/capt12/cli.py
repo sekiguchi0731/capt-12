@@ -749,13 +749,33 @@ def context_seed_stability(
             "mechanism is fixed; fixed mode only and at least two distinct seeds."
         ),
     ),
-    test_baselines: str = typer.Option(
-        "block-ldp",
+    test_methods: str | None = typer.Option(
+        None,
+        "--test-methods",
+        help=(
+            "Comma-separated fixed-test methods: capt, block-ldp, rr, "
+            "context-token-ldp, nonprivate-k64, nonprivate-l32, constant, or all. "
+            "Defaults to capt,block-ldp; fixed mode with --test-seeds only."
+        ),
+    ),
+    test_baselines: str | None = typer.Option(
+        None,
         "--test-baselines",
         help=(
-            "Comma-separated fixed-test baselines: block-ldp, rr, or both. "
-            "CAPT is always included; fixed mode with --test-seeds only."
+            "Deprecated compatibility selector for block-ldp and rr; CAPT is added. "
+            "Cannot be combined with --test-methods."
         ),
+    ),
+    test_solver_time_limit: float = typer.Option(
+        1800,
+        "--test-solver-time-limit",
+        min=1,
+        help="Per-context LP time limit in seconds for context-token-ldp.",
+    ),
+    context_token_ldp_output_root: Path = typer.Option(
+        Path("outputs/context_token_ldp_channels"),
+        "--context-token-ldp-output-root",
+        help="Checkpoint/output root for resumable context-token-ldp solves.",
     ),
     epsilon: float | None = typer.Option(
         None,
@@ -828,12 +848,37 @@ def context_seed_stability(
             parsed_test_seeds = parse_csv_list(test_seeds, int, minimum=0)
         except ValueError as error:
             raise typer.BadParameter(str(error), param_hint="--test-seeds") from error
-        from capt12.experiments.context_fixed_test_seeds import normalize_test_baselines
+        if test_seeds is None and (
+            test_methods is not None or test_baselines is not None
+        ):
+            raise typer.BadParameter(
+                "requires --test-seeds",
+                param_hint="--test-methods/--test-baselines",
+            )
+        from capt12.experiments.context_fixed_test_seeds import (
+            normalize_test_baselines,
+            normalize_test_methods,
+        )
 
+        if test_methods is not None and test_baselines is not None:
+            raise typer.BadParameter(
+                "cannot be combined with --test-baselines",
+                param_hint="--test-methods",
+            )
+        parsed_test_methods: list[str] | None = None
+        parsed_test_baselines: list[str] | None = None
         try:
-            parsed_test_baselines = normalize_test_baselines(test_baselines.split(","))
+            if test_baselines is not None:
+                parsed_test_baselines = normalize_test_baselines(
+                    test_baselines.split(",")
+                )
+            else:
+                parsed_test_methods = normalize_test_methods(
+                    (test_methods or "capt,block-ldp").split(",")
+                )
         except ValueError as error:
-            raise typer.BadParameter(str(error), param_hint="--test-baselines") from error
+            parameter = "--test-baselines" if test_baselines is not None else "--test-methods"
+            raise typer.BadParameter(str(error), param_hint=parameter) from error
         if test_seeds is not None and len(parsed_test_seeds) < 2:
             raise typer.BadParameter(
                 "requires at least two distinct seeds",
@@ -846,10 +891,17 @@ def context_seed_stability(
                 run_fixed_mechanism_test_seeds,
             )
 
+            if parsed_test_baselines is not None:
+                # Keep the legacy call shape for downstream wrappers.
+                evaluation_kwargs = {"baselines": parsed_test_baselines}
+            else:
+                evaluation_kwargs = {
+                    "methods": parsed_test_methods,
+                    "context_token_ldp_output_root": context_token_ldp_output_root,
+                    "solver_time_limit": test_solver_time_limit,
+                }
             test_seed_path = run_fixed_mechanism_test_seeds(
-                path,
-                parsed_test_seeds,
-                baselines=parsed_test_baselines,
+                path, parsed_test_seeds, **evaluation_kwargs
             )
         payload = {
             "status": "ok",
@@ -862,10 +914,12 @@ def context_seed_stability(
             payload.update(
                 {
                     "test_seeds": parsed_test_seeds,
-                    "test_baselines": parsed_test_baselines,
+                    "test_methods": parsed_test_methods,
                     "test_seed_evaluation": str(test_seed_path),
                 }
             )
+            if parsed_test_baselines is not None:
+                payload["test_baselines"] = parsed_test_baselines
         typer.echo(json.dumps(payload, indent=2))
         return
 
@@ -873,6 +927,11 @@ def context_seed_stability(
         raise typer.BadParameter(
             "can only be used when --mechanism-seed-mode=fixed",
             param_hint="--test-seeds",
+        )
+    if test_methods is not None or test_baselines is not None:
+        raise typer.BadParameter(
+            "can only be used with --test-seeds in fixed mode",
+            param_hint="--test-methods/--test-baselines",
         )
     if fixed_mechanism_seed is not None:
         raise typer.BadParameter(
@@ -1125,19 +1184,43 @@ def context_fixed_test_seeds(
         "--test-seeds",
         help="Comma-separated Monte Carlo release seeds; at least two distinct seeds.",
     ),
-    baselines: str = typer.Option(
-        "block-ldp,rr",
+    methods: str | None = typer.Option(
+        None,
+        "--methods",
+        help=(
+            "Comma-separated methods: capt, block-ldp, rr, context-token-ldp, "
+            "nonprivate-k64, nonprivate-l32, constant, or all. Defaults to "
+            "capt,block-ldp,rr."
+        ),
+    ),
+    baselines: str | None = typer.Option(
+        None,
         "--baselines",
-        help="Comma-separated baselines: block-ldp, rr, or both. CAPT is always included.",
+        help=(
+            "Deprecated compatibility selector for block-ldp and rr; CAPT is added. "
+            "Cannot be combined with an explicit --methods value."
+        ),
     ),
     output_root: Path = typer.Option(
         Path("outputs/context_fixed_test_seed_evaluations"),
         "--output-root",
     ),
+    context_token_ldp_output_root: Path = typer.Option(
+        Path("outputs/context_token_ldp_channels"),
+        "--context-token-ldp-output-root",
+        help="Checkpoint/output root for resumable context-token-ldp solves.",
+    ),
+    solver_time_limit: float = typer.Option(
+        1800,
+        "--solver-time-limit",
+        min=1,
+        help="Per-context LP time limit in seconds for context-token-ldp.",
+    ),
 ) -> None:
-    """Evaluate fixed CAPT against selectable block-LDP and K-ary RR baselines."""
+    """Compare selectable private and non-private mechanisms on one fixed D_test."""
     from capt12.experiments.context_fixed_test_seeds import (
         normalize_test_baselines,
+        normalize_test_methods,
         run_fixed_mechanism_test_seeds,
     )
 
@@ -1147,33 +1230,94 @@ def context_fixed_test_seeds(
         raise typer.BadParameter(str(error), param_hint="--test-seeds") from error
     if len(parsed_seeds) < 2:
         raise typer.BadParameter("requires at least two distinct seeds", param_hint="--test-seeds")
+    if baselines is not None and methods is not None:
+        raise typer.BadParameter(
+            "cannot be combined with --baselines", param_hint="--methods"
+        )
+    parsed_baselines: list[str] | None = None
+    parsed_methods: list[str] | None = None
     try:
-        parsed_baselines = normalize_test_baselines(baselines.split(","))
+        if baselines is not None:
+            parsed_baselines = normalize_test_baselines(baselines.split(","))
+        else:
+            parsed_methods = normalize_test_methods(
+                (methods or "capt,block-ldp,rr").split(",")
+            )
     except ValueError as error:
-        raise typer.BadParameter(str(error), param_hint="--baselines") from error
-    path = run_fixed_mechanism_test_seeds(
-        run,
-        parsed_seeds,
-        baselines=parsed_baselines,
-        output_root=output_root,
-    )
-    baseline_methods = {
+        parameter = "--baselines" if baselines is not None else "--methods"
+        raise typer.BadParameter(str(error), param_hint=parameter) from error
+    if parsed_baselines is not None:
+        evaluation_kwargs = {
+            "baselines": parsed_baselines,
+            "output_root": output_root,
+        }
+    else:
+        evaluation_kwargs = {
+            "methods": parsed_methods,
+            "output_root": output_root,
+            "context_token_ldp_output_root": context_token_ldp_output_root,
+            "solver_time_limit": solver_time_limit,
+        }
+    path = run_fixed_mechanism_test_seeds(run, parsed_seeds, **evaluation_kwargs)
+    comparison_methods = {
+        "capt": "context_capt",
         "block-ldp": "context_ldp",
         "rr": "kary_rr",
+        "context-token-ldp": "context_token_ldp",
+        "nonprivate-k64": "nonprivate_k64",
+        "nonprivate-l32": "nonprivate_l32",
+        "constant": "constant",
     }
+    selected = parsed_methods or ["capt", *(parsed_baselines or [])]
+    payload = {
+        "status": "ok",
+        "run": str(run),
+        "test_seeds": parsed_seeds,
+        "methods": selected,
+        "comparison_methods": [comparison_methods[name] for name in selected],
+        "test_seed_evaluation": str(path),
+        "figure": str(path / "figures" / "fixed_capt_ldp_baseline_comparison.png"),
+    }
+    if parsed_baselines is not None:
+        payload["baselines"] = parsed_baselines
+    typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("context-token-ldp")
+def context_token_ldp(
+    run: Path = typer.Option(
+        ...,
+        "--run",
+        exists=True,
+        file_okay=False,
+        help="Completed fixed mechanism run supplying frozen D_design statistics.",
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/context_token_ldp_channels"), "--output-root"
+    ),
+    solver_time_limit: float = typer.Option(
+        1800,
+        "--solver-time-limit",
+        min=1,
+        help="Per-context LP time limit in seconds.",
+    ),
+) -> None:
+    """Precompute/resume context-specific unrestricted token-LDP channels."""
+    from capt12.experiments.context_token_ldp import (
+        solve_context_token_ldp_channels,
+    )
+
+    path = solve_context_token_ldp_channels(
+        run,
+        output_root=output_root,
+        solver_time_limit=solver_time_limit,
+    )
     typer.echo(
         json.dumps(
             {
                 "status": "ok",
                 "run": str(run),
-                "test_seeds": parsed_seeds,
-                "baselines": parsed_baselines,
-                "comparison_methods": [
-                    "context_capt",
-                    *[baseline_methods[name] for name in parsed_baselines],
-                ],
-                "test_seed_evaluation": str(path),
-                "figure": str(path / "figures" / "fixed_capt_ldp_baseline_comparison.png"),
+                "context_token_ldp": str(path),
             },
             indent=2,
         )

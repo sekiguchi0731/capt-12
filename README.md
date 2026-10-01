@@ -198,6 +198,37 @@ log loss, ROC-AUC, PR-AUC, ECE, paired differences, and summaries under
 log loss and expected-score metrics remain analytic and seed-invariant; the
 seeded table is a Monte Carlo variation diagnostic.
 
+To compare any subset of the private mechanisms, non-private controls, and
+the D_test null reference without rebuilding the fixed CAPT run, use:
+
+```bash
+uv run capt12 context-fixed-test-seeds \
+  --run outputs/context_stratified_l32_runs/RUN_ID \
+  --test-seeds 0,1,2,3,4 \
+  --methods capt,block-ldp,rr,context-token-ldp,nonprivate-k64,nonprivate-l32,constant
+```
+
+`--methods all` selects the same seven conditions. `nonprivate-k64` is the
+identity release on the original K-token alphabet; `nonprivate-l32` keeps the
+run's fixed L-block compression/decoder but removes privacy randomization.
+`constant` predicts the empirical D_test prevalence and is an evaluation-only
+LLHCompVN reference, not a deployable mechanism. `context-token-ldp` solves an
+unrestricted KxK epsilon-LDP channel independently for each public context.
+Those LPs are checkpointed per context under
+`outputs/context_token_ldp_channels/`; rerunning the command resumes unfinished
+contexts. They can also be precomputed explicitly with:
+
+```bash
+uv run capt12 context-token-ldp \
+  --run outputs/context_stratified_l32_runs/RUN_ID \
+  --solver-time-limit 1800
+```
+
+The older `--baselines block-ldp,rr` selector remains available for backward
+compatibility but cannot be combined with `--methods`. The same selectors are
+available as `--test-methods` and `--test-baselines` on fixed-mode
+`context-seed-stability` runs.
+
 The R LP objective supports `teacher_kl`, `empirical_logloss` (D_design click
 labels only), and `hybrid_logloss_kl`; the hybrid additionally accepts
 `--hybrid-empirical-weight 0.5`. Partition/decoder construction is selected

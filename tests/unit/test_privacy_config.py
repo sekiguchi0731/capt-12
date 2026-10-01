@@ -297,6 +297,77 @@ def test_context_seed_stability_cli_evaluates_fixed_mechanism_over_test_seeds(
     assert '"test_seed_evaluation"' in result.output
 
 
+def test_context_seed_stability_cli_propagates_fixed_test_methods(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    run_path = tmp_path / "fixed-run"
+    token_ldp_root = tmp_path / "token-ldp"
+    captured = {}
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_seed_stability.run_context_fixed_mechanism",
+        lambda config, seed: run_path,
+    )
+
+    def fake_test_seeds(
+        path,
+        seeds,
+        *,
+        methods,
+        context_token_ldp_output_root,
+        solver_time_limit,
+    ):
+        captured.update(
+            {
+                "path": path,
+                "seeds": seeds,
+                "methods": methods,
+                "context_token_ldp_output_root": context_token_ldp_output_root,
+                "solver_time_limit": solver_time_limit,
+            }
+        )
+        return tmp_path / "test-seed-evaluation"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.run_fixed_mechanism_test_seeds",
+        fake_test_seeds,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "5",
+            "--test-seeds",
+            "4,0,4",
+            "--test-methods",
+            "nonprivate-k64,context-token-ldp,capt",
+            "--test-solver-time-limit",
+            "91",
+            "--context-token-ldp-output-root",
+            str(token_ldp_root),
+        ],
+    )
+
+    expected_methods = ["capt", "context-token-ldp", "nonprivate-k64"]
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "path": run_path,
+        "seeds": [0, 4],
+        "methods": expected_methods,
+        "context_token_ldp_output_root": token_ldp_root,
+        "solver_time_limit": 91.0,
+    }
+    payload = json.loads(result.output)
+    assert payload["test_methods"] == expected_methods
+    assert payload["test_seeds"] == [0, 4]
+
+
 def test_context_fixed_test_seeds_cli_selects_rr_without_rebuilding(monkeypatch, tmp_path) -> None:
     run_path = tmp_path / "fixed-run"
     run_path.mkdir()
@@ -332,6 +403,157 @@ def test_context_fixed_test_seeds_cli_selects_rr_without_rebuilding(monkeypatch,
     assert '"baselines": [' in result.output
 
 
+def test_context_fixed_test_seeds_cli_propagates_all_methods(monkeypatch, tmp_path) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    output_root = tmp_path / "evaluations"
+    token_ldp_root = tmp_path / "token-ldp"
+    captured = {}
+
+    def fake_test_seeds(
+        path,
+        seeds,
+        *,
+        methods,
+        output_root,
+        context_token_ldp_output_root,
+        solver_time_limit,
+    ):
+        captured.update(
+            {
+                "path": path,
+                "seeds": seeds,
+                "methods": methods,
+                "output_root": output_root,
+                "context_token_ldp_output_root": context_token_ldp_output_root,
+                "solver_time_limit": solver_time_limit,
+            }
+        )
+        return tmp_path / "evaluation"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.run_fixed_mechanism_test_seeds",
+        fake_test_seeds,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-fixed-test-seeds",
+            "--run",
+            str(run_path),
+            "--test-seeds",
+            "3,1,3",
+            "--methods",
+            "all",
+            "--output-root",
+            str(output_root),
+            "--context-token-ldp-output-root",
+            str(token_ldp_root),
+            "--solver-time-limit",
+            "77",
+        ],
+    )
+
+    expected_methods = [
+        "capt",
+        "block-ldp",
+        "rr",
+        "context-token-ldp",
+        "nonprivate-k64",
+        "nonprivate-l32",
+        "constant",
+    ]
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "path": run_path,
+        "seeds": [1, 3],
+        "methods": expected_methods,
+        "output_root": output_root,
+        "context_token_ldp_output_root": token_ldp_root,
+        "solver_time_limit": 77.0,
+    }
+    assert json.loads(result.output)["methods"] == expected_methods
+
+
+def test_context_fixed_test_seeds_cli_propagates_one_selected_method(monkeypatch, tmp_path) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    captured = {}
+
+    def fake_test_seeds(path, seeds, **kwargs):
+        captured["path"] = path
+        captured["seeds"] = seeds
+        captured.update(kwargs)
+        return tmp_path / "evaluation"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.run_fixed_mechanism_test_seeds",
+        fake_test_seeds,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-fixed-test-seeds",
+            "--run",
+            str(run_path),
+            "--methods",
+            "context-token-ldp",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == run_path
+    assert captured["seeds"] == [0, 1, 2, 3, 4]
+    assert captured["methods"] == ["context-token-ldp"]
+    assert json.loads(result.output)["comparison_methods"] == ["context_token_ldp"]
+
+
+def test_context_fixed_test_seeds_cli_rejects_methods_with_legacy_baselines(tmp_path) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-fixed-test-seeds",
+            "--run",
+            str(run_path),
+            "--methods",
+            "capt,rr",
+            "--baselines",
+            "rr",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--methods" in result.output
+    assert "--baselines" in result.output
+
+
+def test_context_seed_stability_cli_rejects_test_methods_with_legacy_baselines() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-seed-stability",
+            "--config",
+            "configs/criteo_context_stratified_l32.yaml",
+            "--mechanism-seed-mode",
+            "fixed",
+            "--fixed-mechanism-seed",
+            "0",
+            "--test-seeds",
+            "0,1",
+            "--test-methods",
+            "capt,rr",
+            "--test-baselines",
+            "rr",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--test-methods" in result.output
+    assert "--test-baselines" in result.output
+
+
 def test_context_fixed_test_seeds_cli_rejects_unknown_baseline(tmp_path) -> None:
     run_path = tmp_path / "fixed-run"
     run_path.mkdir()
@@ -347,6 +569,48 @@ def test_context_fixed_test_seeds_cli_rejects_unknown_baseline(tmp_path) -> None
     )
     assert result.exit_code != 0
     assert "block-ldp,rr" in result.output
+
+
+def test_context_token_ldp_cli_forwards_resumable_solver_options(
+    monkeypatch, tmp_path
+) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    output_root = tmp_path / "token-ldp"
+    result_path = output_root / "artifact"
+    captured = {}
+
+    def fake_solve(run, *, output_root, solver_time_limit):
+        captured.update(
+            run=run,
+            output_root=output_root,
+            solver_time_limit=solver_time_limit,
+        )
+        return result_path
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_token_ldp.solve_context_token_ldp_channels",
+        fake_solve,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-token-ldp",
+            "--run",
+            str(run_path),
+            "--output-root",
+            str(output_root),
+            "--solver-time-limit",
+            "73",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "run": run_path,
+        "output_root": output_root,
+        "solver_time_limit": 73.0,
+    }
+    assert json.loads(result.output)["context_token_ldp"] == str(result_path)
 
 
 def test_context_render_fixed_test_figure_cli_only_renders_existing_tables(
