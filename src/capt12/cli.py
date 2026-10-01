@@ -749,6 +749,14 @@ def context_seed_stability(
             "mechanism is fixed; fixed mode only and at least two distinct seeds."
         ),
     ),
+    test_baselines: str = typer.Option(
+        "block-ldp",
+        "--test-baselines",
+        help=(
+            "Comma-separated fixed-test baselines: block-ldp, rr, or both. "
+            "CAPT is always included; fixed mode with --test-seeds only."
+        ),
+    ),
     epsilon: float | None = typer.Option(
         None,
         "--epsilon",
@@ -820,6 +828,12 @@ def context_seed_stability(
             parsed_test_seeds = parse_csv_list(test_seeds, int, minimum=0)
         except ValueError as error:
             raise typer.BadParameter(str(error), param_hint="--test-seeds") from error
+        from capt12.experiments.context_fixed_test_seeds import normalize_test_baselines
+
+        try:
+            parsed_test_baselines = normalize_test_baselines(test_baselines.split(","))
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--test-baselines") from error
         if test_seeds is not None and len(parsed_test_seeds) < 2:
             raise typer.BadParameter(
                 "requires at least two distinct seeds",
@@ -832,7 +846,11 @@ def context_seed_stability(
                 run_fixed_mechanism_test_seeds,
             )
 
-            test_seed_path = run_fixed_mechanism_test_seeds(path, parsed_test_seeds)
+            test_seed_path = run_fixed_mechanism_test_seeds(
+                path,
+                parsed_test_seeds,
+                baselines=parsed_test_baselines,
+            )
         payload = {
             "status": "ok",
             "mechanism_seed_mode": mode,
@@ -844,6 +862,7 @@ def context_seed_stability(
             payload.update(
                 {
                     "test_seeds": parsed_test_seeds,
+                    "test_baselines": parsed_test_baselines,
                     "test_seed_evaluation": str(test_seed_path),
                 }
             )
@@ -1092,6 +1111,75 @@ def context_paper_figure(
     )
 
 
+@app.command("context-fixed-test-seeds")
+def context_fixed_test_seeds(
+    run: Path = typer.Option(
+        ...,
+        "--run",
+        exists=True,
+        file_okay=False,
+        help="Completed fixed CAPT mechanism run; it is not rebuilt or reoptimized.",
+    ),
+    test_seeds: str = typer.Option(
+        "0,1,2,3,4",
+        "--test-seeds",
+        help="Comma-separated Monte Carlo release seeds; at least two distinct seeds.",
+    ),
+    baselines: str = typer.Option(
+        "block-ldp,rr",
+        "--baselines",
+        help="Comma-separated baselines: block-ldp, rr, or both. CAPT is always included.",
+    ),
+    output_root: Path = typer.Option(
+        Path("outputs/context_fixed_test_seed_evaluations"),
+        "--output-root",
+    ),
+) -> None:
+    """Evaluate fixed CAPT against selectable block-LDP and K-ary RR baselines."""
+    from capt12.experiments.context_fixed_test_seeds import (
+        normalize_test_baselines,
+        run_fixed_mechanism_test_seeds,
+    )
+
+    try:
+        parsed_seeds = parse_csv_list(test_seeds, int, minimum=0)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--test-seeds") from error
+    if len(parsed_seeds) < 2:
+        raise typer.BadParameter("requires at least two distinct seeds", param_hint="--test-seeds")
+    try:
+        parsed_baselines = normalize_test_baselines(baselines.split(","))
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--baselines") from error
+    path = run_fixed_mechanism_test_seeds(
+        run,
+        parsed_seeds,
+        baselines=parsed_baselines,
+        output_root=output_root,
+    )
+    baseline_methods = {
+        "block-ldp": "context_ldp",
+        "rr": "kary_rr",
+    }
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "run": str(run),
+                "test_seeds": parsed_seeds,
+                "baselines": parsed_baselines,
+                "comparison_methods": [
+                    "context_capt",
+                    *[baseline_methods[name] for name in parsed_baselines],
+                ],
+                "test_seed_evaluation": str(path),
+                "figure": str(path / "figures" / "fixed_capt_ldp_baseline_comparison.png"),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("context-global-token-ldp")
 def context_global_token_ldp(
     epsilon_grid_bundle: Path = typer.Option(
@@ -1143,6 +1231,51 @@ def context_global_token_ldp(
                 "status": "ok",
                 "comparison": str(path),
                 "sol_review_bundle": str(path / "sol_global_token_ldp_comparison_bundle.zip"),
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("context-fixed-global-token-ldp")
+def context_fixed_global_token_ldp(
+    run: Path = typer.Option(
+        ...,
+        "--run",
+        exists=True,
+        file_okay=False,
+        help="Completed fixed-mechanism CAPT run directory.",
+    ),
+    fixed_evaluation: Path = typer.Option(
+        ...,
+        "--fixed-evaluation",
+        exists=True,
+        file_okay=False,
+        help="Fixed test-seed evaluation belonging to --run.",
+    ),
+    solver_time_limit: float = typer.Option(
+        1800,
+        "--solver-time-limit",
+        min=1,
+        help="HiGHS time limit in seconds for the matched K=64 global-LDP solve.",
+    ),
+) -> None:
+    """Compare a fixed CAPT run with a matched unrestricted global token-LDP."""
+    from capt12.experiments.context_fixed_global_ldp import (
+        run_fixed_capt_global_ldp_comparison,
+    )
+
+    path = run_fixed_capt_global_ldp_comparison(
+        run,
+        fixed_evaluation,
+        solver_time_limit=solver_time_limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "comparison": str(path),
+                "figure": str(path / "figures" / "fixed_capt_vs_global_ldp_absolute.png"),
             },
             indent=2,
         )

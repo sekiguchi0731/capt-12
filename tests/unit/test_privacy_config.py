@@ -260,9 +260,10 @@ def test_context_seed_stability_cli_evaluates_fixed_mechanism_over_test_seeds(
         lambda config, seed: run_path,
     )
 
-    def fake_test_seeds(path, seeds):
+    def fake_test_seeds(path, seeds, *, baselines):
         captured["path"] = path
         captured["seeds"] = seeds
+        captured["baselines"] = baselines
         return tmp_path / "test-seed-evaluation"
 
     monkeypatch.setattr(
@@ -281,12 +282,71 @@ def test_context_seed_stability_cli_evaluates_fixed_mechanism_over_test_seeds(
             "0",
             "--test-seeds",
             "4,2,4,1",
+            "--test-baselines",
+            "rr,block-ldp",
         ],
     )
     assert result.exit_code == 0, result.output
-    assert captured == {"path": run_path, "seeds": [1, 2, 4]}
+    assert captured == {
+        "path": run_path,
+        "seeds": [1, 2, 4],
+        "baselines": ["block-ldp", "rr"],
+    }
     assert '"test_seeds": [' in result.output
+    assert '"test_baselines": [' in result.output
     assert '"test_seed_evaluation"' in result.output
+
+
+def test_context_fixed_test_seeds_cli_selects_rr_without_rebuilding(monkeypatch, tmp_path) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    captured = {}
+
+    def fake_test_seeds(path, seeds, *, baselines, output_root):
+        captured["path"] = path
+        captured["seeds"] = seeds
+        captured["baselines"] = baselines
+        captured["output_root"] = output_root
+        return tmp_path / "evaluation"
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.run_fixed_mechanism_test_seeds",
+        fake_test_seeds,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-fixed-test-seeds",
+            "--run",
+            str(run_path),
+            "--test-seeds",
+            "4,0,4,2",
+            "--baselines",
+            "rr",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == run_path
+    assert captured["seeds"] == [0, 2, 4]
+    assert captured["baselines"] == ["rr"]
+    assert '"baselines": [' in result.output
+
+
+def test_context_fixed_test_seeds_cli_rejects_unknown_baseline(tmp_path) -> None:
+    run_path = tmp_path / "fixed-run"
+    run_path.mkdir()
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-fixed-test-seeds",
+            "--run",
+            str(run_path),
+            "--baselines",
+            "laplace",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "block-ldp,rr" in result.output
 
 
 def test_context_seed_stability_cli_rejects_conflicting_seed_modes() -> None:
