@@ -46,6 +46,11 @@ _METHOD_COLORS = {
     "kary_rr": "#4B5563",
 }
 _METHOD_MARKERS = {"context_capt": "o", "context_ldp": "^", "kary_rr": "s"}
+_METHOD_LINESTYLES = {
+    "context_capt": "-",
+    "context_ldp": "--",
+    "kary_rr": ":",
+}
 _SAMPLED_METRICS = [
     "sampled_log_loss",
     "LLHCompVN",
@@ -260,16 +265,7 @@ def _plot_comparison(
         strict=True,
     ):
         pivot = metrics.pivot(index="test_seed", columns="method", values=metric).sort_index()
-        offsets = np.linspace(-0.09, 0.09, len(methods))
-        for seed, row in pivot.iterrows():
-            axis.plot(
-                seed + offsets,
-                [row[method] for method in methods],
-                color="#D1D5DB",
-                linewidth=0.9,
-                zorder=1,
-            )
-        for method, offset in zip(methods, offsets, strict=True):
+        for method in methods:
             values = pivot[method]
             label = _METHOD_LABELS[method]
             if method in {"context_capt", "context_ldp"}:
@@ -277,10 +273,11 @@ def _plot_comparison(
             else:
                 label += f" (K={token_count})"
             axis.plot(
-                values.index.to_numpy(dtype=float) + offset,
+                values.index.to_numpy(dtype=float),
                 values.to_numpy(dtype=float),
                 color=_METHOD_COLORS[method],
                 marker=_METHOD_MARKERS[method],
+                linestyle=_METHOD_LINESTYLES[method],
                 linewidth=1.7,
                 markersize=6,
                 label=f"{label}; mean={values.mean():.6f}",
@@ -314,6 +311,45 @@ def _plot_comparison(
     figure.savefig(png, dpi=220)
     figure.savefig(pdf)
     plt.close(figure)
+    return png, pdf
+
+
+def render_fixed_test_seed_figure(
+    evaluation_dir: str | Path,
+) -> tuple[Path, Path]:
+    """Regenerate only the fixed-test PNG/PDF from serialized evaluation tables."""
+    output_dir = Path(evaluation_dir).resolve()
+    metadata_path = output_dir / "context_fixed_test_seed_metadata.json"
+    metrics_path = output_dir / "tables" / "test_seed_metrics.csv"
+    manifest_path = output_dir / "manifest.json"
+    for required in (metadata_path, metrics_path, manifest_path):
+        if not required.is_file():
+            raise FileNotFoundError(f"fixed-test figure input is missing: {required}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metrics = pd.read_csv(metrics_path)
+    required_columns = {"test_seed", "method", "sampled_log_loss", "ROC_AUC"}
+    missing_columns = required_columns - set(metrics)
+    if missing_columns:
+        raise ValueError(
+            f"fixed-test metric table is missing columns: {sorted(missing_columns)}"
+        )
+    if "context_capt" not in set(metrics["method"]):
+        raise ValueError("fixed-test metric table does not contain context_capt")
+    png, pdf = _plot_comparison(
+        metrics,
+        output_dir,
+        epsilon=float(metadata["epsilon"]),
+        block_count=int(metadata["L"]),
+        token_count=int(metadata.get("rr_K", 64)),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest.setdefault("files", {})
+    for figure in (png, pdf):
+        files[str(figure.relative_to(output_dir))] = sha256_file(figure)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return png, pdf
 
 

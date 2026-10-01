@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from matplotlib.axes import Axes
 
 import capt12.experiments.context_fixed_test_seeds as fixed_test_seeds
 from capt12.experiments.context_fixed_test_seeds import (
@@ -14,8 +15,10 @@ from capt12.experiments.context_fixed_test_seeds import (
     _sample_token_outputs,
     _sampled_prediction_scores,
     normalize_test_baselines,
+    render_fixed_test_seed_figure,
     run_fixed_mechanism_test_seeds,
 )
+from capt12.utils.artifacts import sha256_file
 
 
 def test_sample_context_outputs_uses_fixed_context_channels() -> None:
@@ -311,3 +314,22 @@ def test_fixed_mechanism_test_seeds_can_evaluate_rr_and_block_ldp_together(
     metadata = json.loads((output / "context_fixed_test_seed_metadata.json").read_text())
     assert metadata["selected_baselines"] == ["block-ldp", "rr"]
     assert np.isclose(metadata["rr_keep_probability"], np.e / (np.e + 1))
+
+    png = output / "figures" / "fixed_capt_ldp_baseline_comparison.png"
+    png.write_bytes(b"stale figure")
+    original_plot = Axes.plot
+    series_x: list[np.ndarray] = []
+
+    def tracked_plot(axis, x, y, *args, **kwargs):
+        if kwargs.get("label"):
+            series_x.append(np.asarray(x, dtype=float))
+        return original_plot(axis, x, y, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "plot", tracked_plot)
+    rendered_png, rendered_pdf = render_fixed_test_seed_figure(output)
+    assert rendered_png == png
+    assert rendered_pdf.is_file()
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["files"][str(png.relative_to(output))] == sha256_file(png)
+    assert series_x
+    assert all(np.array_equal(values, [0.0, 1.0]) for values in series_x)

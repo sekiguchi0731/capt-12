@@ -349,6 +349,37 @@ def test_context_fixed_test_seeds_cli_rejects_unknown_baseline(tmp_path) -> None
     assert "block-ldp,rr" in result.output
 
 
+def test_context_render_fixed_test_figure_cli_only_renders_existing_tables(
+    monkeypatch, tmp_path
+) -> None:
+    evaluation = tmp_path / "evaluation"
+    evaluation.mkdir()
+    png = evaluation / "figures" / "figure.png"
+    pdf = evaluation / "figures" / "figure.pdf"
+    captured = {}
+
+    def fake_render(path):
+        captured["path"] = path
+        return png, pdf
+
+    monkeypatch.setattr(
+        "capt12.experiments.context_fixed_test_seeds.render_fixed_test_seed_figure",
+        fake_render,
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "context-render-fixed-test-figure",
+            "--evaluation",
+            str(evaluation),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == evaluation
+    assert str(png) in result.output
+    assert str(pdf) in result.output
+
+
 def test_context_seed_stability_cli_rejects_conflicting_seed_modes() -> None:
     runner = CliRunner()
     fixed_with_seed_list = runner.invoke(

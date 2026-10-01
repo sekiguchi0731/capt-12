@@ -1180,6 +1180,35 @@ def context_fixed_test_seeds(
     )
 
 
+@app.command("context-render-fixed-test-figure")
+def context_render_fixed_test_figure(
+    evaluation: Path = typer.Option(
+        ...,
+        "--evaluation",
+        exists=True,
+        file_okay=False,
+        help="Completed context-fixed-test-seeds evaluation directory.",
+    ),
+) -> None:
+    """Regenerate the fixed-test comparison PNG/PDF without rerunning evaluation."""
+    from capt12.experiments.context_fixed_test_seeds import (
+        render_fixed_test_seed_figure,
+    )
+
+    png, pdf = render_fixed_test_seed_figure(evaluation)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "evaluation": str(evaluation),
+                "png": str(png),
+                "pdf": str(pdf),
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("context-global-token-ldp")
 def context_global_token_ldp(
     epsilon_grid_bundle: Path = typer.Option(
