@@ -69,10 +69,17 @@ def benchmark_nonprivate_reference(
         days=list(map(int, config["splits"]["D_model"])),
         max_rows_per_day=max_rows_per_day,
     )
-    unified_unknown = config.get("sensitive_fallback_policy") == "unified_unknown"
+    sensitive_fallback_policy = str(
+        config.get("sensitive_fallback_policy", "separate_missing_other")
+    )
+    unified_unknown = sensitive_fallback_policy == "unified_unknown"
+    closed_domain = sensitive_fallback_policy == "closed_domain"
     mapper = FrozenCategoryMapper(
         int(config.get("max_context_cardinality", 32)),
         unknown_columns=(frozenset(profile_attributes) if unified_unknown else frozenset()),
+        closed_domain_columns=(
+            frozenset(profile_attributes) if closed_domain else frozenset()
+        ),
         unknown_value=str(config.get("sensitive_unknown_value", "__UNKNOWN__")),
     ).fit(model_frame, [*profile_attributes, *contexts], split_id="D_model")
     model_frame = mapper.transform(model_frame)

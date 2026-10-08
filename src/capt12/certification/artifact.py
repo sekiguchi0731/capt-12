@@ -294,7 +294,10 @@ def _verify_component_hashes(certificate: Certificate, path: Path) -> str | None
     if certificate.histogram_counts is not None:
         required.add("histogram_counts")
     config = certificate.resolved_config
-    if config.get("sensitive_fallback_policy") == "unified_unknown":
+    if config.get("sensitive_fallback_policy") in {
+        "unified_unknown",
+        "closed_domain",
+    }:
         required.add("mapper")
     if config.get("public_context_policy") == "stratified":
         required.add("context_channel_manifest")
@@ -361,11 +364,20 @@ def _verify_context_channel_manifest(
             return "context-channel manifest reference inputs do not match token and context"
         if manifest.get("reference_categorical_columns") != ["__token__"]:
             return "context-channel manifest does not mark the token categorical"
-    if manifest.get("sensitive_coarsening") != {
-        "missing": "__UNKNOWN__",
-        "unseen": "__UNKNOWN__",
-    }:
-        return "context-channel manifest does not declare unified sensitive fallback"
+    sensitive_policy = str(
+        config.get("sensitive_fallback_policy", "separate_missing_other")
+    )
+    if int(manifest.get("version", 0)) >= 6 and manifest.get(
+        "sensitive_domain_policy"
+    ) != sensitive_policy:
+        return "context-channel manifest sensitive-domain policy does not match"
+    expected_coarsening = (
+        {"missing": "__UNKNOWN__", "unseen": "__UNKNOWN__"}
+        if sensitive_policy == "unified_unknown"
+        else {"missing": "reject", "unseen": "reject"}
+    )
+    if manifest.get("sensitive_coarsening") != expected_coarsening:
+        return "context-channel manifest sensitive-domain handling does not match"
     repair = certificate.coverage.get("post_solve_repair")
     if repair is not None and manifest.get("released_channel_policy") != (
         "uniform_full_support_postsolve_repair"
@@ -453,10 +465,24 @@ def _verify_provenance_metadata(certificate: Certificate) -> str | None:
         }
         if group_contexts != {context_value}:
             return "protected groups do not match the declared public-context scope"
-        if config.get("sensitive_fallback_policy") != "unified_unknown":
-            return "context-stratified certificate requires unified sensitive fallback"
-        if config.get("sensitive_unknown_value") != "__UNKNOWN__":
+        sensitive_policy = config.get("sensitive_fallback_policy")
+        if sensitive_policy not in {"unified_unknown", "closed_domain"}:
+            return (
+                "context-stratified certificate requires unified_unknown or "
+                "closed_domain sensitive handling"
+            )
+        if (
+            sensitive_policy == "unified_unknown"
+            and config.get("sensitive_unknown_value") != "__UNKNOWN__"
+        ):
             return "context-stratified certificate has an unsupported unknown secret value"
+        expected_domain = (
+            "coarsened_A_with___UNKNOWN__"
+            if sensitive_policy == "unified_unknown"
+            else "closed_D_model_domain"
+        )
+        if coverage.get("sensitive_secret_domain") not in {None, expected_domain}:
+            return "context-stratified certificate sensitive domain is inconsistent"
     expected = int(coverage.get("expected_group_count", -1))
     observed = int(coverage.get("observed_group_count", -1))
     missing = int(coverage.get("missing_group_count", -1))

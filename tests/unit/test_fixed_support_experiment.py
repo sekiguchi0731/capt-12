@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from capt12.data.preprocessing import FrozenCategoryMapper
 from capt12.experiments.fixed_support import (
@@ -115,6 +116,33 @@ def test_unified_sensitive_unknown_is_frozen_and_used_in_support() -> None:
     )
     assert any(group[0] == "__UNKNOWN__" for group in support)
     assert all(group[0] not in {"__OTHER__", "__MISSING__"} for group in support)
+
+
+def test_closed_sensitive_domain_rejects_missing_and_unseen_values() -> None:
+    model = pd.DataFrame({"secret": ["a", "b"], "context": ["x", "y"]})
+    mapper = FrozenCategoryMapper(
+        3,
+        closed_domain_columns=frozenset({"secret"}),
+    ).fit(model, ["secret", "context"])
+
+    transformed = mapper.transform(
+        pd.DataFrame({"secret": ["a", "b"], "context": ["x", "unseen"]})
+    )
+    assert transformed["secret"].tolist() == ["a", "b"]
+    assert transformed["context"].tolist() == ["x", "__OTHER__"]
+
+    for invalid in (None, "unseen"):
+        with pytest.raises(ValueError, match="closed-domain column 'secret'"):
+            mapper.transform(pd.DataFrame({"secret": [invalid], "context": ["x"]}))
+
+    support = cartesian_support_from_domains(
+        {"secret": {"a", "b"}, "context": {"x", "y"}},
+        profile="secret",
+        contexts=["context"],
+        fallback_levels_by_column={"context": ["__OTHER__", "__MISSING__"]},
+    )
+    assert all(group[0] in {"a", "b"} for group in support)
+    assert all(group[0] != "__UNKNOWN__" for group in support)
 
 
 def test_plot_size_labels_match_cell_labels() -> None:

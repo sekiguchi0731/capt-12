@@ -182,9 +182,19 @@ uv run capt12 context-seed-stability \
   --mechanism-seed-mode fixed \
   --fixed-mechanism-seed 0 \
   --test-seeds 0,1,2,3,4 \
+  --sensitive-domain-policy closed-domain \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
 ```
+
+`--sensitive-domain-policy closed-domain` freezes every protected-attribute
+domain from `D_model`, omits the artificial `__UNKNOWN__` protected value from
+the Cartesian certificate support, and rejects a missing or unseen protected
+value on every later split. The default config remains the conservative
+open-world `unified-unknown` policy; it can also be selected explicitly with
+`--sensitive-domain-policy unified-unknown` (alias `open-world`). The chosen
+policy is part of the run ID, runtime-mapper hash, channel manifest, and every
+context certificate.
 
 The fixed command returns the ordinary single-run `sol_review_bundle.zip`;
 the per-seed command returns the aggregated

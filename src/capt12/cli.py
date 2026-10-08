@@ -31,6 +31,24 @@ def _load(path: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]
     )
 
 
+def _normalize_sensitive_domain_policy(value: str | None) -> str | None:
+    if value is None:
+        return None
+    key = value.strip().lower().replace("_", "-")
+    aliases = {
+        "unified-unknown": "unified_unknown",
+        "open-world": "unified_unknown",
+        "closed-domain": "closed_domain",
+    }
+    try:
+        return aliases[key]
+    except KeyError as error:
+        raise typer.BadParameter(
+            "must be unified-unknown/open-world or closed-domain",
+            param_hint="--sensitive-domain-policy",
+        ) from error
+
+
 def _resolve_git_commit(revision: str) -> str:
     try:
         root = capt12_source_root()
@@ -88,6 +106,16 @@ def resolve_run_id(
             "rho R_shared; 0 keeps independent context R and 1 uses the shared target."
         ),
     ),
+    sensitive_domain_policy: str | None = typer.Option(
+        None,
+        "--sensitive-domain-policy",
+        "--sensitive-fallback-policy",
+        help=(
+            "Sensitive-value domain: unified-unknown/open-world reserves an "
+            "unknown value; closed-domain freezes D_model values and rejects later "
+            "missing or unseen values."
+        ),
+    ),
 ) -> None:
     """Predict the deterministic output ID for a config and source commit."""
     try:
@@ -103,6 +131,9 @@ def resolve_run_id(
             "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
             "context_r_pooling_weight": context_r_pooling_weight,
+            "sensitive_fallback_policy": _normalize_sensitive_domain_policy(
+                sensitive_domain_policy
+            ),
         },
     )
     # Match record_source_provenance() exactly without requiring the requested
@@ -691,6 +722,15 @@ def context_stratified(
             "rho R_shared; 0 keeps independent context R and 1 uses the shared target."
         ),
     ),
+    sensitive_domain_policy: str | None = typer.Option(
+        None,
+        "--sensitive-domain-policy",
+        "--sensitive-fallback-policy",
+        help=(
+            "Use unified-unknown/open-world or closed-domain sensitive values. "
+            "Closed-domain rejects values outside the D_model domain."
+        ),
+    ),
 ) -> None:
     """Run one prescribed public-context CAPT condition for one design seed."""
     from capt12.experiments.context_stratified import (
@@ -707,6 +747,9 @@ def context_stratified(
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
                 "context_r_pooling_weight": context_r_pooling_weight,
+                "sensitive_fallback_policy": _normalize_sensitive_domain_policy(
+                    sensitive_domain_policy
+                ),
             },
         )
     )
@@ -810,6 +853,15 @@ def context_seed_stability(
             "rho R_shared; included in the fixed mechanism when fixed mode is used."
         ),
     ),
+    sensitive_domain_policy: str | None = typer.Option(
+        None,
+        "--sensitive-domain-policy",
+        "--sensitive-fallback-policy",
+        help=(
+            "Use unified-unknown/open-world or closed-domain sensitive values. "
+            "Closed-domain rejects values outside the D_model domain."
+        ),
+    ),
 ) -> None:
     """Run per-seed design sensitivity or one fixed canonical mechanism."""
     from capt12.experiments.context_seed_stability import (
@@ -831,6 +883,9 @@ def context_seed_stability(
             "context_representation_mode": representation_mode,
             "hybrid_empirical_weight": hybrid_empirical_weight,
             "context_r_pooling_weight": context_r_pooling_weight,
+            "sensitive_fallback_policy": _normalize_sensitive_domain_policy(
+                sensitive_domain_policy
+            ),
         },
     )
     if mode == "fixed":
@@ -1022,6 +1077,12 @@ def context_epsilon_grid(
         max=1,
         help="Fixed convex context-R pooling weight used throughout the epsilon grid.",
     ),
+    sensitive_domain_policy: str | None = typer.Option(
+        None,
+        "--sensitive-domain-policy",
+        "--sensitive-fallback-policy",
+        help="Use unified-unknown/open-world or closed-domain sensitive values.",
+    ),
     output_root: Path = typer.Option(
         Path("outputs/context_epsilon_grids"),
         "--output-root",
@@ -1048,6 +1109,9 @@ def context_epsilon_grid(
                 "context_representation_mode": representation_mode,
                 "hybrid_empirical_weight": hybrid_empirical_weight,
                 "context_r_pooling_weight": context_r_pooling_weight,
+                "sensitive_fallback_policy": _normalize_sensitive_domain_policy(
+                    sensitive_domain_policy
+                ),
             },
         ),
         seeds,
@@ -1093,6 +1157,12 @@ def context_cost_stability(
         max=1,
         help="Fixed convex context-R pooling weight used for every objective and seed.",
     ),
+    sensitive_domain_policy: str | None = typer.Option(
+        None,
+        "--sensitive-domain-policy",
+        "--sensitive-fallback-policy",
+        help="Use unified-unknown/open-world or closed-domain sensitive values.",
+    ),
     output_root: Path = typer.Option(
         Path("outputs/context_cost_comparisons"),
         "--output-root",
@@ -1111,6 +1181,9 @@ def context_cost_stability(
             {
                 "epsilon": epsilon,
                 "context_r_pooling_weight": context_r_pooling_weight,
+                "sensitive_fallback_policy": _normalize_sensitive_domain_policy(
+                    sensitive_domain_policy
+                ),
             },
         ),
         seeds,

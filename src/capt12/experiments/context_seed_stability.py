@@ -238,6 +238,13 @@ def _read_seed_run(
     degraded_mass = float(contexts.loc[degraded, "design_mass"].sum())
 
     design_manifest = mechanism["designs"][design_name]
+    sensitive_domain_policy = str(resolved["sensitive_fallback_policy"])
+    if metadata.get("sensitive_fallback_policy") != sensitive_domain_policy:
+        raise RuntimeError(f"seed {seed} sensitive-domain metadata is inconsistent")
+    if int(mechanism.get("version", 0)) >= 6 and (
+        mechanism.get("sensitive_domain_policy") != sensitive_domain_policy
+    ):
+        raise RuntimeError(f"seed {seed} sensitive-domain manifest is inconsistent")
     pooling_weight = float(resolved.get("context_r_pooling_weight", 0.0))
     if float(metadata.get("context_r_pooling_weight", 0.0)) != pooling_weight:
         raise RuntimeError(f"seed {seed} context-R pooling metadata is inconsistent")
@@ -261,6 +268,7 @@ def _read_seed_run(
         "context_count": int(metadata["context_count"]),
         "L": block_count,
         "epsilon": target_epsilon,
+        "sensitive_fallback_policy": sensitive_domain_policy,
         "utility_objective": str(resolved["context_utility_objective"]),
         "representation_mode": str(resolved["context_representation_mode"]),
         "representation_objective": str(design_manifest["representation_objective"]),
@@ -596,6 +604,12 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
     representation_mode = str(ordered["representation_mode"].iloc[0])
     representation_objective = str(ordered["representation_objective"].iloc[0])
     block_count = int(ordered["L"].iloc[0])
+    sensitive_domain_policy = str(ordered["sensitive_fallback_policy"].iloc[0])
+    sensitive_domain_description = (
+        "closed sensitive domain frozen from D_model"
+        if sensitive_domain_policy == "closed_domain"
+        else "open-world sensitive domain with unified `__UNKNOWN__`"
+    )
     epsilon_values = ordered["epsilon"].astype(float).unique()
     if len(epsilon_values) != 1:
         raise ValueError("one seed-stability report cannot mix epsilon values")
@@ -616,7 +630,7 @@ def _write_report(seed_results: pd.DataFrame, stability: pd.DataFrame, output_di
         "## Fixed scope",
         "",
         f"- Frozen design seeds: {', '.join(map(str, ordered['frozen_design_seed']))}.",
-        f"- Criteo `features_kv_bits_constrained_2`; public-context channels; unified `__UNKNOWN__`; epsilon={epsilon:g}; joint weighted k-medoids; L={block_count}.",
+        f"- Criteo `features_kv_bits_constrained_2`; public-context channels; {sensitive_domain_description}; epsilon={epsilon:g}; joint weighted k-medoids; L={block_count}.",
         f"- LP utility objective: `{objective}`; hybrid empirical weight: {ordered['hybrid_empirical_weight'].iloc[0]:.6g}.",
         f"- Partition/decoder representation mode: `{representation_mode}`; representation objective: `{representation_objective}`.",
         f"- Context-R convex pooling weight rho: {ordered['context_r_pooling_weight'].iloc[0]:.6g} (0 is independent context R; 1 is the shared CAPT target).",
@@ -907,6 +921,7 @@ def run_context_seed_stability(config: dict[str, Any], seeds: list[int]) -> Path
         "design": design_name,
         "L": block_count,
         "epsilon": epsilon,
+        "sensitive_fallback_policy": base["sensitive_fallback_policy"],
         "context_utility_objective": base["context_utility_objective"],
         "context_representation_mode": base["context_representation_mode"],
         "representation_objective": str(seed_results["representation_objective"].iloc[0]),

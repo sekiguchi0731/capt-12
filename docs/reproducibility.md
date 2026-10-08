@@ -236,9 +236,15 @@ uv run capt12 context-seed-stability \
   --mechanism-seed-mode fixed \
   --fixed-mechanism-seed 0 \
   --test-seeds 0,1,2,3,4 \
+  --sensitive-domain-policy closed-domain \
   --utility-objective teacher_kl \
   --representation-mode teacher_kl_fixed
 ```
+
+The closed-domain option freezes the protected-value set on `D_model`, removes
+the reserved `__UNKNOWN__` value from certificate support, and fails if a later
+split contains a missing or unseen protected value. Omit the option to retain
+the config's conservative `unified_unknown` open-world policy.
 
 Choose the fixed seed before inspecting `D_test`. A completed matching
 canonical run is reused rather than optimized again. Fixed mode returns that

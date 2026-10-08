@@ -1014,11 +1014,12 @@ def _channel_manifest(
     reference_feature_schema: str,
     reference_feature_columns: tuple[str, ...],
     reference_categorical_columns: tuple[str, ...],
+    sensitive_fallback_policy: str,
     designs: list[UtilityDesign],
     cells_by_design: dict[str, list[ContextCell]],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "version": 5,
+        "version": 6,
         "profile": profile,
         "public_context_column": context_column,
         "channel_selector_inputs": ["Z", "profile", context_column],
@@ -1028,10 +1029,12 @@ def _channel_manifest(
         "reference_feature_schema": reference_feature_schema,
         "reference_feature_columns": list(reference_feature_columns),
         "reference_categorical_columns": list(reference_categorical_columns),
-        "sensitive_coarsening": {
-            "missing": "__UNKNOWN__",
-            "unseen": "__UNKNOWN__",
-        },
+        "sensitive_domain_policy": sensitive_fallback_policy,
+        "sensitive_coarsening": (
+            {"missing": "__UNKNOWN__", "unseen": "__UNKNOWN__"}
+            if sensitive_fallback_policy == "unified_unknown"
+            else {"missing": "reject", "unseen": "reject"}
+        ),
         "released_channel_policy": "uniform_full_support_postsolve_repair",
         "designs": {},
     }
@@ -1173,7 +1176,11 @@ def _write_certificates(
                 "global_alpha_cert": float(config.get("alpha_cert", 0.05)),
                 "context_alpha_cert": cell_config["alpha_cert"],
                 "simultaneous_context_allocation": "bonferroni",
-                "sensitive_secret_domain": "coarsened_A_with___UNKNOWN__",
+                "sensitive_secret_domain": (
+                    "coarsened_A_with___UNKNOWN__"
+                    if config.get("sensitive_fallback_policy") == "unified_unknown"
+                    else "closed_D_model_domain"
+                ),
                 "full_simplex_group_count": len(missing),
                 "full_simplex_ordered_adjacency_count": cell.full_full_edges,
                 "design_mass": cell.objective.design_mass,
@@ -1709,7 +1716,11 @@ def _write_report(
 ) -> None:
     epsilon = float(metadata["epsilon"])
     lines = [
-        "# Public-context stratified CAPT with unified sensitive fallback",
+        (
+            "# Public-context stratified CAPT with unified sensitive fallback"
+            if metadata["sensitive_fallback_policy"] == "unified_unknown"
+            else "# Public-context stratified CAPT with a closed sensitive domain"
+        ),
         "",
         "## Scope",
         "",
@@ -1719,7 +1730,13 @@ def _write_report(
         f"- Partition/decoder representation mode: `{metadata['context_representation_mode']}`; representation objective: `{metadata['representation_objective']}`.",
         f"- Context-R pooling: `{metadata['context_r_pooling_method']}` with rho={metadata['context_r_pooling_weight']:.6g}; target `{metadata['context_r_pooling_target']}`.",
         "- Online selector: Z, profile, and public context B only. The protected value A is not an online input.",
-        "- `__MISSING__` and unseen sensitive values are coarsened to one `__UNKNOWN__` secret.",
+        (
+            "- `__MISSING__` and unseen sensitive values are coarsened to one "
+            "`__UNKNOWN__` secret."
+            if metadata["sensitive_fallback_policy"] == "unified_unknown"
+            else "- The sensitive domain is frozen from D_model; missing or unseen "
+            "sensitive values are rejected on every later split."
+        ),
         "- Each design allocates alpha/B to its context certificates, giving a Bonferroni simultaneous level of at least 95% across contexts.",
         "",
         "## Results",
@@ -1867,8 +1884,14 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         raise ValueError("context diagnostic currently requires constrained_2 only")
     if config.get("public_context_policy") != "stratified":
         raise ValueError("context diagnostic requires public_context_policy: stratified")
-    if config.get("sensitive_fallback_policy") != "unified_unknown":
-        raise ValueError("context diagnostic requires unified sensitive fallback")
+    if config.get("sensitive_fallback_policy") not in {
+        "unified_unknown",
+        "closed_domain",
+    }:
+        raise ValueError(
+            "context diagnostic requires unified_unknown or closed_domain "
+            "sensitive-domain handling"
+        )
     if config.get("channel_selector_inputs") != [
         "Z",
         "profile",
@@ -2171,6 +2194,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         frozen["reference_feature_schema"],
         frozen["reference_feature_columns"],
         frozen["reference_categorical_columns"],
+        str(config["sensitive_fallback_policy"]),
         designs,
         cells_by_design,
     )
@@ -2360,6 +2384,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "reference_categorical_columns": list(frozen["reference_categorical_columns"]),
         "epsilon": float(config["epsilon"]),
         "profile": profile,
+        "sensitive_fallback_policy": config["sensitive_fallback_policy"],
         "public_context_column": context_column,
         "context_utility_objective": config["context_utility_objective"],
         "context_representation_mode": config["context_representation_mode"],

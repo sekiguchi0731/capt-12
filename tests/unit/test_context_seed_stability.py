@@ -31,6 +31,7 @@ def _seed_frame() -> pd.DataFrame:
             "frozen_design_seed": seed,
             "L": 8,
             "epsilon": 0.5,
+            "sensitive_fallback_policy": "closed_domain",
             "context_capt_distortion": 3.2e-8 + shift,
             "context_ldp_distortion": 3.7e-8 + shift,
             "capt_advantage_over_context_ldp": 5e-9,

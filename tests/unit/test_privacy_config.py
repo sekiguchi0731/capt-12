@@ -148,6 +148,8 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
             "objective_aligned",
             "--context-r-pooling-weight",
             "0.25",
+            "--sensitive-domain-policy",
+            "closed-domain",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -157,6 +159,7 @@ def test_context_cli_overrides_frozen_design_seed(monkeypatch, tmp_path) -> None
     assert captured["context_utility_objective"] == "empirical_logloss"
     assert captured["context_representation_mode"] == "objective_aligned"
     assert captured["context_r_pooling_weight"] == 0.25
+    assert captured["sensitive_fallback_policy"] == "closed_domain"
 
 
 def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
@@ -191,6 +194,8 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
             "objective_aligned",
             "--context-r-pooling-weight",
             "0.5",
+            "--sensitive-fallback-policy",
+            "closed_domain",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -200,6 +205,7 @@ def test_context_seed_stability_cli_sorts_seeds(monkeypatch, tmp_path) -> None:
     assert captured["config"]["hybrid_empirical_weight"] == 0.75
     assert captured["config"]["context_representation_mode"] == "objective_aligned"
     assert captured["config"]["context_r_pooling_weight"] == 0.5
+    assert captured["config"]["sensitive_fallback_policy"] == "closed_domain"
     assert '"mechanism_seed_mode": "per-seed"' in result.output
     assert "sol_seed_stability_review_bundle.zip" in result.output
 
@@ -863,6 +869,15 @@ def test_context_r_pooling_weight_validation() -> None:
     for invalid in (-0.01, 1.01, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="context_r_pooling_weight"):
             validate_config({**base, "context_r_pooling_weight": invalid})
+
+
+def test_sensitive_fallback_policy_accepts_closed_domain() -> None:
+    base = load_config("configs/criteo_context_stratified.yaml")
+    assert validate_config({**base, "sensitive_fallback_policy": "closed_domain"})[
+        "sensitive_fallback_policy"
+    ] == "closed_domain"
+    with pytest.raises(ValueError, match="sensitive_fallback_policy"):
+        validate_config({**base, "sensitive_fallback_policy": "drop_unknown"})
 
 
 def test_splits_reject_day_and_row_overlap() -> None:

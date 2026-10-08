@@ -468,3 +468,106 @@ def test_context_certificate_binds_mapper_and_manifest_semantics(tmp_path) -> No
     rejected = verify_certificate(certificate_path)
     assert not rejected.valid
     assert "certified context channel" in rejected.worst_case["error"]
+
+
+def test_context_certificate_accepts_closed_sensitive_domain(tmp_path) -> None:
+    groups = [Group("a", ("known-1",), "public-b"), Group("a", ("known-2",), "public-b")]
+    counts = {
+        groups[0].key(): np.array([60, 40]),
+        groups[1].key(): np.array([40, 60]),
+    }
+    adjacency = build_adjacency(groups, epsilon=1.0)
+    boxes = {
+        group.key(): cp_box(
+            counts[group.key()], group_count=2, comparisons=len(adjacency)
+        )
+        for group in groups
+    }
+    channel = k_ary_rr(2, 1.0)
+    verification = verify_robust_channel(channel, boxes, adjacency)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "mechanism").mkdir()
+    mapper_path = tmp_path / "models" / "category_mapper.joblib"
+    mapper_path.write_bytes(b"closed-domain mapper")
+    reference_path = tmp_path / "models" / "reference.joblib"
+    reference_path.write_bytes(b"categorical token reference")
+    manifest = {
+        "version": 6,
+        "profile": "a",
+        "public_context_column": "b",
+        "channel_selector_inputs": ["Z", "profile", "b"],
+        "protected_value_used_online": False,
+        "runtime_mapper_hash": sha256_file(mapper_path),
+        "reference_model_hash": sha256_file(reference_path),
+        "reference_feature_schema": "categorical_token_v1",
+        "reference_feature_columns": ["__token__", "b"],
+        "reference_categorical_columns": ["__token__"],
+        "sensitive_domain_policy": "closed_domain",
+        "sensitive_coarsening": {"missing": "reject", "unseen": "reject"},
+        "designs": {
+            "test-design": {
+                "L": 2,
+                "assignment_hash": hash_array(np.arange(2)),
+                "decoder_hash": hash_array(np.eye(2)),
+                "table_entries": 4,
+                "contexts": {"public-b": hash_array(channel)},
+            }
+        },
+    }
+    manifest_path = tmp_path / "mechanism" / "context_channel_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    config = {
+        "dataset": "criteo",
+        "confidence": "cp_box",
+        "alpha_cert": 0.05,
+        "epsilon": 1.0,
+        "sampling_assumption": "user_day_iid",
+        "contribution_policy": "one-display-per-uuid-day",
+        "rare_group_policy": "confidence_box",
+        "missing_group_policy": "full_simplex",
+        "sensitive_fallback_policy": "closed_domain",
+        "public_context_policy": "stratified",
+        "profiles": ["a"],
+        "context_cols": ["b"],
+        "channel_selector_inputs": ["Z", "profile", "b"],
+        "public_context_value": "public-b",
+        "context_design": "test-design",
+        "splits": {},
+    }
+    certificate = make_certificate(
+        config=config,
+        channel=channel,
+        boxes=boxes,
+        adjacency=adjacency,
+        verification=verification,
+        solver=SolverInfo("optimal", 0, 0, 1, primal_gap=0),
+        component_hashes={
+            "mapper": sha256_file(mapper_path),
+            "model": sha256_file(reference_path),
+            "context_channel_manifest": sha256_file(manifest_path),
+        },
+        split_identifiers={},
+        dp_parameters={
+            "epsilon": None,
+            "delta": None,
+            "contribution_policy": "one-display-per-uuid-day",
+        },
+        histogram_counts=counts,
+        assignment=np.arange(2),
+        decoder=np.eye(2),
+        groups=groups,
+        coverage={
+            "expected_group_count": 2,
+            "observed_group_count": 2,
+            "missing_group_count": 0,
+            "missing_groups": [],
+            "rare_group_count": 0,
+            "hybrid_connectivity_gaps": 0,
+            "requires_universal_cover": False,
+            "public_context_value": "public-b",
+            "sensitive_secret_domain": "closed_D_model_domain",
+        },
+    )
+    certificate_path = tmp_path / "certificate.json"
+    certificate.write(certificate_path)
+    assert verify_certificate(certificate_path).valid

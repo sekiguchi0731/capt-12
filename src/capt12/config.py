@@ -139,9 +139,14 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             "every observed group keeps its finite-sample confidence set"
         )
     sensitive_fallback = cfg.get("sensitive_fallback_policy", "separate_missing_other")
-    if sensitive_fallback not in {"separate_missing_other", "unified_unknown"}:
+    if sensitive_fallback not in {
+        "separate_missing_other",
+        "unified_unknown",
+        "closed_domain",
+    }:
         raise ValueError(
-            "sensitive_fallback_policy must be separate_missing_other or unified_unknown"
+            "sensitive_fallback_policy must be separate_missing_other, "
+            "unified_unknown, or closed_domain"
         )
     if (
         sensitive_fallback == "unified_unknown"

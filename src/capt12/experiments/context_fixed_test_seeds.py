@@ -1015,6 +1015,9 @@ def run_fixed_mechanism_test_seeds(
         "L": block_count,
         "K": token_count,
         "epsilon": float(config["epsilon"]),
+        "sensitive_fallback_policy": str(
+            config.get("sensitive_fallback_policy", "unified_unknown")
+        ),
         "selected_methods": selected_methods,
         "comparison_methods": expected_internal_methods,
         "method_details": method_details,
@@ -1044,6 +1047,7 @@ def run_fixed_mechanism_test_seeds(
         "# Fixed-mechanism seeded D_test evaluation",
         "",
         f"- Mechanism run: `{mechanism_run.name}`; frozen-design seed: {config['frozen_design_seed']}.",
+        f"- Sensitive-domain policy: `{config.get('sensitive_fallback_policy', 'unified_unknown')}`.",
         f"- Context-R convex pooling weight rho: {float(config.get('context_r_pooling_weight', 0.0)):.6g}.",
         f"- Test release seeds: {', '.join(map(str, seeds))}; D_test rows: {len(test_frame):,}.",
         "- The encoder, reference model, partition, decoder, and every context-specific R matrix are fixed. Only Monte Carlo draws from the released channel change.",

@@ -138,6 +138,15 @@ declared secret domain. The runtime mapper artifact, exact online selector, and
 the complete context-to-channel table are hash-bound to every context
 certificate.
 
+The alternative `closed_domain` policy instead defines each protected-value
+domain as the complete non-missing set frozen on `D_model`. It does not add an
+`__UNKNOWN__` protected group. Every later split is checked against that frozen
+domain, and a missing or unseen protected value aborts the run rather than
+silently weakening the declared scope. Its guarantee is therefore conditional
+on the explicit deployment contract `Pr(A in A_D_model)=1`; protected-value
+frequencies may still change. The mapper hash and channel manifest bind this
+closed-domain contract to the certificate.
+
 For fixed partition, decoder, support, and objectives, absence of cross-context
 edges gives the product decomposition
 

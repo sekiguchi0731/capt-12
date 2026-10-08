@@ -16,6 +16,7 @@ class FrozenCategoryMapper:
     mappings: dict[str, set[object]] = field(default_factory=dict)
     fit_split: str | None = None
     unknown_columns: frozenset[str] = frozenset()
+    closed_domain_columns: frozenset[str] = frozenset()
     unknown_value: str = "__UNKNOWN__"
 
     def fit(
@@ -23,17 +24,46 @@ class FrozenCategoryMapper:
     ) -> FrozenCategoryMapper:
         if split_id not in {"D_model", "D_design"}:
             raise ValueError("category mappings may only be fit on D_model or D_design")
-        self.mappings = {
-            column: set(frame[column].value_counts(dropna=False).head(self.max_cardinality - 1).index)
-            for column in columns
-        }
+        overlap = self.unknown_columns.intersection(self.closed_domain_columns)
+        if overlap:
+            raise ValueError(
+                "category columns cannot be both unknown-coarsened and closed-domain: "
+                f"{sorted(overlap)}"
+            )
+        self.mappings = {}
+        for column in columns:
+            if column in self.closed_domain_columns:
+                if frame[column].isna().any():
+                    raise ValueError(
+                        f"closed-domain column {column!r} contains missing values in {split_id}"
+                    )
+                self.mappings[column] = set(frame[column].unique())
+            else:
+                self.mappings[column] = set(
+                    frame[column]
+                    .value_counts(dropna=False)
+                    .head(self.max_cardinality - 1)
+                    .index
+                )
         self.fit_split = split_id
         return self
 
     def transform(self, frame: pd.DataFrame) -> pd.DataFrame:
         result = frame.copy()
         for column, allowed in self.mappings.items():
-            if column in self.unknown_columns:
+            if column in self.closed_domain_columns:
+                invalid = result[column].isna() | ~result[column].isin(allowed)
+                if invalid.any():
+                    examples = sorted(
+                        set(result.loc[invalid, column].dropna().astype(str).tolist())
+                    )[:5]
+                    raise ValueError(
+                        f"closed-domain column {column!r} contains {int(invalid.sum())} "
+                        "missing or out-of-domain values; "
+                        f"examples={examples}"
+                    )
+                result[column] = result[column].astype(str)
+            elif column in self.unknown_columns:
                 known = result[column].notna() & result[column].isin(allowed)
                 result[column] = result[column].where(known, self.unknown_value).astype(str)
             else:
