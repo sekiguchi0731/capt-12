@@ -75,12 +75,20 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     with np.load(model_paths[0]) as model:
         assert model["logits"].shape[1:] == (k, l_count)
         assert model["decoder"].shape == (l_count, k)
+        assert model["infonce_embeddings"].shape == (k, 32)
+        assert float(model["infonce_weight"]) == 1.0
+        assert np.isfinite(model["infonce_embeddings"]).all()
         if l_count == k:
             np.testing.assert_array_equal(model["decoder"], np.eye(k))
     native_paths = list((publication / "runs").glob("*/native_runs/*/mechanism/context_channels-*.npz"))
     assert len(native_paths) == 1
     with np.load(native_paths[0]) as native:
         assert native["decoder"].shape == (l_count, k)
+    histories = list((publication / "runs").glob("*/tables/mass-*-history.csv"))
+    assert len(histories) == 1
+    history = pd.read_csv(histories[0])
+    assert (history["pre_update_infonce_loss"] > 0).all()
+    assert (history["post_update_infonce_loss"] > 0).all()
     contracts = json.loads((publication / "method_contracts.json").read_text())["methods"]
     assert all(item["output_bits"] == (k - 1).bit_length()
                for item in contracts if item["single_output"])

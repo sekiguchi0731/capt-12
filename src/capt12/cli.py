@@ -539,6 +539,10 @@ def prior_art_comparison(
     l_count: int | None = typer.Option(None, "--L", "--output-count", min=1, max=4096),
     output_bits: int | None = typer.Option(None, "--output-bits", min=0, max=12),
     l_list: str | None = typer.Option(None, "--L-list", help="Full-phase output-candidate counts."),
+    mass_infonce_weight: float | None = typer.Option(None, "--mass-infonce-weight", min=0),
+    mass_infonce_temperature: float | None = typer.Option(None, "--mass-infonce-temperature"),
+    mass_infonce_batch_size: int | None = typer.Option(None, "--mass-infonce-batch-size", min=2),
+    mass_infonce_embedding_dim: int | None = typer.Option(None, "--mass-infonce-embedding-dim", min=1),
     phase: str = typer.Option(
         "pilot",
         "--phase",
@@ -559,7 +563,11 @@ def prior_art_comparison(
         {
             "comparison_output_dir": (
                 str(comparison_output_dir) if comparison_output_dir is not None else None
-            )
+            ),
+            "mass_infonce_weight": mass_infonce_weight,
+            "mass_infonce_temperature": mass_infonce_temperature,
+            "mass_infonce_batch_size": mass_infonce_batch_size,
+            "mass_infonce_embedding_dim": mass_infonce_embedding_dim,
         },
     )
     for count, bits, hint in (

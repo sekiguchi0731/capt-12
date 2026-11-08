@@ -31,6 +31,7 @@ RESULT_COLUMNS = (
     "mass_privacy_weight",
     "mass_utility_weight",
     "mass_temperature",
+    "mass_infonce_weight",
     "raw_upper_epsilon",
     "certified_upper_epsilon",
     "certificate_valid",
@@ -142,6 +143,7 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
                     "mass_privacy_weight",
                     "mass_utility_weight",
                     "mass_temperature",
+                    "mass_infonce_weight",
                     "target_epsilon",
                 ]
                 means = group.groupby(control_keys, dropna=False, sort=True)[
@@ -233,6 +235,8 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
+    if "mass_infonce_weight" not in frame:
+        frame = frame.assign(mass_infonce_weight=0.0)
     if "K" not in frame:
         # Historical comparison artifacts used the fixed K=4096 alphabet.
         frame = frame.assign(K=4096)

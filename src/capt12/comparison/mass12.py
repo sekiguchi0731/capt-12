@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from capt12.comparison.infonce import expected_infonce_and_gradient, sample_source_batches
 from capt12.mechanisms.lp import validate_channel
 
 
@@ -164,6 +165,9 @@ class Mass12Epoch:
     post_update_distortion: float
     post_update_sensitive_mi_nats: dict[str, float]
     post_update_useful_mi_nats: dict[str, float]
+    infonce_loss: float = 0.0
+    post_update_infonce_loss: float = 0.0
+    infonce_batch_seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,10 @@ class Mass12FiniteChannel:
     display_name: str = "MaSS-12 (finite-output adaptation)"
     uses_sensitive_value_online: bool = False
     deployable_under_capt: bool = True
+    infonce_weight: float = 0.0
+    infonce_temperature: float = 0.07
+    infonce_batch_size: int = 64
+    infonce_embeddings: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.source_split != "D_design":
@@ -200,6 +208,13 @@ class Mass12FiniteChannel:
             self.decoder.sum(axis=1), 1.0, atol=1e-10, rtol=0
         ):
             raise ValueError("MaSS-12 common decoder rows must be stochastic")
+        if self.infonce_weight > 0 and (
+            self.infonce_embeddings is None
+            or self.infonce_embeddings.ndim != 2
+            or self.infonce_embeddings.shape[0] != self.logits.shape[1]
+            or not np.isfinite(self.infonce_embeddings).all()
+        ):
+            raise ValueError("active InfoNCE requires one finite embedding per token")
 
     def block_probabilities(self, token: int, public_context: Hashable = "all") -> np.ndarray:
         """Inference path: its only data inputs are Z and public (B,S)."""
@@ -240,6 +255,14 @@ class Mass12FiniteChannel:
             "temperature": self.temperature,
             "seed": self.seed,
             "objective_name": self.objective_name,
+            "infonce_weight": self.infonce_weight,
+            "infonce_temperature": self.infonce_temperature,
+            "infonce_batch_size": self.infonce_batch_size,
+            "infonce_variant": "expected_output_to_source_in_batch",
+            "infonce_upstream_symmetric": False,
+            "infonce_embedding_dim": (
+                self.infonce_embeddings.shape[1] if self.infonce_embeddings is not None else 0
+            ),
         }
 
 
@@ -259,6 +282,10 @@ def fit_mass12_finite(
     epochs: int = 100,
     learning_rate: float = 0.05,
     temperature: float = 1.0,
+    infonce_weight: float = 0.0,
+    infonce_temperature: float = 0.07,
+    infonce_batch_size: int = 64,
+    infonce_embedding_dim: int = 32,
     source_split: str = "D_design",
     objective_name: str = "teacher_kl",
     frozen_context_values: Sequence[Hashable] | None = None,
@@ -274,6 +301,12 @@ def fit_mass12_finite(
         raise ValueError("epochs and learning_rate must be positive")
     if temperature <= 0:
         raise ValueError("temperature must be positive")
+    if not np.isfinite(infonce_weight) or infonce_weight < 0:
+        raise ValueError("infonce_weight must be finite and nonnegative")
+    if not np.isfinite(infonce_temperature) or infonce_temperature <= 0:
+        raise ValueError("infonce_temperature must be finite and positive")
+    if infonce_batch_size < 2 or infonce_embedding_dim < 1:
+        raise ValueError("InfoNCE requires batch_size >= 2 and embedding_dim >= 1")
     if privacy_weight < 0 or utility_weight < 0 or privacy_weight + utility_weight <= 0:
         raise ValueError("MaSS loss weights must be nonnegative with positive total weight")
 
@@ -383,11 +416,38 @@ def fit_mass12_finite(
     logits = rng.normal(0.0, 1e-3, size=(len(context_values), token_count, block_count))
     first_moment = np.zeros_like(logits)
     second_moment = np.zeros_like(logits)
+    embedding_rng = np.random.default_rng(np.random.SeedSequence([seed, 701]))
+    embeddings = (
+        embedding_rng.normal(0, 0.1, size=(token_count, infonce_embedding_dim))
+        if infonce_weight > 0 else None
+    )
+    embedding_first = np.zeros_like(embeddings) if embeddings is not None else None
+    embedding_second = np.zeros_like(embeddings) if embeddings is not None else None
     history: list[Mass12Epoch] = []
     probabilities = _softmax(logits, temperature)
     metrics = evaluate_objective(probabilities)
     for epoch in range(1, epochs + 1):
         total_loss, distortion, sensitive_mi, useful_mi, probability_gradient = metrics
+        infonce_loss = post_infonce_loss = 0.0
+        batch_seed = None
+        batches = None
+        if embeddings is not None:
+            batch_seed = int(np.random.SeedSequence([seed, epoch, 702]).generate_state(1)[0])
+            batches = sample_source_batches(
+                token_context_mass, infonce_batch_size, np.random.default_rng(batch_seed)
+            )
+            infonce_loss, infonce_gradient, embedding_gradient = expected_infonce_and_gradient(
+                probabilities, decoder_array, token_context_mass, embeddings, batches,
+                infonce_temperature,
+            )
+            total_loss += infonce_weight * infonce_loss
+            probability_gradient = probability_gradient + infonce_weight * infonce_gradient
+            embedding_gradient *= infonce_weight
+            embedding_first = 0.9 * embedding_first + 0.1 * embedding_gradient
+            embedding_second = 0.999 * embedding_second + 0.001 * np.square(embedding_gradient)
+            embeddings -= learning_rate * (embedding_first / (1 - 0.9**epoch)) / (
+                np.sqrt(embedding_second / (1 - 0.999**epoch)) + 1e-8
+            )
         centered_gradient = probability_gradient - np.sum(
             probability_gradient * probabilities, axis=-1, keepdims=True
         )
@@ -402,6 +462,12 @@ def fit_mass12_finite(
         # state. Recording both stages needs just one extra evaluation per fit.
         metrics = evaluate_objective(probabilities)
         post_loss, post_distortion, post_sensitive_mi, post_useful_mi, _ = metrics
+        if embeddings is not None:
+            post_infonce_loss, _, _ = expected_infonce_and_gradient(
+                probabilities, decoder_array, token_context_mass, embeddings, batches,
+                infonce_temperature,
+            )
+            post_loss += infonce_weight * post_infonce_loss
         history.append(
             Mass12Epoch(
                 epoch=epoch,
@@ -413,6 +479,9 @@ def fit_mass12_finite(
                 post_update_distortion=post_distortion,
                 post_update_sensitive_mi_nats=post_sensitive_mi,
                 post_update_useful_mi_nats=post_useful_mi,
+                infonce_loss=infonce_loss,
+                post_update_infonce_loss=post_infonce_loss,
+                infonce_batch_seed=batch_seed,
             )
         )
 
@@ -426,6 +495,10 @@ def fit_mass12_finite(
         loss_n=n_values,
         seed=int(seed),
         objective_name=str(objective_name),
+        infonce_weight=float(infonce_weight),
+        infonce_temperature=float(infonce_temperature),
+        infonce_batch_size=int(infonce_batch_size),
+        infonce_embeddings=embeddings,
     )
     for context in model.context_values:
         validate_channel(model.channel(context))

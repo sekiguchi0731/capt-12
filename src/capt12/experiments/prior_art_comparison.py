@@ -440,6 +440,7 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "mass_privacy_weight",
             "mass_utility_weight",
             "mass_temperature",
+            "mass_infonce_weight",
         )
     )
 
@@ -594,6 +595,10 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
                 "post_update_useful_mi_nats": json.dumps(
                     value.post_update_useful_mi_nats, sort_keys=True
                 ),
+                "infonce_loss": value.infonce_loss,
+                "pre_update_infonce_loss": value.infonce_loss,
+                "post_update_infonce_loss": value.post_update_infonce_loss,
+                "infonce_batch_seed": value.infonce_batch_seed,
             }
         )
     pd.DataFrame(rows).to_csv(path, index=False)
@@ -658,6 +663,10 @@ def _mass_rows(
         epochs=int(config.get("mass_epochs", 100)),
         learning_rate=float(config.get("mass_learning_rate", 0.05)),
         temperature=temperature,
+        infonce_weight=float(config.get("mass_infonce_weight", 1.0)),
+        infonce_temperature=float(config.get("mass_infonce_temperature", 0.07)),
+        infonce_batch_size=int(config.get("mass_infonce_batch_size", 64)),
+        infonce_embedding_dim=int(config.get("mass_infonce_embedding_dim", 32)),
         source_split="D_design",
         objective_name=cost,
         frozen_context_values=contexts,
@@ -665,6 +674,7 @@ def _mass_rows(
     stem = (
         f"mass-{cost}-L{block_count}-fseed{frozen_seed}-mseed{mass_seed}"
         f"-m{loss_m:g}-n{loss_n:g}-pw{privacy_weight:g}-uw{utility_weight:g}-t{temperature:g}"
+        f"-iw{model.infonce_weight:g}"
     )
     model_path = comparison_path / "models" / f"{stem}.npz"
     probabilities = {
@@ -677,6 +687,13 @@ def _mass_rows(
         logits=model.logits,
         decoder=model.decoder,
         temperature=np.asarray(model.temperature),
+        infonce_embeddings=(
+            model.infonce_embeddings if model.infonce_embeddings is not None
+            else np.empty((len(decoder[0]), 0))
+        ),
+        infonce_weight=np.asarray(model.infonce_weight),
+        infonce_temperature=np.asarray(model.infonce_temperature),
+        infonce_batch_size=np.asarray(model.infonce_batch_size),
     )
     _mass_history(model, comparison_path / "tables" / f"{stem}-history.csv")
 
@@ -819,6 +836,7 @@ def _mass_rows(
                 "mass_privacy_weight": privacy_weight,
                 "mass_utility_weight": utility_weight,
                 "mass_temperature": temperature,
+                "mass_infonce_weight": model.infonce_weight,
                 "raw_upper_epsilon": raw_upper,
                 "certified_upper_epsilon": certified,
                 "certificate_valid": valid,
@@ -1050,6 +1068,7 @@ def run_prior_art_comparison(
                     "mass_privacy_weight": privacy_weight,
                     "mass_utility_weight": utility_weight,
                     "mass_temperature": temperature,
+                    "mass_infonce_weight": float(config.get("mass_infonce_weight", 1.0)),
                 }
             )
             if resume and _result_key(probe) in records:

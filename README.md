@@ -481,6 +481,22 @@ the shared cost-medoid decoder. The output candidate width is distinct from
 the released token's encoding width, which is `ceil(log2(K))`. Results record
 K and L, and method contracts record the actual token encoding width.
 
+MaSS now adds an InfoNCE information-preservation term by default
+(`mass_infonce_weight: 1.0`). A shared learned token embedding scores which
+source token generated an output. Source negatives are drawn within the same
+public context, and the expectation over categorical outputs is computed
+exactly through the channel. This finite adaptation uses the output-to-source
+direction of upstream's symmetric InfoNCE, not its complete two-direction
+neural objective; certificates record that distinction. The CTR cost and MI
+penalties remain in the objective.
+
+The dedicated CLI also accepts `--mass-infonce-weight`,
+`--mass-infonce-temperature`, `--mass-infonce-batch-size`, and
+`--mass-infonce-embedding-dim`. Weight zero reproduces the prior objective as
+an ablation. Defaults are weight 1, temperature 0.07, batch size 64, and
+embedding dimension 32. The shared embeddings are optimized jointly with the
+channel and saved in each model NPZ. They are not inference inputs.
+
 The runner resumes completed native and MaSS cells by default, trains MaSS
 only from `D_design`, constructs formal uncertainty sets only from `D_cert`,
 evaluates CTR utility only on `D_test`, writes compact factorized certificate
@@ -510,6 +526,11 @@ before cover calibration. MI columns are JSON objects keyed by attribute name
 and use nats. The legacy unprefixed metric columns remain aliases for the
 pre-update measurements. Existing CSVs are not rewritten; regenerating these
 additional columns requires retraining the corresponding MaSS cell.
+InfoNCE adds `pre_update_infonce_loss`, `post_update_infonce_loss`, and
+`infonce_batch_seed`. Losses are unweighted; total loss includes the configured
+InfoNCE weight. Both stages use the same source batch within an epoch, while
+successive epochs draw fresh batches. The stored seed and final embeddings
+allow the final InfoNCE measurement to be reproduced from `D_design`.
 
 ## Deployment requirements
 

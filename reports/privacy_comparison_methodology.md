@@ -28,6 +28,8 @@ For each frozen public context, including predeclared contexts absent from `D_de
 
 Unlike the official neural MaSS implementation, this finite discrete adaptation computes `I(A;O|B,S)` exactly from `D_design` joint masses and applies the paper's same violation direction and `d^2+|d|` penalty. The selected cost supplies the utility term. If useful labels and `n` are configured, their exact discrete conditional MI uses the symmetric lower-bound penalty. This is `MaSS-12 (finite-output adaptation)`, not official or original MaSS.
 
+The adaptation additionally preserves source information with conditional output-to-source InfoNCE. Within each public context, source tokens and their in-batch negatives are sampled iid from the design marginal. A shared learned unit-normalized token embedding classifies which source generated an output. The output expectation is enumerated through `Q=pi D`, giving exact channel and embedding gradients for each sampled source batch. This is one direction of the official symmetric InfoNCE objective; it does not reproduce the full neural two-direction objective or upstream pretraining. The configurable weight defaults to 1, and weight 0 is the prior cost-only ablation. History records unweighted InfoNCE losses before and after each update using the same source batch, its seed, and model artifacts retain final embeddings. The training InfoNCE estimate is not a privacy certificate.
+
 Pilot controls are `mass_m_list`, `mass_n_list`, privacy/utility weights, training seed, epochs, finite-block mode, and temperature. A full grid is allowed only after raw achieved leakage changes across the pilot. The configured `m,n` values are never copied into achieved-privacy fields.
 
 ## Certified cover calibration

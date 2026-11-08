@@ -272,6 +272,18 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if mass_epochs < 1:
             raise ValueError("mass_epochs must be positive")
         cfg["mass_epochs"] = mass_epochs
+        for key, default in (("mass_infonce_weight", 1.0), ("mass_infonce_temperature", 0.07)):
+            value = float(cfg.get(key, default))
+            if not math.isfinite(value) or value < 0 or (key.endswith("temperature") and value == 0):
+                raise ValueError(f"{key} must be finite and {'positive' if key.endswith('temperature') else 'nonnegative'}")
+            cfg[key] = value
+        for key, default, minimum in (
+            ("mass_infonce_batch_size", 64, 2), ("mass_infonce_embedding_dim", 32, 1)
+        ):
+            value = int(cfg.get(key, default))
+            if value < minimum:
+                raise ValueError(f"{key} must be at least {minimum}")
+            cfg[key] = value
         temperatures = cfg.get("mass_temperature_list", [1.0])
         if not temperatures or any(float(value) <= 0 for value in temperatures):
             raise ValueError("mass_temperature_list values must be positive")

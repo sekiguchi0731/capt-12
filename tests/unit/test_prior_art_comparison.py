@@ -428,6 +428,7 @@ def _plot_frame() -> pd.DataFrame:
             "mass_privacy_weight": 1.0,
             "mass_utility_weight": 1.0,
             "mass_temperature": 1.0,
+            "mass_infonce_weight": 0.0,
         }
     )
     rows = []
