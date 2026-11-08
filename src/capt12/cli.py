@@ -10,7 +10,14 @@ import typer
 
 from capt12.certification.artifact import verify_certificate as verify_certificate_file
 from capt12.confidence.boxes import CONFIDENCE_REGISTRY
-from capt12.config import load_config, parse_csv_list, parse_profiles, run_id
+from capt12.config import (
+    comparison_design_name,
+    load_config,
+    parse_csv_list,
+    parse_profiles,
+    run_id,
+    validate_config,
+)
 from capt12.data.inspect import inspect_parquet, write_inspection_json
 from capt12.decoders.registry import DECODER_REGISTRY
 from capt12.distortions.registry import DISTORTION_REGISTRY
@@ -527,10 +534,15 @@ def plot(
 @app.command("prior-art-comparison")
 def prior_art_comparison(
     config: Path = typer.Option(..., "--config", exists=True),
+    k: int | None = typer.Option(None, "--K", "--input-count", min=1, max=4096),
+    input_bits: int | None = typer.Option(None, "--input-bits", min=0, max=12),
+    l_count: int | None = typer.Option(None, "--L", "--output-count", min=1, max=4096),
+    output_bits: int | None = typer.Option(None, "--output-bits", min=0, max=12),
+    l_list: str | None = typer.Option(None, "--L-list", help="Full-phase output-candidate counts."),
     phase: str = typer.Option(
         "pilot",
         "--phase",
-        help="pilot runs epsilon=1/L=16; full adds the epsilon and L grids.",
+        help="pilot uses the configured epsilon/L; full adds the epsilon and L grids.",
     ),
     comparison_output_dir: Path | None = typer.Option(
         None,
@@ -550,6 +562,31 @@ def prior_art_comparison(
             )
         },
     )
+    for count, bits, hint in (
+        (k, input_bits, "--K/--input-bits"),
+        (l_count, output_bits, "--L/--output-bits"),
+    ):
+        if count is not None and bits is not None and count != 2**bits:
+            raise typer.BadParameter("count and bit width disagree", param_hint=hint)
+    selected_k = 2**input_bits if input_bits is not None else k
+    selected_l = 2**output_bits if output_bits is not None else l_count
+    if selected_k is not None:
+        cfg["K"] = selected_k
+        if selected_l is None:
+            cfg["L"] = min(int(cfg["L"]), selected_k)
+        cfg["comparison_L_list"] = [
+            value for value in cfg["comparison_L_list"] if value <= selected_k
+        ] or [int(cfg["L"])]
+    if selected_l is not None:
+        cfg["L"] = selected_l
+        cfg["comparison_L_list"] = [selected_l]
+    if l_list is not None:
+        cfg["comparison_L_list"] = parse_csv_list(l_list, int, minimum=1, maximum=4096)
+    try:
+        cfg["context_designs"] = [comparison_design_name(int(cfg["K"]), int(cfg["L"]))]
+        cfg = validate_config(cfg)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--K/--L/--L-list") from error
     if not cfg.get("prior_art_comparison", False):
         raise typer.BadParameter(
             "dedicated comparison runner requires prior_art_comparison: true",

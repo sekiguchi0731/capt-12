@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,15 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
         elif value is not None:
             result[key] = value
     return result
+
+
+def comparison_design_name(k: int, block_count: int) -> str:
+    """Select the shared CAPT/MaSS decoder, including the uncompressed case."""
+    if not 1 <= block_count <= k <= 4096:
+        raise ValueError("comparison dimensions must satisfy 1 <= L <= K <= 4096")
+    if block_count == k:
+        return f"singleton_identity_L{k}"
+    return f"joint_kmedoids_cost_medoid_L{block_count}"
 
 
 def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -224,17 +234,20 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("cutting_plane_checkpoint_every must be positive")
     cfg["cutting_plane_checkpoint_every"] = checkpoint_every
     if "context_designs" in cfg:
-        valid_context_designs = {
-            "joint_kmedoids_cost_medoid_L8",
-            "joint_kmedoids_cost_medoid_L16",
-            "joint_kmedoids_cost_medoid_L32",
-            "singleton_identity_L64",
-        }
         context_designs = list(dict.fromkeys(map(str, cfg["context_designs"])))
-        if len(context_designs) != 1 or context_designs[0] not in valid_context_designs:
+        match = (
+            re.fullmatch(r"(joint_kmedoids_cost_medoid|singleton_identity)_L([1-9]\d*)", context_designs[0])
+            if len(context_designs) == 1 else None
+        )
+        if match is None or not 1 <= int(match[2]) <= 4096:
             raise ValueError(
-                "context_designs must select exactly one prescribed L8, L16, L32, or L64 design"
+                "context_designs must select exactly one joint-kmedoids or singleton design with 1 <= L <= 4096"
             )
+        if "K" in cfg and (
+            int(match[2]) > cfg["K"]
+            or (match[1] == "singleton_identity" and int(match[2]) != cfg["K"])
+        ):
+            raise ValueError("context design must satisfy L <= K; singleton identity requires L=K")
         cfg["context_designs"] = context_designs
     if "certificate_channel_repair" in cfg:
         if cfg["certificate_channel_repair"] != "uniform_full_support_mixing":
@@ -252,13 +265,6 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         key.startswith("mass_") for key in cfg
     )
     if prior_art_comparison:
-        if bool(cfg.get("prior_art_comparison", False)):
-            if int(cfg.get("K", 0)) != 4096:
-                raise ValueError(
-                    "the primary prior-art comparison requires the fixed 12-bit K=4096 token"
-                )
-            if int(cfg.get("L", 0)) != 16:
-                raise ValueError("the primary prior-art comparison requires L=16")
         if cfg.get("mass_output_mode", "finite_block") != "finite_block":
             raise ValueError("MaSS-12 comparison requires mass_output_mode: finite_block")
         cfg["mass_output_mode"] = "finite_block"
@@ -297,11 +303,11 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if pilot_range <= 0:
             raise ValueError("mass_pilot_min_epsilon_range must be positive")
         cfg["mass_pilot_min_epsilon_range"] = pilot_range
-        comparison_blocks = cfg.get("comparison_L_list", [8, 16, 32])
+        comparison_blocks = cfg.get("comparison_L_list", [int(cfg.get("L", 16))])
         if not comparison_blocks or any(
-            int(value) not in {8, 16, 32} for value in comparison_blocks
+            not 1 <= int(value) <= int(cfg.get("K", 4096)) for value in comparison_blocks
         ):
-            raise ValueError("comparison_L_list must contain only L=8, L=16, or L=32")
+            raise ValueError("comparison_L_list must satisfy 1 <= L <= K")
         cfg["comparison_L_list"] = list(map(int, comparison_blocks))
         cost_list = list(
             dict.fromkeys(

@@ -24,6 +24,7 @@ RESULT_COLUMNS = (
     "seed",
     "mass_seed",
     "target_epsilon",
+    "K",
     "L",
     "mass_m",
     "mass_n",
@@ -78,7 +79,7 @@ _METHOD_COLORS = {
 
 def _ldp_relative_utility(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach the same-seed/same-target optimal-LDP log-loss reference."""
-    keys = ["cost", "seed", "target_epsilon", "L"]
+    keys = ["cost", "seed", "target_epsilon", "K", "L"]
     ldp = frame.loc[frame["method"] == "optimal_ldp", [*keys, "empirical_log_loss"]].rename(
         columns={"empirical_log_loss": "ldp_empirical_log_loss"}
     )
@@ -94,7 +95,9 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
     empirical = _ldp_relative_utility(empirical)
     formal = empirical["certificate_valid"] & empirical["formal_comparable"]
     empirical = empirical.loc[formal].copy()
-    has_frontier = empirical.loc[empirical["L"] == 16, "target_epsilon"].nunique() >= 2
+    levels = sorted(empirical["L"].unique())
+    primary_l = 16 if 16 in levels else (levels[0] if levels else 16)
+    has_frontier = empirical.loc[empirical["L"] == primary_l, "target_epsilon"].nunique() >= 2
     has_sensitivity = empirical.loc[
         np.isclose(empirical["target_epsilon"].astype(float), 1.0), "L"
     ].nunique() >= 2
@@ -112,7 +115,7 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
         axis = axes[axis_index]
         axis_index += 1
         rows = empirical.loc[
-            (empirical["L"] == 16)
+            (empirical["L"] == primary_l)
             & empirical["method"].isin({"capt", "mass12_raw", "mass12_calibrated"})
             & np.isfinite(empirical["certified_upper_epsilon"].astype(float))
             & np.isfinite(empirical["utility_gain_micro_nats"].astype(float))
@@ -187,10 +190,9 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
         rows = empirical.loc[
             np.isclose(empirical["target_epsilon"].astype(float), 1.0)
             & empirical["method"].eq("capt")
-            & empirical["L"].isin([8, 16, 32])
             & np.isfinite(empirical["utility_gain_micro_nats"].astype(float))
         ].copy()
-        for seed, group in rows.groupby("seed", sort=True):
+        for _seed, group in rows.groupby("seed", sort=True):
             ordered = group.sort_values("L")
             axis.plot(
                 ordered["L"],
@@ -210,7 +212,7 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
         for block_count, mean in means.items():
             axis.hlines(mean, block_count - 0.8, block_count + 0.8, color="#111827", linewidth=2.4)
         axis.axhline(0, color=_METHOD_COLORS["optimal_ldp"], linewidth=1.2)
-        axis.set_xticks([8, 16, 32])
+        axis.set_xticks(sorted(rows["L"].unique()))
         axis.set_xlabel("Block count L")
         axis.set_ylabel(r"$10^6(\mathrm{LogLoss}_{LDP}-\mathrm{LogLoss}_{CAPT})$")
         axis.set_title("(b) Block-size sensitivity at ε=1", loc="left")
@@ -231,6 +233,9 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
+    if "K" not in frame:
+        # Historical comparison artifacts used the fixed K=4096 alphabet.
+        frame = frame.assign(K=4096)
     missing = sorted(set(RESULT_COLUMNS) - set(frame.columns))
     if missing:
         raise ValueError(f"prior-art results are missing columns: {missing}")
@@ -315,20 +320,26 @@ def _errorbar(axis: plt.Axes, rows: pd.DataFrame, x: str, y: str, method: str) -
     values_y = rows[y].to_numpy(float)
     low_name = f"{y}_ci95_low" if f"{y}_ci95_low" in rows else None
     high_name = f"{y}_ci95_high" if f"{y}_ci95_high" in rows else None
-    y_error = None
+    color = _METHOD_COLORS.get(method, "#111827")
     if low_name and high_name:
         low = rows[low_name].to_numpy(float)
         high = rows[high_name].to_numpy(float)
-        y_error = np.vstack([values_y - low, high - values_y])
-    axis.errorbar(
+        finite = np.isfinite(low) & np.isfinite(high)
+        # Percentile bootstrap intervals need not contain the observed mean.
+        # Center interval bars on their own midpoints, retaining the actual
+        # point estimate as a separate marker instead of clipping the bounds.
+        axis.errorbar(
+            values_x[finite], (low[finite] + high[finite]) / 2,
+            yerr=(high[finite] - low[finite]) / 2,
+            fmt="none", linewidth=1.2, capsize=2, color=color,
+        )
+    axis.plot(
         values_x,
         values_y,
-        yerr=y_error,
         marker="o",
         linestyle="-",
         linewidth=1.2,
-        capsize=2,
-        color=_METHOD_COLORS.get(method, "#111827"),
+        color=color,
         label=str(rows["display_name"].iloc[0]),
     )
 

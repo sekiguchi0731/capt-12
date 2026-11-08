@@ -26,7 +26,7 @@ from capt12.comparison.certificate import write_factorized_certificate
 from capt12.comparison.contracts import default_method_contracts
 from capt12.comparison.mass12 import Mass12FiniteChannel, _softmax, fit_mass12_finite
 from capt12.comparison.utility import FrozenCTRUtility, evaluate_frozen_ctr_utility
-from capt12.config import run_id, validate_config
+from capt12.config import comparison_design_name, run_id, validate_config
 from capt12.data.loader import load_parquet_sample
 from capt12.data.preprocessing import build_group_histograms
 from capt12.experiments.context_stratified import (
@@ -138,11 +138,11 @@ def _native_config(
             "output_dir": str(output_dir),
             "context_utility_objective": cost,
             "context_representation_mode": "objective_aligned",
-            "context_designs": [f"joint_kmedoids_cost_medoid_L{block_count}"],
+            "context_designs": [comparison_design_name(int(config["K"]), block_count)],
             "frozen_design_seed": int(seed),
             "seed": int(seed),
             "epsilon": float(epsilon),
-            "K": 4096,
+            "K": int(config["K"]),
             "L": int(block_count),
         }
     )
@@ -282,7 +282,7 @@ def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparis
         test_context=test_context,
         test_labels=test_frame[label_col].to_numpy(dtype=int),
         test_user_days=test_user_days,
-        service_probabilities=_probability_grid(reference, context_values, context_column, 4096),
+        service_probabilities=_probability_grid(reference, context_values, context_column, int(config["K"])),
         representation_token_cost=representation_token_cost,
     )
 
@@ -309,7 +309,7 @@ def _boxes_by_context(
         data.cert_tokens,
         profile=config["profiles"][0],
         context_columns=config.get("context_cols", []),
-        alphabet_size=4096,
+        alphabet_size=int(config["K"]),
         min_group_count=int(config.get("min_group_count", 20)),
         rare_group_policy=config.get("rare_group_policy", "confidence_box"),
         missing_group_policy=config.get("missing_group_policy", "full_simplex"),
@@ -433,6 +433,7 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "seed",
             "mass_seed",
             "target_epsilon",
+            "K",
             "L",
             "mass_m",
             "mass_n",
@@ -464,7 +465,7 @@ def _native_rows(
     seed: int,
     target_epsilon: float,
 ) -> list[dict[str, Any]]:
-    design_name = f"joint_kmedoids_cost_medoid_L{block_count}"
+    design_name = comparison_design_name(int(config["K"]), block_count)
     with np.load(
         native_path / "mechanism" / f"context_channels-{design_name}.npz"
     ) as payload:
@@ -510,7 +511,7 @@ def _native_rows(
                 certificate_path_obj,
                 input_to_block=factors,
                 decoder=decoder,
-                cover_distribution=np.ones(4096, dtype=float) / 4096,
+                cover_distribution=np.ones(int(config["K"]), dtype=float) / int(config["K"]),
                 mixing_weights={context: 0.0 for context in factors},
                 boxes=boxes,
                 adjacency=adjacency,
@@ -536,6 +537,7 @@ def _native_rows(
         row.update(
             {
                 "method": method,
+                "K": int(config["K"]),
                 "display_name": display_name,
                 "cost": cost,
                 "seed": seed,
@@ -629,7 +631,7 @@ def _mass_rows(
     utility_weight: float,
     temperature: float,
 ) -> list[dict[str, Any]]:
-    design_name = f"joint_kmedoids_cost_medoid_L{block_count}"
+    design_name = comparison_design_name(int(config["K"]), block_count)
     with np.load(
         native_path / "mechanism" / f"context_channels-{design_name}.npz"
     ) as payload:
@@ -685,11 +687,11 @@ def _mass_rows(
     calibration_tv: dict[str, float] = {}
     frequencies_by_context = {
         context: np.bincount(
-            data.design_tokens[data.design_context == context], minlength=4096
+            data.design_tokens[data.design_context == context], minlength=int(config["K"])
         ).astype(float)
         for context in contexts
     }
-    global_frequencies = np.bincount(data.design_tokens, minlength=4096).astype(float)
+    global_frequencies = np.bincount(data.design_tokens, minlength=int(config["K"])).astype(float)
     for context in contexts:
         weights = frequencies_by_context[context]
         if weights.sum() == 0:
@@ -805,6 +807,7 @@ def _mass_rows(
         row.update(
             {
                 "method": method,
+                "K": int(config["K"]),
                 "display_name": display_name,
                 "cost": cost,
                 "seed": frozen_seed,
@@ -864,10 +867,10 @@ def _phase_values(
     formal = float(config.get("formal_comparison_epsilon", 1.0))
     if phase == "pilot":
         pilot_seeds = list(map(int, config.get("comparison_pilot_seeds", seeds[:1])))
-        return costs, [16], pilot_seeds, [formal]
+        return costs, [int(config["L"])], pilot_seeds, [formal]
     if phase != "full":
         raise ValueError("phase must be pilot or full")
-    block_counts = list(map(int, config.get("comparison_L_list", [8, 16, 32])))
+    block_counts = list(map(int, config.get("comparison_L_list", [int(config["L"])])))
     epsilons = list(map(float, config.get("epsilon_list", [formal])))
     if formal not in epsilons:
         epsilons.append(formal)
@@ -897,6 +900,10 @@ def run_prior_art_comparison(
         pilot_summary = json.loads(pilot_summary_path.read_text(encoding="utf-8"))
         if pilot_summary.get("source_git_sha") != config["source_git_sha"]:
             raise ValueError("full comparison and MaSS pilot must use the same source Git SHA")
+        if (int(pilot_summary.get("K", 4096)), int(pilot_summary.get("L", 16))) != (
+            int(config["K"]), int(config["L"])
+        ):
+            raise ValueError("full comparison and MaSS pilot must use the same K and primary L")
         if not bool(pilot_summary.get("full_grid_allowed")):
             raise ValueError(
                 "MaSS pilot did not show the predeclared raw-epsilon variation required "
@@ -977,7 +984,7 @@ def run_prior_art_comparison(
         native_paths[(costs[0], block_counts[0], seeds[0], formal)],
     )
     common_cover = design_cover_distribution(
-        np.bincount(reference_data.design_tokens, minlength=4096),
+        np.bincount(reference_data.design_tokens, minlength=int(config["K"])),
         floor=float(config.get("cover_probability_floor", 1e-12)),
         source_split="D_design",
     )
@@ -1032,6 +1039,7 @@ def run_prior_art_comparison(
             probe.update(
                 {
                     "method": "mass12_calibrated",
+                    "K": int(config["K"]),
                     "cost": cost,
                     "seed": frozen_seed,
                     "mass_seed": mass_seed,
@@ -1102,6 +1110,8 @@ def run_prior_art_comparison(
             json.dumps(
                 {
                     "source_git_sha": config["source_git_sha"],
+                    "K": int(config["K"]),
+                    "L": int(config["L"]),
                     "raw_epsilon_range_by_cost": ranges,
                     "minimum_required_range": threshold,
                     "full_grid_allowed": full_allowed,
@@ -1113,7 +1123,7 @@ def run_prior_art_comparison(
             + "\n",
             encoding="utf-8",
         )
-    contracts = default_method_contracts()
+    contracts = default_method_contracts(token_count=int(config["K"]))
     write_method_contracts(contracts, path / "method_contracts.json")
     write_method_contracts(contracts, publication / "method_contracts.json")
     figure_paths = render_prior_art_figures(frame, contracts, publication / "figures")

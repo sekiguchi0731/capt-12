@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 
@@ -22,9 +22,9 @@ class MethodContract:
     exclusion_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.output_bits != 12 or not self.single_output:
+        if not 0 <= self.output_bits <= 12 or not self.single_output:
             if self.formal_comparable:
-                raise ValueError("formal CAPT comparison requires one 12-bit output")
+                raise ValueError("formal CAPT comparison requires one output of at most 12 bits")
         if self.uses_sensitive_value_online and self.deployable_under_capt:
             raise ValueError("a method using A_S online is not deployable under CAPT")
         if self.role not in {"main", "oracle", "diagnostic", "reject"}:
@@ -36,9 +36,11 @@ class MethodContract:
         return asdict(self)
 
 
-def default_method_contracts() -> list[MethodContract]:
+def default_method_contracts(*, token_count: int = 4096) -> list[MethodContract]:
     """Return contracts in deterministic publication order."""
-    return [
+    if not 1 <= token_count <= 4096:
+        raise ValueError("token_count must satisfy 1 <= K <= 4096")
+    contracts = [
         MethodContract(
             "capt",
             "CAPT-12",
@@ -202,4 +204,9 @@ def default_method_contracts() -> list[MethodContract]:
             "paper mechanism",
             "emits a tuple containing the real and dummy outputs, not one 12-bit token",
         ),
+    ]
+    return [
+        replace(contract, output_bits=(token_count - 1).bit_length())
+        if contract.output_bits == 12 else contract
+        for contract in contracts
     ]

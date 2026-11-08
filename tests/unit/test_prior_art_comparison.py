@@ -398,6 +398,7 @@ def _plot_frame() -> pd.DataFrame:
             "uses_sensitive_value_online": False,
             "oracle": False,
             "target_epsilon": 1.0,
+            "K": 4096,
             "L": 16,
             "seed": 0,
             "raw_upper_epsilon": 1.2,
@@ -470,6 +471,25 @@ def test_results_claim_gate_and_deterministic_plot_bytes(tmp_path: Path) -> None
     first_hashes = {path.name: path.read_bytes() for path in first}
     second_hashes = {path.name: path.read_bytes() for path in second}
     assert first_hashes == second_hashes
+
+
+def test_comparison_errorbar_preserves_interval_outside_point_estimate() -> None:
+    import matplotlib.pyplot as plt
+
+    from capt12.comparison.artifacts import _errorbar
+
+    rows = pd.DataFrame({
+        "x": [1.0], "excess_ctr_log_loss": [0.3],
+        "excess_ctr_log_loss_ci95_low": [0.1],
+        "excess_ctr_log_loss_ci95_high": [0.2], "display_name": ["CAPT"],
+    })
+    fig, axis = plt.subplots()
+    try:
+        _errorbar(axis, rows, "x", "excess_ctr_log_loss", "capt")
+        np.testing.assert_allclose(axis.collections[0].get_segments()[0], [[1.0, 0.1], [1.0, 0.2]])
+        np.testing.assert_allclose(axis.lines[-1].get_ydata(), [0.3])
+    finally:
+        plt.close(fig)
 
 
 def test_factorized_comparison_certificate_reconstructs_exact_q(tmp_path: Path) -> None:
@@ -594,3 +614,52 @@ def test_prior_art_config_and_cli_reject_ordinary_grid_and_dispatch_dedicated_ru
     assert captured["phase"] == "pilot"
     assert captured["resume"] is True
     assert captured["config"]["prior_art_comparison"] is True
+
+
+@pytest.mark.parametrize(
+    ("arguments", "k", "l_count"),
+    [
+        (["--K", "32", "--L", "7"], 32, 7),
+        (["--input-bits", "5", "--output-bits", "5"], 32, 32),
+        (["--K", "3"], 3, 3),
+    ],
+)
+def test_comparison_cli_shares_counts_and_decoder_with_both_methods(
+    monkeypatch, arguments: list[str], k: int, l_count: int
+) -> None:
+    from capt12.experiments.prior_art_comparison import _native_config, _phase_values
+
+    captured = {}
+
+    def fake_comparison(config, *, phase, resume):
+        captured.update(config)
+        return Path("outputs/fake-prior-art-run")
+
+    monkeypatch.setattr(
+        "capt12.experiments.prior_art_comparison.run_prior_art_comparison", fake_comparison
+    )
+    result = CliRunner().invoke(
+        app,
+        ["prior-art-comparison", "--config", "configs/criteo_prior_art_privacy_matched.yaml", *arguments],
+    )
+    assert result.exit_code == 0, result.output
+    assert (captured["K"], captured["L"]) == (k, l_count)
+    native = _native_config(
+        captured, Path("outputs/fake-native"), cost="teacher_kl",
+        block_count=l_count, seed=0, epsilon=1.0,
+    )
+    assert (native["K"], native["L"]) == (k, l_count)
+    assert native["context_designs"] == captured["context_designs"]
+    assert _phase_values(captured, "pilot")[1] == [l_count]
+    assert all(contract.output_bits == (k - 1).bit_length()
+               for contract in default_method_contracts(token_count=k) if contract.single_output)
+
+
+def test_comparison_cli_rejects_conflicting_count_and_bits() -> None:
+    result = CliRunner().invoke(
+        app,
+        ["prior-art-comparison", "--config", "configs/criteo_prior_art_privacy_matched.yaml",
+         "--K", "32", "--input-bits", "4"],
+    )
+    assert result.exit_code != 0
+    assert "disagree" in result.output

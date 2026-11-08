@@ -129,7 +129,12 @@ def _build_designs(
     # reported compression level. This makes L an isolated capacity ablation:
     # the representation estimand, privacy definition, and R objective do not
     # change when moving between L=8, 16, and 32.
-    for block_count in (8, 16, 32):
+    selected = set(config.get("context_designs", []))
+    block_counts = (
+        sorted(int(name.rsplit("_L", 1)[1]) for name in selected if name.startswith("joint_kmedoids_cost_medoid_L"))
+        if selected else (8, 16, 32)
+    )
+    for block_count in block_counts:
         if block_count > len(frequencies):
             continue
         joint_assignment = build_partition(
@@ -155,17 +160,19 @@ def _build_designs(
                 ),
             )
         )
-    singleton_assignment = np.arange(len(frequencies), dtype=int)
-    raw.append(
-        (
-            "singleton_identity_L64",
-            "Singleton identity (L=64)",
-            "singleton",
-            "identity",
-            singleton_assignment,
-            np.eye(len(frequencies)),
+    singleton_name = f"singleton_identity_L{len(frequencies)}"
+    if not selected or singleton_name in selected:
+        singleton_assignment = np.arange(len(frequencies), dtype=int)
+        raw.append(
+            (
+                singleton_name,
+                f"Singleton identity (L={len(frequencies)})",
+                "singleton",
+                "identity",
+                singleton_assignment,
+                np.eye(len(frequencies)),
+            )
         )
-    )
 
     designs: list[UtilityDesign] = []
     for name, label, partition_method, decoder_method, assignment, decoder in raw:

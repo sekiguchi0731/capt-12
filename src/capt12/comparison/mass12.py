@@ -209,7 +209,7 @@ class Mass12FiniteChannel:
         except ValueError as error:
             raise ValueError(f"unknown frozen public context: {context}") from error
         if not 0 <= int(token) < self.logits.shape[1]:
-            raise ValueError("token is outside the fixed 12-bit alphabet")
+            raise ValueError("token is outside the fixed decoder alphabet")
         return _softmax(self.logits[context_index, int(token)], self.temperature)
 
     def channel(self, public_context: Hashable = "all") -> np.ndarray:

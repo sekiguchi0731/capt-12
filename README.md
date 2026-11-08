@@ -457,7 +457,29 @@ capt12 prior-art-comparison \
 capt12 prior-art-comparison \
   --config configs/criteo_prior_art_privacy_matched.yaml \
   --phase full
+
+# Shared dimensions for CAPT and MaSS; arbitrary counts up to K=4096.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --K 32 --L 7 --phase pilot
+
+# Equivalent bit-width controls; L=K selects a singleton/identity decoder.
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --input-bits 5 --output-bits 5 --phase pilot
 ```
+
+`--K` (`--input-count`) sets the input and released-token alphabet for both
+methods. `--L` (`--output-count`) sets their shared number of representative
+output candidates, with `1 <= L <= K <= 4096`. The bit options mean `K=2^b`
+and `L=2^b`; conflicting count/bit options are rejected. A smaller K alone
+clamps the configured primary L and filters the full-phase L grid to fit K.
+An explicit L selects a one-value grid; `--L-list 3,7,32` overrides the full
+grid. Pilot uses the selected primary L. L=K uses the identity decoder so
+every input token is an available output candidate. Other L values build
+the shared cost-medoid decoder. The output candidate width is distinct from
+the released token's encoding width, which is `ceil(log2(K))`. Results record
+K and L, and method contracts record the actual token encoding width.
 
 The runner resumes completed native and MaSS cells by default, trains MaSS
 only from `D_design`, constructs formal uncertainty sets only from `D_cert`,
