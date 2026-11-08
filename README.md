@@ -481,6 +481,14 @@ The MaSS controls remain available through the config. They are intentionally
 not accepted as a MaSS dispatch through `run-grid`. Configured `m` and `n` are
 information-theoretic controls in nats, never achieved robust epsilon.
 
+Each MaSS `tables/mass-*-history.csv` records `pre_update_*` and
+`post_update_*` loss, distortion, sensitive MI, and useful MI for every epoch.
+The final `post_update_*` values describe the returned raw model on `D_design`,
+before cover calibration. MI columns are JSON objects keyed by attribute name
+and use nats. The legacy unprefixed metric columns remain aliases for the
+pre-update measurements. Existing CSVs are not rewritten; regenerating these
+additional columns requires retraining the corresponding MaSS cell.
+
 ## Deployment requirements
 
 Distribute all profile tables as one authenticated bundle with the same URL,

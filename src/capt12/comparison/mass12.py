@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -154,11 +153,17 @@ def _conditional_mi_and_gradient(
 
 @dataclass(frozen=True)
 class Mass12Epoch:
+    """Metrics before and after one update; unprefixed fields are pre-update."""
+
     epoch: int
     loss: float
     distortion: float
     sensitive_mi_nats: dict[str, float]
     useful_mi_nats: dict[str, float]
+    post_update_loss: float
+    post_update_distortion: float
+    post_update_sensitive_mi_nats: dict[str, float]
+    post_update_useful_mi_nats: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -339,13 +344,9 @@ def fit_mass12_finite(
     }
     block_cost = cost_array @ decoder_array.T
 
-    rng = np.random.default_rng(seed)
-    logits = rng.normal(0.0, 1e-3, size=(len(context_values), token_count, block_count))
-    first_moment = np.zeros_like(logits)
-    second_moment = np.zeros_like(logits)
-    history: list[Mass12Epoch] = []
-    for epoch in range(1, epochs + 1):
-        probabilities = _softmax(logits, temperature)
+    def evaluate_objective(
+        probabilities: np.ndarray,
+    ) -> tuple[float, float, dict[str, float], dict[str, float], np.ndarray]:
         distortion = float(np.sum(token_context_mass[:, :, None] * probabilities * block_cost))
         probability_gradient = utility_weight * token_context_mass[:, :, None] * block_cost
         total_loss = utility_weight * distortion
@@ -376,6 +377,17 @@ def fit_mass12_finite(
                     utility_weight * (2 * violation + 1) * information_gradient
                 )
 
+        return float(total_loss), distortion, sensitive_mi, useful_mi, probability_gradient
+
+    rng = np.random.default_rng(seed)
+    logits = rng.normal(0.0, 1e-3, size=(len(context_values), token_count, block_count))
+    first_moment = np.zeros_like(logits)
+    second_moment = np.zeros_like(logits)
+    history: list[Mass12Epoch] = []
+    probabilities = _softmax(logits, temperature)
+    metrics = evaluate_objective(probabilities)
+    for epoch in range(1, epochs + 1):
+        total_loss, distortion, sensitive_mi, useful_mi, probability_gradient = metrics
         centered_gradient = probability_gradient - np.sum(
             probability_gradient * probabilities, axis=-1, keepdims=True
         )
@@ -385,6 +397,11 @@ def fit_mass12_finite(
         corrected_first = first_moment / (1 - 0.9**epoch)
         corrected_second = second_moment / (1 - 0.999**epoch)
         logits -= learning_rate * corrected_first / (np.sqrt(corrected_second) + 1e-8)
+        probabilities = _softmax(logits, temperature)
+        # Reuse this measurement and gradient as the next epoch's pre-update
+        # state. Recording both stages needs just one extra evaluation per fit.
+        metrics = evaluate_objective(probabilities)
+        post_loss, post_distortion, post_sensitive_mi, post_useful_mi, _ = metrics
         history.append(
             Mass12Epoch(
                 epoch=epoch,
@@ -392,6 +409,10 @@ def fit_mass12_finite(
                 distortion=distortion,
                 sensitive_mi_nats=sensitive_mi,
                 useful_mi_nats=useful_mi,
+                post_update_loss=post_loss,
+                post_update_distortion=post_distortion,
+                post_update_sensitive_mi_nats=post_sensitive_mi,
+                post_update_useful_mi_nats=post_useful_mi,
             )
         )
 

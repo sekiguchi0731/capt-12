@@ -41,7 +41,6 @@ from capt12.privacy.adjacency import AdjacentPair, Group, build_adjacency
 from capt12.utils.artifacts import finish_run, prepare_run
 from capt12.utils.progress import ProgressLogger, process_memory_bytes
 
-
 _ORCHESTRATOR_KEYS = {
     "comparison_L_list",
     "comparison_output_dir",
@@ -569,6 +568,7 @@ def _native_rows(
 
 
 def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
+    """Write both update stages, retaining the legacy pre-update columns."""
     rows = []
     for value in model.history:
         rows.append(
@@ -578,6 +578,20 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
                 "distortion": value.distortion,
                 "sensitive_mi_nats": json.dumps(value.sensitive_mi_nats, sort_keys=True),
                 "useful_mi_nats": json.dumps(value.useful_mi_nats, sort_keys=True),
+                "pre_update_loss": value.loss,
+                "pre_update_distortion": value.distortion,
+                "pre_update_sensitive_mi_nats": json.dumps(
+                    value.sensitive_mi_nats, sort_keys=True
+                ),
+                "pre_update_useful_mi_nats": json.dumps(value.useful_mi_nats, sort_keys=True),
+                "post_update_loss": value.post_update_loss,
+                "post_update_distortion": value.post_update_distortion,
+                "post_update_sensitive_mi_nats": json.dumps(
+                    value.post_update_sensitive_mi_nats, sort_keys=True
+                ),
+                "post_update_useful_mi_nats": json.dumps(
+                    value.post_update_useful_mi_nats, sort_keys=True
+                ),
             }
         )
     pd.DataFrame(rows).to_csv(path, index=False)

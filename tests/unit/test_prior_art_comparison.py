@@ -206,6 +206,97 @@ def test_mass_operational_bounds_use_nats_and_constraint_directions() -> None:
         check_mass_operational_bounds(sensitive, useful, {"s": -0.1}, {"u": 0.0})
 
 
+@pytest.mark.parametrize("epochs", [1, 4])
+def test_mass_history_csv_records_both_update_stages_and_the_returned_model(
+    tmp_path: Path, epochs: int
+) -> None:
+    from capt12.experiments.prior_art_comparison import _mass_history
+
+    tokens = np.tile(np.arange(4), 6)
+    contexts = np.array(["a"] * 20 + ["b"] * 4)
+    sensitive = tokens // 2
+    useful = tokens % 2
+    cost = 1 - np.eye(4)
+    model = fit_mass12_finite(
+        tokens,
+        contexts,
+        sensitive,
+        np.eye(4),
+        cost,
+        useful_labels=useful,
+        loss_m=0.01,
+        loss_n=0.4,
+        privacy_weight=4.0,
+        utility_weight=1.7,
+        temperature=0.7,
+        seed=1,
+        epochs=epochs,
+    )
+    output_rows = np.stack(
+        [model.channel(context)[token] for token, context in zip(tokens, contexts, strict=True)]
+    )
+
+    def measured_conditional_mi(labels: np.ndarray) -> float:
+        # Independently enumerate the joint label/output table from the final
+        # token channel, rather than reusing the training MI implementation.
+        information = 0.0
+        for context in np.unique(contexts):
+            in_context = contexts == context
+            joint = np.stack(
+                [
+                    output_rows[in_context & (labels == label)].sum(axis=0) / len(tokens)
+                    for label in np.unique(labels)
+                ]
+            )
+            denominator = joint.sum(axis=1)[:, None] * joint.sum(axis=0)[None, :]
+            positive = joint > 0
+            information += float(
+                np.sum(
+                    joint[positive]
+                    * np.log(joint[positive] * in_context.mean() / denominator[positive])
+                )
+            )
+        return information
+
+    sensitive_mi = measured_conditional_mi(sensitive)
+    useful_mi = measured_conditional_mi(useful)
+    distortion = float(np.sum(output_rows * cost[tokens], axis=1).mean())
+    sensitive_violation = max(sensitive_mi - 0.01, 0.0)
+    useful_violation = max(0.4 - useful_mi, 0.0)
+    expected_loss = (
+        1.7 * distortion
+        + 4.0 * (sensitive_violation**2 + sensitive_violation)
+        + 1.7 * (useful_violation**2 + useful_violation)
+    )
+    final = model.history[-1]
+    assert final.post_update_sensitive_mi_nats["sensitive"] == pytest.approx(sensitive_mi)
+    assert final.post_update_useful_mi_nats["useful"] == pytest.approx(useful_mi)
+    assert final.post_update_distortion == pytest.approx(distortion)
+    assert final.post_update_loss == pytest.approx(expected_loss)
+    assert not np.isclose(final.loss, final.post_update_loss)
+    for previous, current in zip(model.history[:-1], model.history[1:], strict=True):
+        assert previous.post_update_loss == current.loss
+        assert previous.post_update_distortion == current.distortion
+        assert previous.post_update_sensitive_mi_nats == current.sensitive_mi_nats
+        assert previous.post_update_useful_mi_nats == current.useful_mi_nats
+
+    path = tmp_path / "mass-history.csv"
+    _mass_history(model, path)
+    frame = pd.read_csv(path)
+    assert frame["epoch"].tolist() == list(range(1, epochs + 1))
+    for field in ("loss", "distortion", "sensitive_mi_nats", "useful_mi_nats"):
+        assert frame[field].equals(frame[f"pre_update_{field}"])
+        assert f"post_update_{field}" in frame
+    assert frame.iloc[-1]["post_update_loss"] == pytest.approx(expected_loss)
+    assert frame.iloc[-1]["post_update_distortion"] == pytest.approx(distortion)
+    assert json.loads(frame.iloc[-1]["post_update_sensitive_mi_nats"])[
+        "sensitive"
+    ] == pytest.approx(sensitive_mi)
+    assert json.loads(frame.iloc[-1]["post_update_useful_mi_nats"])["useful"] == pytest.approx(
+        useful_mi
+    )
+
+
 def test_attack_family_is_frozen_on_attack_train_and_test_is_evaluation_only() -> None:
     groups = np.repeat(np.array(["d0", "d1", "d2", "d3"]), 2)
     labels = np.tile(np.array([0, 1]), 4)
