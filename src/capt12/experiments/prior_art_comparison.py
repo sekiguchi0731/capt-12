@@ -443,6 +443,8 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "mass_temperature",
             "mass_infonce_weight",
             "mass_infonce_direction",
+            "mass_infonce_pretrain_epochs",
+            "mass_infonce_pretrain_learning_rate",
             "mass_privacy_quadratic_weight", "mass_privacy_linear_weight",
             "mass_useful_quadratic_weight", "mass_useful_linear_weight",
         )
@@ -582,6 +584,8 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
             {
                 "epoch": value.epoch,
                 "mass_ctr_weight": model.ctr_weight,
+                "mass_infonce_pretrain_epochs": model.infonce_pretrain_epochs,
+                "mass_infonce_pretrain_completed_epochs": len(model.infonce_pretrain_history),
                 "loss": value.loss,
                 "distortion": value.distortion,
                 "sensitive_mi_nats": json.dumps(value.sensitive_mi_nats, sort_keys=True),
@@ -612,6 +616,23 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
             }
         )
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _mass_pretrain_history(model: Mass12FiniteChannel, path: Path) -> None:
+    columns = ["epoch", "pre_update_infonce_loss", "post_update_infonce_loss",
+               "infonce_batch_seed", "learning_rate", "temperature"]
+    rows = [
+        {
+            "epoch": value.epoch,
+            "pre_update_infonce_loss": value.loss,
+            "post_update_infonce_loss": value.post_update_loss,
+            "infonce_batch_seed": value.batch_seed,
+            "learning_rate": model.infonce_pretrain_learning_rate,
+            "temperature": model.infonce_temperature,
+        }
+        for value in model.infonce_pretrain_history
+    ]
+    pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
 
 
 def _verification_summary(
@@ -685,6 +706,8 @@ def _mass_rows(
         infonce_batch_size=int(config.get("mass_infonce_batch_size", 64)),
         infonce_embedding_dim=int(config.get("mass_infonce_embedding_dim", 32)),
         infonce_direction=str(config.get("mass_infonce_direction", "symmetric")),
+        infonce_pretrain_epochs=int(config.get("mass_infonce_pretrain_epochs", 100)),
+        infonce_pretrain_learning_rate=float(config.get("mass_infonce_pretrain_learning_rate", 0.01)),
         source_split="D_design",
         objective_name=cost,
         frozen_context_values=contexts,
@@ -695,6 +718,7 @@ def _mass_rows(
         f"-cw{model.ctr_weight:g}"
         f"-iw{model.infonce_weight:g}"
         f"-id{model.infonce_direction}"
+        f"-pe{model.infonce_pretrain_epochs}-plr{model.infonce_pretrain_learning_rate:g}"
     )
     model_path = comparison_path / "models" / f"{stem}.npz"
     probabilities = {
@@ -716,9 +740,17 @@ def _mass_rows(
         infonce_temperature=np.asarray(model.infonce_temperature),
         infonce_batch_size=np.asarray(model.infonce_batch_size),
         infonce_direction=np.asarray(model.infonce_direction),
+        infonce_pretrain_epochs=np.asarray(model.infonce_pretrain_epochs),
+        infonce_pretrain_completed_epochs=np.asarray(len(model.infonce_pretrain_history)),
+        infonce_pretrain_learning_rate=np.asarray(model.infonce_pretrain_learning_rate),
+        infonce_initial_embeddings=(
+            model.infonce_initial_embeddings if model.infonce_initial_embeddings is not None
+            else np.empty((len(decoder[0]), 0))
+        ),
         **{key: np.asarray(value) for key, value in penalty_weights.items()},
     )
     _mass_history(model, comparison_path / "tables" / f"{stem}-history.csv")
+    _mass_pretrain_history(model, comparison_path / "tables" / f"{stem}-infonce-pretrain.csv")
 
     raw_channels = FactorizedChannels(probabilities, decoder)
     raw_upper, raw_results = _verification_summary(raw_channels, boxes, adjacency)
@@ -862,6 +894,8 @@ def _mass_rows(
                 "mass_temperature": temperature,
                 "mass_infonce_weight": model.infonce_weight,
                 "mass_infonce_direction": model.infonce_direction,
+                "mass_infonce_pretrain_epochs": model.infonce_pretrain_epochs,
+                "mass_infonce_pretrain_learning_rate": model.infonce_pretrain_learning_rate,
                 **{f"mass_{key}": value for key, value in penalty_weights.items()},
                 "raw_upper_epsilon": raw_upper,
                 "certified_upper_epsilon": certified,
@@ -950,6 +984,9 @@ def run_prior_art_comparison(
             raise ValueError("full comparison and MaSS pilot must use the same K and primary L")
         if pilot_summary.get("mass_ctr_weight") != config["mass_ctr_weight"]:
             raise ValueError("full comparison and MaSS pilot must use the same mass_ctr_weight")
+        for key in ("mass_infonce_pretrain_epochs", "mass_infonce_pretrain_learning_rate"):
+            if pilot_summary.get(key) != config[key]:
+                raise ValueError(f"full comparison and MaSS pilot must use the same {key}")
         if not bool(pilot_summary.get("full_grid_allowed")):
             raise ValueError(
                 "MaSS pilot did not show the predeclared raw-epsilon variation required "
@@ -1099,6 +1136,8 @@ def run_prior_art_comparison(
                     "mass_temperature": temperature,
                     "mass_infonce_weight": float(config.get("mass_infonce_weight", 1.0)),
                     "mass_infonce_direction": str(config.get("mass_infonce_direction", "symmetric")),
+                    "mass_infonce_pretrain_epochs": int(config.get("mass_infonce_pretrain_epochs", 100)),
+                    "mass_infonce_pretrain_learning_rate": float(config.get("mass_infonce_pretrain_learning_rate", 0.01)),
                     **{
                         f"mass_{key}": float(config.get(f"mass_{key}", 1.0))
                         for key in ("privacy_quadratic_weight", "privacy_linear_weight",
@@ -1168,6 +1207,8 @@ def run_prior_art_comparison(
                     "K": int(config["K"]),
                     "L": int(config["L"]),
                     "mass_ctr_weight": float(config["mass_ctr_weight"]),
+                    "mass_infonce_pretrain_epochs": int(config["mass_infonce_pretrain_epochs"]),
+                    "mass_infonce_pretrain_learning_rate": float(config["mass_infonce_pretrain_learning_rate"]),
                     "raw_epsilon_range_by_cost": ranges,
                     "minimum_required_range": threshold,
                     "full_grid_allowed": full_allowed,

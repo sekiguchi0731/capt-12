@@ -291,13 +291,18 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         for key in ("mass_m_list", "mass_n_list", "mass_pilot_m_list", "mass_pilot_n_list"):
             if key in cfg and (not cfg[key] or not all(math.isfinite(value) for value in cfg[key])):
                 raise ValueError(f"{key} must contain finite nonnegative values")
-        for key, default in (("mass_infonce_weight", 1.0), ("mass_infonce_temperature", 0.07)):
+        for key, default in (
+            ("mass_infonce_weight", 1.0), ("mass_infonce_temperature", 0.07),
+            ("mass_infonce_pretrain_learning_rate", 0.01),
+        ):
             value = float(cfg.get(key, default))
-            if not math.isfinite(value) or value < 0 or (key.endswith("temperature") and value == 0):
-                raise ValueError(f"{key} must be finite and {'positive' if key.endswith('temperature') else 'nonnegative'}")
+            positive = key != "mass_infonce_weight"
+            if not math.isfinite(value) or value < 0 or (positive and value == 0):
+                raise ValueError(f"{key} must be finite and {'positive' if positive else 'nonnegative'}")
             cfg[key] = value
         for key, default, minimum in (
-            ("mass_infonce_batch_size", 64, 2), ("mass_infonce_embedding_dim", 32, 1)
+            ("mass_infonce_batch_size", 64, 2), ("mass_infonce_embedding_dim", 32, 1),
+            ("mass_infonce_pretrain_epochs", 100, 0),
         ):
             value = int(cfg.get(key, default))
             if value < minimum:

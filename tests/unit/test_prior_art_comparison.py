@@ -432,6 +432,8 @@ def _plot_frame() -> pd.DataFrame:
             "mass_ctr_weight": 0.0,
             "mass_temperature": 1.0,
             "mass_infonce_weight": 0.0,
+            "mass_infonce_pretrain_epochs": 0,
+            "mass_infonce_pretrain_learning_rate": 0.01,
         }
     )
     rows = []
@@ -480,13 +482,18 @@ def test_results_claim_gate_and_deterministic_plot_bytes(tmp_path: Path) -> None
 def test_legacy_results_recover_the_actual_ctr_weight_and_resume_keys_distinguish_it() -> None:
     from capt12.experiments.prior_art_comparison import _result_key
 
-    legacy = _plot_frame().drop(columns="mass_ctr_weight")
+    legacy = _plot_frame().drop(columns=[
+        "mass_ctr_weight", "mass_infonce_pretrain_epochs", "mass_infonce_pretrain_learning_rate",
+    ])
     legacy["mass_utility_weight"] = 1.7
     restored = validate_results(legacy)
     assert (restored["mass_ctr_weight"] == 1.7).all()
+    assert (restored["mass_infonce_pretrain_epochs"] == 0).all()
     off = restored.loc[restored["method"] == "mass12_calibrated"].iloc[0].to_dict()
     on = {**off, "mass_ctr_weight": 0.0}
     assert _result_key(off) != _result_key(on)
+    pretrained = {**off, "mass_infonce_pretrain_epochs": 100}
+    assert _result_key(off) != _result_key(pretrained)
 
 
 def test_comparison_errorbar_preserves_interval_outside_point_estimate() -> None:

@@ -489,8 +489,8 @@ expectation exactly. The forward direction samples output candidates and
 enumerates one candidate at a time conditional on the other outputs, yielding
 unbiased channel gradients that include negative-candidate distributions.
 It is a conditional Monte Carlo estimate, not a full output enumeration.
-This finite adaptation still uses a learned token embedding instead of the
-official pretrained neural feature extractor. Its main condition uses InfoNCE
+This finite adaptation uses a pretrained token embedding in place of the
+official neural feature extractor. Its main condition uses InfoNCE
 and MI penalties, with the additional CTR cost disabled by default.
 
 `--mass-ctr-weight 0` explicitly selects this main condition (config:
@@ -521,6 +521,35 @@ InfoNCE weight zero disables just the InfoNCE term as
 an ablation. Defaults are weight 1, temperature 0.07, batch size 64, and
 embedding dimension 32. The shared embeddings are optimized jointly with the
 channel and saved in each model NPZ. They are not inference inputs.
+
+Before MaSS training, these embeddings are pretrained on the frozen
+`D_design` tokens using identity-pair InfoNCE: each token instance is its own
+positive and other batch instances are negatives. Batches are sampled within
+public contexts; repeated token IDs remain repeated negatives. No raw-feature
+encoder, sensitive labels, or click labels are trained or changed in this
+stage, and neither `D_cert` nor `D_test` is used. The pretrained weights
+initialize the embeddings for joint MaSS/channel training, with fresh Adam
+state. This is the original MaSS pretraining pattern adapted to tokens,
+not reuse of the upstream NN architecture or weights.
+
+Defaults are 100 pretraining updates and learning rate 0.01. Set
+`--mass-infonce-pretrain-epochs` and
+`--mass-infonce-pretrain-learning-rate` (matching `mass_*` config keys) to
+change them. Each pretraining epoch is one update with one fresh sampled batch
+per observed context, not a complete pass over all records. Epochs 0 recovers
+random embedding initialization; InfoNCE weight 0 skips the stage entirely.
+Pretraining forms batch-sized similarity matrices and does not allocate a
+K-by-K channel.
+
+Each model NPZ saves the main-training initializer as
+`infonce_initial_embeddings` and the final embeddings as
+`infonce_embeddings`, along with requested/completed pretraining epochs and
+learning rate. `tables/mass-*-infonce-pretrain.csv` records pre/post losses and
+the batch seed for each pretraining update; it has headers and no rows when
+pretraining is disabled. Results, certificate metadata, and main history also
+record the pretraining controls. Resume/plot keys distinguish them, and pilot
+and full phases must use the same controls. Older results without these
+columns are interpreted as having no pretraining.
 
 The runner resumes completed native and MaSS cells by default, trains MaSS
 only from `D_design`, constructs formal uncertainty sets only from `D_cert`,

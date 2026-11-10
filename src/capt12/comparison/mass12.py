@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from capt12.comparison.infonce import infonce_objective_and_gradient, sample_source_batches
+from capt12.comparison.infonce import (
+    InfoNCEPretrainEpoch,
+    infonce_objective_and_gradient,
+    pretrain_infonce_embeddings,
+    sample_source_batches,
+)
 from capt12.mechanisms.lp import validate_channel
 
 
@@ -199,6 +204,10 @@ class Mass12FiniteChannel:
     infonce_batch_size: int = 64
     infonce_embeddings: np.ndarray | None = None
     infonce_direction: str = "symmetric"
+    infonce_pretrain_epochs: int = 0
+    infonce_pretrain_learning_rate: float = 0.01
+    infonce_pretrain_history: tuple[InfoNCEPretrainEpoch, ...] = ()
+    infonce_initial_embeddings: np.ndarray | None = None
     privacy_quadratic_weight: float = 1.0
     privacy_linear_weight: float = 1.0
     useful_quadratic_weight: float = 1.0
@@ -209,6 +218,11 @@ class Mass12FiniteChannel:
             raise ValueError("MaSS-12 may be fitted from D_design only")
         if not np.isfinite(self.ctr_weight) or self.ctr_weight < 0:
             raise ValueError("ctr_weight must be finite and nonnegative")
+        if self.infonce_pretrain_epochs < 0 or (
+            not np.isfinite(self.infonce_pretrain_learning_rate)
+            or self.infonce_pretrain_learning_rate <= 0
+        ):
+            raise ValueError("invalid InfoNCE pretraining controls")
         if self.infonce_direction not in {"symmetric", "output_to_source", "source_to_output"}:
             raise ValueError("unknown InfoNCE direction")
         if self.logits.ndim != 3:
@@ -274,6 +288,10 @@ class Mass12FiniteChannel:
             "infonce_weight": self.infonce_weight,
             "infonce_temperature": self.infonce_temperature,
             "infonce_batch_size": self.infonce_batch_size,
+            "infonce_pretrain_epochs": self.infonce_pretrain_epochs,
+            "infonce_pretrain_completed_epochs": len(self.infonce_pretrain_history),
+            "infonce_pretrain_learning_rate": self.infonce_pretrain_learning_rate,
+            "infonce_pretrain_objective": "identity_pairs_within_public_context",
             "infonce_variant": self.infonce_direction,
             "infonce_upstream_symmetric": self.infonce_direction == "symmetric",
             "infonce_output_expectation": (
@@ -317,6 +335,8 @@ def fit_mass12_finite(
     infonce_batch_size: int = 64,
     infonce_embedding_dim: int = 32,
     infonce_direction: str = "symmetric",
+    infonce_pretrain_epochs: int = 100,
+    infonce_pretrain_learning_rate: float = 0.01,
     source_split: str = "D_design",
     objective_name: str = "teacher_kl",
     frozen_context_values: Sequence[Hashable] | None = None,
@@ -344,6 +364,10 @@ def fit_mass12_finite(
         raise ValueError("InfoNCE requires batch_size >= 2 and embedding_dim >= 1")
     if infonce_direction not in {"symmetric", "output_to_source", "source_to_output"}:
         raise ValueError("unknown InfoNCE direction")
+    if infonce_pretrain_epochs < 0 or (
+        not np.isfinite(infonce_pretrain_learning_rate) or infonce_pretrain_learning_rate <= 0
+    ):
+        raise ValueError("InfoNCE pretraining requires nonnegative epochs and a positive finite learning rate")
     penalty_weights = [privacy_quadratic_weight, privacy_linear_weight,
                        useful_quadratic_weight, useful_linear_weight]
     if not np.isfinite(penalty_weights).all() or any(value < 0 for value in penalty_weights):
@@ -468,6 +492,17 @@ def fit_mass12_finite(
         embedding_rng.normal(0, 0.1, size=(token_count, infonce_embedding_dim))
         if infonce_weight > 0 else None
     )
+    pretrain_history = ()
+    if embeddings is not None:
+        embeddings, pretrain_history = pretrain_infonce_embeddings(
+            embeddings, token_context_mass,
+            epochs=infonce_pretrain_epochs,
+            learning_rate=infonce_pretrain_learning_rate,
+            batch_size=infonce_batch_size,
+            temperature=infonce_temperature,
+            seed=seed,
+        )
+    initial_embeddings = embeddings.copy() if embeddings is not None else None
     embedding_first = np.zeros_like(embeddings) if embeddings is not None else None
     embedding_second = np.zeros_like(embeddings) if embeddings is not None else None
     history: list[Mass12Epoch] = []
@@ -562,6 +597,10 @@ def fit_mass12_finite(
         infonce_batch_size=int(infonce_batch_size),
         infonce_embeddings=embeddings,
         infonce_direction=infonce_direction,
+        infonce_pretrain_epochs=infonce_pretrain_epochs,
+        infonce_pretrain_learning_rate=infonce_pretrain_learning_rate,
+        infonce_pretrain_history=pretrain_history,
+        infonce_initial_embeddings=initial_embeddings,
         privacy_quadratic_weight=privacy_quadratic_weight,
         privacy_linear_weight=privacy_linear_weight,
         useful_quadratic_weight=useful_quadratic_weight,

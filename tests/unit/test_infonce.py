@@ -288,6 +288,7 @@ def test_infonce_cli_controls_are_passed_to_comparison(monkeypatch) -> None:
         "--mass-infonce-temperature", "0.4", "--mass-infonce-batch-size", "8",
         "--mass-infonce-embedding-dim", "3",
         "--mass-infonce-direction", "symmetric",
+        "--mass-infonce-pretrain-epochs", "7", "--mass-infonce-pretrain-learning-rate", "0.02",
         "--mass-ctr-weight", "0.7",
         "--mass-m-list", "0.1,0.2", "--mass-n-list", "0.01,0.03",
         "--mass-privacy-weight-list", "2,3", "--mass-utility-weight-list", "4,5",
@@ -300,6 +301,8 @@ def test_infonce_cli_controls_are_passed_to_comparison(monkeypatch) -> None:
     assert captured["mass_infonce_batch_size"] == 8
     assert captured["mass_infonce_embedding_dim"] == 3
     assert captured["mass_infonce_direction"] == "symmetric"
+    assert captured["mass_infonce_pretrain_epochs"] == 7
+    assert captured["mass_infonce_pretrain_learning_rate"] == 0.02
     assert captured["mass_ctr_weight"] == 0.7
     for name, values in (("m", [0.1, 0.2]), ("n", [0.01, 0.03]),
                          ("privacy_weight", [2.0, 3.0]), ("utility_weight", [4.0, 5.0])):

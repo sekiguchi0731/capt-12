@@ -13,13 +13,14 @@ from capt12.cli import app
 
 
 @pytest.mark.parametrize(
-    ("arguments", "k", "l_count", "ctr_weight"),
-    [(["--K", "32", "--L", "3"], 32, 3, 0.0),
-     (["--input-bits", "2", "--output-bits", "2", "--mass-ctr-weight", "0.7"], 4, 4, 0.7)],
+    ("arguments", "k", "l_count", "ctr_weight", "pretrain_epochs"),
+    [(["--K", "32", "--L", "3"], 32, 3, 0.0, 100),
+     (["--input-bits", "2", "--output-bits", "2", "--mass-ctr-weight", "0.7",
+       "--mass-infonce-pretrain-epochs", "0"], 4, 4, 0.7, 0)],
 )
 def test_comparison_cli_smoke_with_shared_alphabet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    arguments: list[str], k: int, l_count: int, ctr_weight: float,
+    arguments: list[str], k: int, l_count: int, ctr_weight: float, pretrain_epochs: int,
 ) -> None:
     # Only source provenance is substituted for a test checkout. Data loading,
     # model fitting, both optimizers, calibration, and certificates are real.
@@ -76,6 +77,8 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     assert set(mass_rows["mass_n"]) == {0.01}
     assert set(mass_rows["mass_infonce_direction"]) == {"symmetric"}
     assert set(mass_rows["mass_ctr_weight"]) == {ctr_weight}
+    assert set(mass_rows["mass_infonce_pretrain_epochs"]) == {pretrain_epochs}
+    assert set(mass_rows["mass_infonce_pretrain_learning_rate"]) == {0.01}
     assert np.isfinite(mass_rows["empirical_log_loss"]).all()
     assert (mass_rows["empirical_log_loss"] > 0).all()
     assert results.loc[results["method"] == "mass12_calibrated", "certificate_valid"].all()
@@ -87,6 +90,17 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         assert model["infonce_embeddings"].shape == (k, 32)
         assert float(model["infonce_weight"]) == 1.0
         assert float(model["ctr_weight"]) == ctr_weight
+        assert int(model["infonce_pretrain_epochs"]) == pretrain_epochs
+        assert int(model["infonce_pretrain_completed_epochs"]) == pretrain_epochs
+        assert model["infonce_initial_embeddings"].shape == (k, 32)
+        initial_embeddings = model["infonce_initial_embeddings"].copy()
+        random_weights = np.random.default_rng(np.random.SeedSequence([0, 701])).normal(
+            0, 0.1, size=(k, 32)
+        )
+        if pretrain_epochs:
+            assert not np.allclose(initial_embeddings, random_weights)
+        else:
+            np.testing.assert_array_equal(initial_embeddings, random_weights)
         assert np.isfinite(model["infonce_embeddings"]).all()
         assert str(model["infonce_direction"]) == "symmetric"
         assert float(model["privacy_quadratic_weight"]) == 2.0
@@ -100,6 +114,7 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     histories = list((publication / "runs").glob("*/tables/mass-*-history.csv"))
     assert len(histories) == 1
     history = pd.read_csv(histories[0])
+    assert set(history["mass_infonce_pretrain_completed_epochs"]) == {pretrain_epochs}
     assert set(history["mass_ctr_weight"]) == {ctr_weight}
     assert (history["pre_update_infonce_loss"] > 0).all()
     assert (history["post_update_infonce_loss"] > 0).all()
@@ -124,9 +139,17 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         )
     for certificate in mass_rows["certificate_path"]:
         if isinstance(certificate, str) and certificate:
-            assert json.loads(Path(certificate).read_text())["metadata"]["ctr_weight"] == ctr_weight
+            metadata = json.loads(Path(certificate).read_text())["metadata"]
+            assert metadata["ctr_weight"] == ctr_weight
+            assert metadata["infonce_pretrain_completed_epochs"] == pretrain_epochs
+    pretrain_paths = list((publication / "runs").glob("*/tables/mass-*-infonce-pretrain.csv"))
+    assert len(pretrain_paths) == 1
+    pretrain = pd.read_csv(pretrain_paths[0])
+    assert len(pretrain) == pretrain_epochs
+    assert np.isfinite(pretrain[["pre_update_infonce_loss", "post_update_infonce_loss"]].to_numpy(dtype=float)).all()
     summary = json.loads((publication / "pilot_summary.json").read_text())
     assert summary["mass_ctr_weight"] == ctr_weight
+    assert summary["mass_infonce_pretrain_epochs"] == pretrain_epochs
     contracts = json.loads((publication / "method_contracts.json").read_text())["methods"]
     assert all(item["output_bits"] == (k - 1).bit_length()
                for item in contracts if item["single_output"])

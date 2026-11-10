@@ -20,6 +20,98 @@ def sample_source_batches(
     return tuple(batches)
 
 
+def identity_infonce_and_gradient(
+    token_context_mass: np.ndarray,
+    embeddings: np.ndarray,
+    source_batches: tuple[np.ndarray, ...],
+    temperature: float,
+) -> tuple[float, np.ndarray]:
+    """Pretrain h with each original token as its own positive, as in MaSS.
+
+    Only sampled B-by-B similarities are formed, never a K-by-K identity
+    channel. Repeated tokens remain repeated in-batch negatives. The two
+    directions have the same loss because the shared similarity is symmetric.
+    """
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    if temperature <= 0 or not np.isfinite(temperature) or np.any(norms <= 1e-12):
+        raise ValueError("InfoNCE requires positive temperature and nonzero embeddings")
+    features = embeddings / norms
+    feature_gradient = np.zeros_like(features)
+    total_loss = 0.0
+    for mass_row, sources in zip(token_context_mass, source_batches, strict=True):
+        mass = float(mass_row.sum())
+        if mass <= 0 or not len(sources):
+            continue
+        batch_features = features[sources]
+        scores = batch_features @ batch_features.T / temperature
+        log_denominator = logsumexp(scores, axis=1)
+        scale = mass / len(sources)
+        total_loss += scale * float(np.sum(log_denominator - np.diag(scores)))
+        score_gradient = np.exp(scores - log_denominator[:, None])
+        score_gradient[np.diag_indices(len(sources))] -= 1
+        score_gradient *= scale
+        np.add.at(
+            feature_gradient, sources,
+            (score_gradient + score_gradient.T) @ batch_features / temperature,
+        )
+    gradient = (
+        feature_gradient - features * np.sum(feature_gradient * features, axis=1, keepdims=True)
+    ) / norms
+    return float(total_loss), gradient
+
+
+@dataclass(frozen=True)
+class InfoNCEPretrainEpoch:
+    epoch: int
+    loss: float
+    post_update_loss: float
+    batch_seed: int
+
+
+def pretrain_infonce_embeddings(
+    initial_embeddings: np.ndarray,
+    token_context_mass: np.ndarray,
+    *,
+    epochs: int,
+    learning_rate: float,
+    batch_size: int,
+    temperature: float,
+    seed: int,
+) -> tuple[np.ndarray, tuple[InfoNCEPretrainEpoch, ...]]:
+    """Fit identity-pair InfoNCE using only D_design token/context masses.
+
+    An epoch is one Adam update using fresh iid source batches within each
+    context. Adam state is local to pretraining and is not carried into MaSS.
+    """
+    if epochs < 0 or not np.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError("InfoNCE pretraining requires nonnegative epochs and a positive finite learning rate")
+    if batch_size < 2 or temperature <= 0 or not np.isfinite(temperature):
+        raise ValueError("InfoNCE pretraining requires batch_size >= 2 and a positive finite temperature")
+    embeddings = np.asarray(initial_embeddings, dtype=float).copy()
+    masses = np.asarray(token_context_mass, dtype=float)
+    if (
+        embeddings.ndim != 2 or not np.isfinite(embeddings).all()
+        or masses.ndim != 2 or masses.shape[1] != len(embeddings)
+        or not np.isfinite(masses).all() or np.any(masses < 0) or masses.sum() <= 0
+    ):
+        raise ValueError("InfoNCE pretraining requires finite embeddings and aligned nonnegative token masses")
+    first = np.zeros_like(embeddings)
+    second = np.zeros_like(embeddings)
+    history = []
+    for epoch in range(1, epochs + 1):
+        batch_seed = int(np.random.SeedSequence([seed, epoch, 704]).generate_state(1)[0])
+        batches = sample_source_batches(masses, batch_size, np.random.default_rng(batch_seed))
+        loss, gradient = identity_infonce_and_gradient(masses, embeddings, batches, temperature)
+        first = 0.9 * first + 0.1 * gradient
+        second = 0.999 * second + 0.001 * np.square(gradient)
+        embeddings -= learning_rate * (first / (1 - 0.9**epoch)) / (
+            np.sqrt(second / (1 - 0.999**epoch)) + 1e-8
+        )
+        post_loss, _ = identity_infonce_and_gradient(masses, embeddings, batches, temperature)
+        history.append(InfoNCEPretrainEpoch(epoch, loss, post_loss, batch_seed))
+    return embeddings, tuple(history)
+
+
 def expected_infonce_and_gradient(
     block_probabilities: np.ndarray,
     decoder: np.ndarray,

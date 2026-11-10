@@ -34,6 +34,8 @@ RESULT_COLUMNS = (
     "mass_temperature",
     "mass_infonce_weight",
     "mass_infonce_direction",
+    "mass_infonce_pretrain_epochs",
+    "mass_infonce_pretrain_learning_rate",
     "mass_privacy_quadratic_weight",
     "mass_privacy_linear_weight",
     "mass_useful_quadratic_weight",
@@ -152,6 +154,8 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
                     "mass_temperature",
                     "mass_infonce_weight",
                     "mass_infonce_direction",
+                    "mass_infonce_pretrain_epochs",
+                    "mass_infonce_pretrain_learning_rate",
                     "mass_privacy_quadratic_weight", "mass_privacy_linear_weight",
                     "mass_useful_quadratic_weight", "mass_useful_linear_weight",
                     "target_epsilon",
@@ -250,6 +254,8 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
         frame = frame.assign(mass_ctr_weight=frame["mass_utility_weight"])
     legacy_defaults = {
         "mass_infonce_direction": "output_to_source",
+        "mass_infonce_pretrain_epochs": 0,
+        "mass_infonce_pretrain_learning_rate": 0.01,
         "mass_privacy_quadratic_weight": 1.0, "mass_privacy_linear_weight": 1.0,
         "mass_useful_quadratic_weight": 1.0, "mass_useful_linear_weight": 1.0,
     }

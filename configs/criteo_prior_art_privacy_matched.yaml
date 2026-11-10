@@ -24,6 +24,8 @@ mass_learning_rate: 0.05
 mass_ctr_weight: 0.0
 mass_infonce_weight: 1.0
 mass_infonce_direction: symmetric
+mass_infonce_pretrain_epochs: 100
+mass_infonce_pretrain_learning_rate: 0.01
 mass_privacy_quadratic_weight: 1.0
 mass_privacy_linear_weight: 1.0
 mass_useful_quadratic_weight: 1.0
