@@ -272,6 +272,21 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if mass_epochs < 1:
             raise ValueError("mass_epochs must be positive")
         cfg["mass_epochs"] = mass_epochs
+        direction = str(cfg.get("mass_infonce_direction", "symmetric"))
+        if direction not in {"symmetric", "output_to_source", "source_to_output"}:
+            raise ValueError("mass_infonce_direction must be symmetric, output_to_source, or source_to_output")
+        cfg["mass_infonce_direction"] = direction
+        for key in (
+            "mass_privacy_quadratic_weight", "mass_privacy_linear_weight",
+            "mass_useful_quadratic_weight", "mass_useful_linear_weight",
+        ):
+            value = float(cfg.get(key, 1.0))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} must be finite and nonnegative")
+            cfg[key] = value
+        for key in ("mass_m_list", "mass_n_list", "mass_pilot_m_list", "mass_pilot_n_list"):
+            if key in cfg and (not cfg[key] or not all(math.isfinite(value) for value in cfg[key])):
+                raise ValueError(f"{key} must contain finite nonnegative values")
         for key, default in (("mass_infonce_weight", 1.0), ("mass_infonce_temperature", 0.07)):
             value = float(cfg.get(key, default))
             if not math.isfinite(value) or value < 0 or (key.endswith("temperature") and value == 0):

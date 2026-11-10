@@ -482,17 +482,22 @@ the released token's encoding width, which is `ceil(log2(K))`. Results record
 K and L, and method contracts record the actual token encoding width.
 
 MaSS now adds an InfoNCE information-preservation term by default
-(`mass_infonce_weight: 1.0`). A shared learned token embedding scores which
-source token generated an output. Source negatives are drawn within the same
-public context, and the expectation over categorical outputs is computed
-exactly through the channel. This finite adaptation uses the output-to-source
-direction of upstream's symmetric InfoNCE, not its complete two-direction
-neural objective; certificates record that distinction. The CTR cost and MI
-penalties remain in the objective.
+(`mass_infonce_weight: 1.0`). Its default `symmetric` mode averages both
+output-to-source and source-to-output in-batch losses. Source pairs are drawn
+within the same public context. The reverse direction enumerates the output
+expectation exactly. The forward direction samples output candidates and
+enumerates one candidate at a time conditional on the other outputs, yielding
+unbiased channel gradients that include negative-candidate distributions.
+It is a conditional Monte Carlo estimate, not a full output enumeration.
+This finite adaptation still uses a learned token embedding instead of the
+official pretrained neural feature extractor. CTR cost and MI penalties
+remain in the objective.
 
 The dedicated CLI also accepts `--mass-infonce-weight`,
 `--mass-infonce-temperature`, `--mass-infonce-batch-size`, and
-`--mass-infonce-embedding-dim`. Weight zero reproduces the prior objective as
+`--mass-infonce-embedding-dim`. `--mass-infonce-direction` selects `symmetric`,
+`output_to_source` (the previous implementation), or `source_to_output`.
+Weight zero reproduces the prior objective as
 an ablation. Defaults are weight 1, temperature 0.07, batch size 64, and
 embedding dimension 32. The shared embeddings are optimized jointly with the
 channel and saved in each model NPZ. They are not inference inputs.
@@ -515,9 +520,22 @@ capt12 render-prior-art-comparison \
   --output-dir outputs/prior_art_comparison/figures
 ```
 
-The MaSS controls remain available through the config. They are intentionally
-not accepted as a MaSS dispatch through `run-grid`. Configured `m` and `n` are
-information-theoretic controls in nats, never achieved robust epsilon.
+The dedicated comparison CLI accepts `--mass-m-list`, `--mass-n-list`,
+`--mass-privacy-weight-list`, and `--mass-utility-weight-list`. Each explicitly
+provided list overrides both pilot and full settings, so a pilot-specific
+config cannot silently mask a CLI override. Configured m/n are MI bounds in
+nats, never achieved robust epsilon; a positive n is a requested information
+floor, not an automatic guarantee of achieving it.
+
+Quadratic and linear penalty coefficients can be set independently with
+`--mass-privacy-quadratic-weight`, `--mass-privacy-linear-weight`,
+`--mass-useful-quadratic-weight`, and `--mass-useful-linear-weight`.
+All four default to 1. Sensitive penalties are
+`privacy_weight * (privacy_quadratic_weight*d^2 + privacy_linear_weight*d)`;
+useful penalties use the analogous useful coefficients and `utility_weight`.
+The latter overall weight also scales the CTR cost, while the useful
+coefficients change only the useful MI penalty. These controls are passed
+through config to the dedicated runner; `run-grid` remains CAPT-only.
 
 Each MaSS `tables/mass-*-history.csv` records `pre_update_*` and
 `post_update_*` loss, distortion, sensitive MI, and useful MI for every epoch.
@@ -527,10 +545,13 @@ and use nats. The legacy unprefixed metric columns remain aliases for the
 pre-update measurements. Existing CSVs are not rewritten; regenerating these
 additional columns requires retraining the corresponding MaSS cell.
 InfoNCE adds `pre_update_infonce_loss`, `post_update_infonce_loss`, and
-`infonce_batch_seed`. Losses are unweighted; total loss includes the configured
-InfoNCE weight. Both stages use the same source batch within an epoch, while
-successive epochs draw fresh batches. The stored seed and final embeddings
-allow the final InfoNCE measurement to be reproduced from `D_design`.
+`infonce_batch_seed`. Each stage also records the two directional losses and
+`infonce_output_seed`. The combined loss is their mean in symmetric mode.
+Losses are unweighted; total loss includes the configured InfoNCE weight.
+Both stages use the same source batch and output-sampling random numbers
+within an epoch; outputs are sampled from the corresponding pre/post channel.
+Successive epochs draw fresh batches. The seeds, direction, and final
+embeddings allow the final InfoNCE measurement to be reproduced from `D_design`.
 
 ## Deployment requirements
 

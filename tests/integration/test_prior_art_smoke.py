@@ -62,13 +62,19 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     config_path = tmp_path / "smoke.yaml"
     config_path.write_text(yaml.safe_dump(config))
     result = CliRunner().invoke(
-        app, ["prior-art-comparison", "--config", str(config_path), *arguments],
+        app, ["prior-art-comparison", "--config", str(config_path), *arguments,
+              "--mass-n-list", "0.01", "--mass-m-list", "0.1",
+              "--mass-privacy-quadratic-weight", "2.0", "--mass-privacy-linear-weight", "0.5",
+              "--mass-useful-quadratic-weight", "1.5", "--mass-useful-linear-weight", "0.75"],
     )
     assert result.exit_code == 0, f"{result.output[-5000:]}\n{result.exception!r}"
     results = pd.read_csv(publication / "results.csv")
     assert set(results["method"]) == {"capt", "optimal_ldp", "mass12_raw", "mass12_calibrated"}
     assert set(results["K"]) == {k}
     assert set(results["L"]) == {l_count}
+    mass_rows = results.loc[results["method"].str.startswith("mass12")]
+    assert set(mass_rows["mass_n"]) == {0.01}
+    assert set(mass_rows["mass_infonce_direction"]) == {"symmetric"}
     assert results.loc[results["method"] == "mass12_calibrated", "certificate_valid"].all()
     model_paths = list((publication / "runs").glob("*/models/mass-*.npz"))
     assert len(model_paths) == 1
@@ -78,6 +84,9 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         assert model["infonce_embeddings"].shape == (k, 32)
         assert float(model["infonce_weight"]) == 1.0
         assert np.isfinite(model["infonce_embeddings"]).all()
+        assert str(model["infonce_direction"]) == "symmetric"
+        assert float(model["privacy_quadratic_weight"]) == 2.0
+        assert float(model["privacy_linear_weight"]) == 0.5
         if l_count == k:
             np.testing.assert_array_equal(model["decoder"], np.eye(k))
     native_paths = list((publication / "runs").glob("*/native_runs/*/mechanism/context_channels-*.npz"))
@@ -89,6 +98,12 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     history = pd.read_csv(histories[0])
     assert (history["pre_update_infonce_loss"] > 0).all()
     assert (history["post_update_infonce_loss"] > 0).all()
+    for stage in ("pre_update", "post_update"):
+        np.testing.assert_allclose(
+            history[f"{stage}_infonce_loss"],
+            (history[f"{stage}_infonce_output_to_source_loss"]
+             + history[f"{stage}_infonce_source_to_output_loss"]) / 2,
+        )
     contracts = json.loads((publication / "method_contracts.json").read_text())["methods"]
     assert all(item["output_bits"] == (k - 1).bit_length()
                for item in contracts if item["single_output"])

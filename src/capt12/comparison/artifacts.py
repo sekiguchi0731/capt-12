@@ -32,6 +32,11 @@ RESULT_COLUMNS = (
     "mass_utility_weight",
     "mass_temperature",
     "mass_infonce_weight",
+    "mass_infonce_direction",
+    "mass_privacy_quadratic_weight",
+    "mass_privacy_linear_weight",
+    "mass_useful_quadratic_weight",
+    "mass_useful_linear_weight",
     "raw_upper_epsilon",
     "certified_upper_epsilon",
     "certificate_valid",
@@ -144,6 +149,9 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
                     "mass_utility_weight",
                     "mass_temperature",
                     "mass_infonce_weight",
+                    "mass_infonce_direction",
+                    "mass_privacy_quadratic_weight", "mass_privacy_linear_weight",
+                    "mass_useful_quadratic_weight", "mass_useful_linear_weight",
                     "target_epsilon",
                 ]
                 means = group.groupby(control_keys, dropna=False, sort=True)[
@@ -235,6 +243,14 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
+    legacy_defaults = {
+        "mass_infonce_direction": "output_to_source",
+        "mass_privacy_quadratic_weight": 1.0, "mass_privacy_linear_weight": 1.0,
+        "mass_useful_quadratic_weight": 1.0, "mass_useful_linear_weight": 1.0,
+    }
+    for name, value in legacy_defaults.items():
+        if name not in frame:
+            frame = frame.assign(**{name: value})
     if "mass_infonce_weight" not in frame:
         frame = frame.assign(mass_infonce_weight=0.0)
     if "K" not in frame:

@@ -22,6 +22,11 @@ mass_seed_list: [0, 1, 2, 3, 4]
 mass_epochs: 300
 mass_learning_rate: 0.05
 mass_infonce_weight: 1.0
+mass_infonce_direction: symmetric
+mass_privacy_quadratic_weight: 1.0
+mass_privacy_linear_weight: 1.0
+mass_useful_quadratic_weight: 1.0
+mass_useful_linear_weight: 1.0
 mass_infonce_temperature: 0.07
 mass_infonce_batch_size: 64
 mass_infonce_embedding_dim: 32

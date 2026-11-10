@@ -441,6 +441,9 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "mass_utility_weight",
             "mass_temperature",
             "mass_infonce_weight",
+            "mass_infonce_direction",
+            "mass_privacy_quadratic_weight", "mass_privacy_linear_weight",
+            "mass_useful_quadratic_weight", "mass_useful_linear_weight",
         )
     )
 
@@ -599,6 +602,11 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
                 "pre_update_infonce_loss": value.infonce_loss,
                 "post_update_infonce_loss": value.post_update_infonce_loss,
                 "infonce_batch_seed": value.infonce_batch_seed,
+                "infonce_output_seed": value.infonce_output_seed,
+                "pre_update_infonce_output_to_source_loss": value.infonce_output_to_source_loss,
+                "post_update_infonce_output_to_source_loss": value.post_update_infonce_output_to_source_loss,
+                "pre_update_infonce_source_to_output_loss": value.infonce_source_to_output_loss,
+                "post_update_infonce_source_to_output_loss": value.post_update_infonce_source_to_output_loss,
             }
         )
     pd.DataFrame(rows).to_csv(path, index=False)
@@ -648,6 +656,11 @@ def _mass_rows(
         for attribute in config["profiles"][0].split("+")
     }
     useful = {"click": data.design_frame[config.get("label_col", "is_clicked")].to_numpy()}
+    penalty_weights = {
+        key: float(config.get(f"mass_{key}", 1.0))
+        for key in ("privacy_quadratic_weight", "privacy_linear_weight",
+                    "useful_quadratic_weight", "useful_linear_weight")
+    }
     model = fit_mass12_finite(
         data.design_tokens,
         data.design_context,
@@ -659,6 +672,7 @@ def _mass_rows(
         loss_n=loss_n,
         privacy_weight=privacy_weight,
         utility_weight=utility_weight,
+        **penalty_weights,
         seed=mass_seed,
         epochs=int(config.get("mass_epochs", 100)),
         learning_rate=float(config.get("mass_learning_rate", 0.05)),
@@ -667,6 +681,7 @@ def _mass_rows(
         infonce_temperature=float(config.get("mass_infonce_temperature", 0.07)),
         infonce_batch_size=int(config.get("mass_infonce_batch_size", 64)),
         infonce_embedding_dim=int(config.get("mass_infonce_embedding_dim", 32)),
+        infonce_direction=str(config.get("mass_infonce_direction", "symmetric")),
         source_split="D_design",
         objective_name=cost,
         frozen_context_values=contexts,
@@ -675,6 +690,7 @@ def _mass_rows(
         f"mass-{cost}-L{block_count}-fseed{frozen_seed}-mseed{mass_seed}"
         f"-m{loss_m:g}-n{loss_n:g}-pw{privacy_weight:g}-uw{utility_weight:g}-t{temperature:g}"
         f"-iw{model.infonce_weight:g}"
+        f"-id{model.infonce_direction}"
     )
     model_path = comparison_path / "models" / f"{stem}.npz"
     probabilities = {
@@ -694,6 +710,8 @@ def _mass_rows(
         infonce_weight=np.asarray(model.infonce_weight),
         infonce_temperature=np.asarray(model.infonce_temperature),
         infonce_batch_size=np.asarray(model.infonce_batch_size),
+        infonce_direction=np.asarray(model.infonce_direction),
+        **{key: np.asarray(value) for key, value in penalty_weights.items()},
     )
     _mass_history(model, comparison_path / "tables" / f"{stem}-history.csv")
 
@@ -837,6 +855,8 @@ def _mass_rows(
                 "mass_utility_weight": utility_weight,
                 "mass_temperature": temperature,
                 "mass_infonce_weight": model.infonce_weight,
+                "mass_infonce_direction": model.infonce_direction,
+                **{f"mass_{key}": value for key, value in penalty_weights.items()},
                 "raw_upper_epsilon": raw_upper,
                 "certified_upper_epsilon": certified,
                 "certificate_valid": valid,
@@ -1069,6 +1089,12 @@ def run_prior_art_comparison(
                     "mass_utility_weight": utility_weight,
                     "mass_temperature": temperature,
                     "mass_infonce_weight": float(config.get("mass_infonce_weight", 1.0)),
+                    "mass_infonce_direction": str(config.get("mass_infonce_direction", "symmetric")),
+                    **{
+                        f"mass_{key}": float(config.get(f"mass_{key}", 1.0))
+                        for key in ("privacy_quadratic_weight", "privacy_linear_weight",
+                                    "useful_quadratic_weight", "useful_linear_weight")
+                    },
                 }
             )
             if resume and _result_key(probe) in records:
