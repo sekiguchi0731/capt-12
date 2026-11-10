@@ -490,14 +490,34 @@ enumerates one candidate at a time conditional on the other outputs, yielding
 unbiased channel gradients that include negative-candidate distributions.
 It is a conditional Monte Carlo estimate, not a full output enumeration.
 This finite adaptation still uses a learned token embedding instead of the
-official pretrained neural feature extractor. CTR cost and MI penalties
-remain in the objective.
+official pretrained neural feature extractor. Its main condition uses InfoNCE
+and MI penalties, with the additional CTR cost disabled by default.
+
+`--mass-ctr-weight 0` explicitly selects this main condition (config:
+`mass_ctr_weight: 0.0`). `--mass-ctr-weight 1` enables the CTR-oriented extension;
+any finite nonnegative weight is accepted. This coefficient independently
+scales the selected `teacher_kl`, `empirical_logloss`, or hybrid cost. It does
+not change the InfoNCE or useful-MI coefficients. All conditions are still
+evaluated with held-out CTR log loss. For example, run the same command with
+separate output directories to compare conditions:
+
+```bash
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml --K 32 --L 32 \
+  --mass-ctr-weight 0 --output-dir outputs/prior_art_no_ctr
+capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_privacy_matched.yaml --K 32 --L 32 \
+  --mass-ctr-weight 1 --output-dir outputs/prior_art_with_ctr
+```
+
+Disabling this term does not remove the shared CTR-derived decoder or the
+other finite-output adaptations; this remains an adaptation of MaSS.
 
 The dedicated CLI also accepts `--mass-infonce-weight`,
 `--mass-infonce-temperature`, `--mass-infonce-batch-size`, and
 `--mass-infonce-embedding-dim`. `--mass-infonce-direction` selects `symmetric`,
 `output_to_source` (the previous implementation), or `source_to_output`.
-Weight zero reproduces the prior objective as
+InfoNCE weight zero disables just the InfoNCE term as
 an ablation. Defaults are weight 1, temperature 0.07, batch size 64, and
 embedding dimension 32. The shared embeddings are optimized jointly with the
 channel and saved in each model NPZ. They are not inference inputs.
@@ -533,8 +553,12 @@ Quadratic and linear penalty coefficients can be set independently with
 All four default to 1. Sensitive penalties are
 `privacy_weight * (privacy_quadratic_weight*d^2 + privacy_linear_weight*d)`;
 useful penalties use the analogous useful coefficients and `utility_weight`.
-The latter overall weight also scales the CTR cost, while the useful
-coefficients change only the useful MI penalty. These controls are passed
+CTR cost is separately scaled by `mass_ctr_weight`; `utility_weight` scales
+only the useful MI penalties. The total objective is
+`mass_ctr_weight * distortion + sensitive_penalties + useful_penalties + mass_infonce_weight * infonce_loss`.
+Before this control was added, the CTR coefficient equaled `utility_weight`;
+set `mass_ctr_weight` to that value to reproduce a prior cell's objective.
+These controls are passed
 through config to the dedicated runner; `run-grid` remains CAPT-only.
 
 Each MaSS `tables/mass-*-history.csv` records `pre_update_*` and
@@ -544,6 +568,12 @@ before cover calibration. MI columns are JSON objects keyed by attribute name
 and use nats. The legacy unprefixed metric columns remain aliases for the
 pre-update measurements. Existing CSVs are not rewritten; regenerating these
 additional columns requires retraining the corresponding MaSS cell.
+The CTR weight is saved in results/history as `mass_ctr_weight`, and in model
+NPZs and certificate metadata as `ctr_weight`. Unweighted distortion remains
+logged at weight zero, so a positive distortion is not evidence of an active
+CTR training term. Resume/plot keys distinguish the CTR coefficient, and the
+full phase requires a pilot with the same coefficient. Rendering older results
+without this column recovers their CTR coefficient from `mass_utility_weight`.
 InfoNCE adds `pre_update_infonce_loss`, `post_update_infonce_loss`, and
 `infonce_batch_seed`. Each stage also records the two directional losses and
 `infonce_output_seed`. The combined loss is their mean in symmetric mode.

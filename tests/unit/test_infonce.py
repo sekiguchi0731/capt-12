@@ -159,7 +159,7 @@ def test_penalty_coefficients_are_independently_applied() -> None:
     model = fit_mass12_finite(
         tokens, None, tokens // 2, np.eye(4), 1 - np.eye(4),
         useful_labels=tokens % 2, loss_m=0.0, loss_n=0.4,
-        privacy_weight=2, utility_weight=3,
+        privacy_weight=2, utility_weight=3, ctr_weight=0.7,
         privacy_quadratic_weight=4, privacy_linear_weight=0.5,
         useful_quadratic_weight=1.5, useful_linear_weight=0.75,
         epochs=20, seed=2,
@@ -168,13 +168,59 @@ def test_penalty_coefficients_are_independently_applied() -> None:
     sensitive = max(final.post_update_sensitive_mi_nats["sensitive"], 0.0)
     useful = max(0.4 - final.post_update_useful_mi_nats["useful"], 0.0)
     expected = (
-        3 * final.post_update_distortion
+        0.7 * final.post_update_distortion
         + 2 * (4 * sensitive**2 + 0.5 * sensitive)
         + 3 * (1.5 * useful**2 + 0.75 * useful)
     )
     assert final.post_update_loss == pytest.approx(expected)
     assert model.provenance()["privacy_quadratic_weight"] == 4
     assert model.provenance()["useful_linear_weight"] == 0.75
+    assert model.provenance()["ctr_weight"] == 0.7
+
+
+def test_ctr_cost_is_off_by_default_without_disabling_mi_or_infonce() -> None:
+    tokens = np.tile(np.arange(4), 10)
+    controls = dict(
+        useful_labels=tokens % 2, loss_m=0.0, loss_n=0.4,
+        infonce_weight=1, infonce_temperature=0.4,
+        infonce_batch_size=8, infonce_embedding_dim=3, epochs=4, seed=2,
+    )
+    cost = 1 - np.eye(4)
+    first = fit_mass12_finite(tokens, None, tokens // 2, np.eye(4), cost, **controls)
+    changed_cost = fit_mass12_finite(
+        tokens, None, tokens // 2, np.eye(4), 20 * cost.T + 3, **controls,
+    )
+    explicit_zero = fit_mass12_finite(
+        tokens, None, tokens // 2, np.eye(4), cost, ctr_weight=0, **controls,
+    )
+    enabled = fit_mass12_finite(
+        tokens, None, tokens // 2, np.eye(4), cost, ctr_weight=2, **controls,
+    )
+    assert first.ctr_weight == 0
+    np.testing.assert_array_equal(first.logits, changed_cost.logits)
+    np.testing.assert_array_equal(first.infonce_embeddings, changed_cost.infonce_embeddings)
+    np.testing.assert_array_equal(first.logits, explicit_zero.logits)
+    assert not np.allclose(first.logits, enabled.logits)
+    assert first.history[-1].post_update_distortion != changed_cost.history[-1].post_update_distortion
+    assert first.history[-1].post_update_loss == changed_cost.history[-1].post_update_loss
+    for epoch in first.history:
+        sensitive = epoch.sensitive_mi_nats["sensitive"]
+        useful = max(0.4 - epoch.useful_mi_nats["useful"], 0)
+        assert epoch.infonce_loss > 0
+        assert sensitive > 0 and useful > 0
+        assert epoch.loss == pytest.approx(
+            sensitive**2 + sensitive + useful**2 + useful + epoch.infonce_loss
+        )
+
+
+@pytest.mark.parametrize("weight", [-1, float("nan"), float("inf")])
+def test_ctr_cost_weight_must_be_finite_and_nonnegative(weight: float) -> None:
+    with pytest.raises(ValueError, match="mass_ctr_weight"):
+        validate_config({"mass_ctr_weight": weight})
+    with pytest.raises(ValueError, match="ctr_weight"):
+        fit_mass12_finite(
+            np.arange(4), None, np.zeros(4), np.eye(4), np.zeros((4, 4)), ctr_weight=weight,
+        )
 
 
 @pytest.mark.parametrize("direction", ["output_to_source", "source_to_output", "symmetric"])
@@ -242,6 +288,7 @@ def test_infonce_cli_controls_are_passed_to_comparison(monkeypatch) -> None:
         "--mass-infonce-temperature", "0.4", "--mass-infonce-batch-size", "8",
         "--mass-infonce-embedding-dim", "3",
         "--mass-infonce-direction", "symmetric",
+        "--mass-ctr-weight", "0.7",
         "--mass-m-list", "0.1,0.2", "--mass-n-list", "0.01,0.03",
         "--mass-privacy-weight-list", "2,3", "--mass-utility-weight-list", "4,5",
         "--mass-privacy-quadratic-weight", "2.0", "--mass-privacy-linear-weight", "0.5",
@@ -253,6 +300,7 @@ def test_infonce_cli_controls_are_passed_to_comparison(monkeypatch) -> None:
     assert captured["mass_infonce_batch_size"] == 8
     assert captured["mass_infonce_embedding_dim"] == 3
     assert captured["mass_infonce_direction"] == "symmetric"
+    assert captured["mass_ctr_weight"] == 0.7
     for name, values in (("m", [0.1, 0.2]), ("n", [0.01, 0.03]),
                          ("privacy_weight", [2.0, 3.0]), ("utility_weight", [4.0, 5.0])):
         assert captured[f"mass_{name}_list"] == values

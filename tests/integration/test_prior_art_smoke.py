@@ -13,13 +13,13 @@ from capt12.cli import app
 
 
 @pytest.mark.parametrize(
-    ("arguments", "k", "l_count"),
-    [(["--K", "32", "--L", "3"], 32, 3),
-     (["--input-bits", "2", "--output-bits", "2"], 4, 4)],
+    ("arguments", "k", "l_count", "ctr_weight"),
+    [(["--K", "32", "--L", "3"], 32, 3, 0.0),
+     (["--input-bits", "2", "--output-bits", "2", "--mass-ctr-weight", "0.7"], 4, 4, 0.7)],
 )
 def test_comparison_cli_smoke_with_shared_alphabet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    arguments: list[str], k: int, l_count: int,
+    arguments: list[str], k: int, l_count: int, ctr_weight: float,
 ) -> None:
     # Only source provenance is substituted for a test checkout. Data loading,
     # model fitting, both optimizers, calibration, and certificates are real.
@@ -75,6 +75,9 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     mass_rows = results.loc[results["method"].str.startswith("mass12")]
     assert set(mass_rows["mass_n"]) == {0.01}
     assert set(mass_rows["mass_infonce_direction"]) == {"symmetric"}
+    assert set(mass_rows["mass_ctr_weight"]) == {ctr_weight}
+    assert np.isfinite(mass_rows["empirical_log_loss"]).all()
+    assert (mass_rows["empirical_log_loss"] > 0).all()
     assert results.loc[results["method"] == "mass12_calibrated", "certificate_valid"].all()
     model_paths = list((publication / "runs").glob("*/models/mass-*.npz"))
     assert len(model_paths) == 1
@@ -83,6 +86,7 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         assert model["decoder"].shape == (l_count, k)
         assert model["infonce_embeddings"].shape == (k, 32)
         assert float(model["infonce_weight"]) == 1.0
+        assert float(model["ctr_weight"]) == ctr_weight
         assert np.isfinite(model["infonce_embeddings"]).all()
         assert str(model["infonce_direction"]) == "symmetric"
         assert float(model["privacy_quadratic_weight"]) == 2.0
@@ -96,6 +100,7 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     histories = list((publication / "runs").glob("*/tables/mass-*-history.csv"))
     assert len(histories) == 1
     history = pd.read_csv(histories[0])
+    assert set(history["mass_ctr_weight"]) == {ctr_weight}
     assert (history["pre_update_infonce_loss"] > 0).all()
     assert (history["post_update_infonce_loss"] > 0).all()
     for stage in ("pre_update", "post_update"):
@@ -104,6 +109,24 @@ def test_comparison_cli_smoke_with_shared_alphabet(
             (history[f"{stage}_infonce_output_to_source_loss"]
              + history[f"{stage}_infonce_source_to_output_loss"]) / 2,
         )
+        sensitive = history[f"{stage}_sensitive_mi_nats"].map(
+            lambda value: max(next(iter(json.loads(value).values())) - 0.1, 0)
+        )
+        useful = history[f"{stage}_useful_mi_nats"].map(
+            lambda value: max(0.01 - json.loads(value)["click"], 0)
+        )
+        np.testing.assert_allclose(
+            history[f"{stage}_loss"],
+            ctr_weight * history[f"{stage}_distortion"]
+            + 2 * sensitive**2 + 0.5 * sensitive
+            + 1.5 * useful**2 + 0.75 * useful
+            + history[f"{stage}_infonce_loss"],
+        )
+    for certificate in mass_rows["certificate_path"]:
+        if isinstance(certificate, str) and certificate:
+            assert json.loads(Path(certificate).read_text())["metadata"]["ctr_weight"] == ctr_weight
+    summary = json.loads((publication / "pilot_summary.json").read_text())
+    assert summary["mass_ctr_weight"] == ctr_weight
     contracts = json.loads((publication / "method_contracts.json").read_text())["methods"]
     assert all(item["output_bits"] == (k - 1).bit_length()
                for item in contracts if item["single_output"])

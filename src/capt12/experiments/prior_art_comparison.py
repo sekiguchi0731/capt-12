@@ -439,6 +439,7 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "mass_n",
             "mass_privacy_weight",
             "mass_utility_weight",
+            "mass_ctr_weight",
             "mass_temperature",
             "mass_infonce_weight",
             "mass_infonce_direction",
@@ -580,6 +581,7 @@ def _mass_history(model: Mass12FiniteChannel, path: Path) -> None:
         rows.append(
             {
                 "epoch": value.epoch,
+                "mass_ctr_weight": model.ctr_weight,
                 "loss": value.loss,
                 "distortion": value.distortion,
                 "sensitive_mi_nats": json.dumps(value.sensitive_mi_nats, sort_keys=True),
@@ -672,6 +674,7 @@ def _mass_rows(
         loss_n=loss_n,
         privacy_weight=privacy_weight,
         utility_weight=utility_weight,
+        ctr_weight=float(config.get("mass_ctr_weight", 0.0)),
         **penalty_weights,
         seed=mass_seed,
         epochs=int(config.get("mass_epochs", 100)),
@@ -689,6 +692,7 @@ def _mass_rows(
     stem = (
         f"mass-{cost}-L{block_count}-fseed{frozen_seed}-mseed{mass_seed}"
         f"-m{loss_m:g}-n{loss_n:g}-pw{privacy_weight:g}-uw{utility_weight:g}-t{temperature:g}"
+        f"-cw{model.ctr_weight:g}"
         f"-iw{model.infonce_weight:g}"
         f"-id{model.infonce_direction}"
     )
@@ -703,6 +707,7 @@ def _mass_rows(
         logits=model.logits,
         decoder=model.decoder,
         temperature=np.asarray(model.temperature),
+        ctr_weight=np.asarray(model.ctr_weight),
         infonce_embeddings=(
             model.infonce_embeddings if model.infonce_embeddings is not None
             else np.empty((len(decoder[0]), 0))
@@ -853,6 +858,7 @@ def _mass_rows(
                 "mass_n": loss_n,
                 "mass_privacy_weight": privacy_weight,
                 "mass_utility_weight": utility_weight,
+                "mass_ctr_weight": model.ctr_weight,
                 "mass_temperature": temperature,
                 "mass_infonce_weight": model.infonce_weight,
                 "mass_infonce_direction": model.infonce_direction,
@@ -942,6 +948,8 @@ def run_prior_art_comparison(
             int(config["K"]), int(config["L"])
         ):
             raise ValueError("full comparison and MaSS pilot must use the same K and primary L")
+        if pilot_summary.get("mass_ctr_weight") != config["mass_ctr_weight"]:
+            raise ValueError("full comparison and MaSS pilot must use the same mass_ctr_weight")
         if not bool(pilot_summary.get("full_grid_allowed")):
             raise ValueError(
                 "MaSS pilot did not show the predeclared raw-epsilon variation required "
@@ -1087,6 +1095,7 @@ def run_prior_art_comparison(
                     "mass_n": loss_n,
                     "mass_privacy_weight": privacy_weight,
                     "mass_utility_weight": utility_weight,
+                    "mass_ctr_weight": float(config.get("mass_ctr_weight", 0.0)),
                     "mass_temperature": temperature,
                     "mass_infonce_weight": float(config.get("mass_infonce_weight", 1.0)),
                     "mass_infonce_direction": str(config.get("mass_infonce_direction", "symmetric")),
@@ -1109,6 +1118,7 @@ def run_prior_art_comparison(
                 loss_n=loss_n,
                 privacy_weight=privacy_weight,
                 utility_weight=utility_weight,
+                ctr_weight=float(config.get("mass_ctr_weight", 0.0)),
                 temperature=temperature,
             )
             rows = _mass_rows(
@@ -1157,6 +1167,7 @@ def run_prior_art_comparison(
                     "source_git_sha": config["source_git_sha"],
                     "K": int(config["K"]),
                     "L": int(config["L"]),
+                    "mass_ctr_weight": float(config["mass_ctr_weight"]),
                     "raw_epsilon_range_by_cost": ranges,
                     "minimum_required_range": threshold,
                     "full_grid_allowed": full_allowed,

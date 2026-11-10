@@ -21,6 +21,7 @@ mass_utility_weight_list: [0.1, 1.0, 10.0]
 mass_seed_list: [0, 1, 2, 3, 4]
 mass_epochs: 300
 mass_learning_rate: 0.05
+mass_ctr_weight: 0.0
 mass_infonce_weight: 1.0
 mass_infonce_direction: symmetric
 mass_privacy_quadratic_weight: 1.0

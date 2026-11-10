@@ -272,6 +272,10 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if mass_epochs < 1:
             raise ValueError("mass_epochs must be positive")
         cfg["mass_epochs"] = mass_epochs
+        ctr_weight = float(cfg.get("mass_ctr_weight", 0.0))
+        if not math.isfinite(ctr_weight) or ctr_weight < 0:
+            raise ValueError("mass_ctr_weight must be finite and nonnegative")
+        cfg["mass_ctr_weight"] = ctr_weight
         direction = str(cfg.get("mass_infonce_direction", "symmetric"))
         if direction not in {"symmetric", "output_to_source", "source_to_output"}:
             raise ValueError("mass_infonce_direction must be symmetric, output_to_source, or source_to_output")

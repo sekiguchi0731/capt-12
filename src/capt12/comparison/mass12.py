@@ -193,6 +193,7 @@ class Mass12FiniteChannel:
     display_name: str = "MaSS-12 (finite-output adaptation)"
     uses_sensitive_value_online: bool = False
     deployable_under_capt: bool = True
+    ctr_weight: float = 0.0
     infonce_weight: float = 0.0
     infonce_temperature: float = 0.07
     infonce_batch_size: int = 64
@@ -206,6 +207,8 @@ class Mass12FiniteChannel:
     def __post_init__(self) -> None:
         if self.source_split != "D_design":
             raise ValueError("MaSS-12 may be fitted from D_design only")
+        if not np.isfinite(self.ctr_weight) or self.ctr_weight < 0:
+            raise ValueError("ctr_weight must be finite and nonnegative")
         if self.infonce_direction not in {"symmetric", "output_to_source", "source_to_output"}:
             raise ValueError("unknown InfoNCE direction")
         if self.logits.ndim != 3:
@@ -267,6 +270,7 @@ class Mass12FiniteChannel:
             "temperature": self.temperature,
             "seed": self.seed,
             "objective_name": self.objective_name,
+            "ctr_weight": self.ctr_weight,
             "infonce_weight": self.infonce_weight,
             "infonce_temperature": self.infonce_temperature,
             "infonce_batch_size": self.infonce_batch_size,
@@ -299,6 +303,7 @@ def fit_mass12_finite(
     loss_n: Mapping[str, float] | float | None = None,
     privacy_weight: float = 1.0,
     utility_weight: float = 1.0,
+    ctr_weight: float = 0.0,
     privacy_quadratic_weight: float = 1.0,
     privacy_linear_weight: float = 1.0,
     useful_quadratic_weight: float = 1.0,
@@ -320,6 +325,8 @@ def fit_mass12_finite(
 
     Sensitive values are training labels.  The returned inference object has no
     sensitive-label argument and computes Q(o|z,b,s) exactly as pi @ decoder.
+    CTR cost is an optional extension, independently weighted and off by default.
+    Distortion is measured even when its training weight is zero.
     """
     if source_split != "D_design":
         raise ValueError("MaSS-12 training/tuning must use D_design, never D_cert or D_test")
@@ -327,6 +334,8 @@ def fit_mass12_finite(
         raise ValueError("epochs and learning_rate must be positive")
     if temperature <= 0:
         raise ValueError("temperature must be positive")
+    if not np.isfinite(ctr_weight) or ctr_weight < 0:
+        raise ValueError("ctr_weight must be finite and nonnegative")
     if not np.isfinite(infonce_weight) or infonce_weight < 0:
         raise ValueError("infonce_weight must be finite and nonnegative")
     if not np.isfinite(infonce_temperature) or infonce_temperature <= 0:
@@ -413,8 +422,8 @@ def fit_mass12_finite(
         probabilities: np.ndarray,
     ) -> tuple[float, float, dict[str, float], dict[str, float], np.ndarray]:
         distortion = float(np.sum(token_context_mass[:, :, None] * probabilities * block_cost))
-        probability_gradient = utility_weight * token_context_mass[:, :, None] * block_cost
-        total_loss = utility_weight * distortion
+        probability_gradient = ctr_weight * token_context_mass[:, :, None] * block_cost
+        total_loss = ctr_weight * distortion
 
         sensitive_mi: dict[str, float] = {}
         for name, joint in sensitive_joint.items():
@@ -547,6 +556,7 @@ def fit_mass12_finite(
         loss_n=n_values,
         seed=int(seed),
         objective_name=str(objective_name),
+        ctr_weight=float(ctr_weight),
         infonce_weight=float(infonce_weight),
         infonce_temperature=float(infonce_temperature),
         infonce_batch_size=int(infonce_batch_size),

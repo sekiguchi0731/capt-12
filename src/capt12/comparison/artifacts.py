@@ -30,6 +30,7 @@ RESULT_COLUMNS = (
     "mass_n",
     "mass_privacy_weight",
     "mass_utility_weight",
+    "mass_ctr_weight",
     "mass_temperature",
     "mass_infonce_weight",
     "mass_infonce_direction",
@@ -147,6 +148,7 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
                     "mass_n",
                     "mass_privacy_weight",
                     "mass_utility_weight",
+                    "mass_ctr_weight",
                     "mass_temperature",
                     "mass_infonce_weight",
                     "mass_infonce_direction",
@@ -243,6 +245,9 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
+    if "mass_ctr_weight" not in frame and "mass_utility_weight" in frame:
+        # Legacy runs always scaled CTR cost with the useful-MI weight.
+        frame = frame.assign(mass_ctr_weight=frame["mass_utility_weight"])
     legacy_defaults = {
         "mass_infonce_direction": "output_to_source",
         "mass_privacy_quadratic_weight": 1.0, "mass_privacy_linear_weight": 1.0,

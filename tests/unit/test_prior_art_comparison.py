@@ -228,6 +228,7 @@ def test_mass_history_csv_records_both_update_stages_and_the_returned_model(
         loss_n=0.4,
         privacy_weight=4.0,
         utility_weight=1.7,
+        ctr_weight=1.7,
         temperature=0.7,
         seed=1,
         epochs=epochs,
@@ -283,6 +284,7 @@ def test_mass_history_csv_records_both_update_stages_and_the_returned_model(
     path = tmp_path / "mass-history.csv"
     _mass_history(model, path)
     frame = pd.read_csv(path)
+    assert set(frame["mass_ctr_weight"]) == {1.7}
     assert frame["epoch"].tolist() == list(range(1, epochs + 1))
     for field in ("loss", "distortion", "sensitive_mi_nats", "useful_mi_nats"):
         assert frame[field].equals(frame[f"pre_update_{field}"])
@@ -427,6 +429,7 @@ def _plot_frame() -> pd.DataFrame:
             "mass_n": 0.0,
             "mass_privacy_weight": 1.0,
             "mass_utility_weight": 1.0,
+            "mass_ctr_weight": 0.0,
             "mass_temperature": 1.0,
             "mass_infonce_weight": 0.0,
         }
@@ -472,6 +475,18 @@ def test_results_claim_gate_and_deterministic_plot_bytes(tmp_path: Path) -> None
     first_hashes = {path.name: path.read_bytes() for path in first}
     second_hashes = {path.name: path.read_bytes() for path in second}
     assert first_hashes == second_hashes
+
+
+def test_legacy_results_recover_the_actual_ctr_weight_and_resume_keys_distinguish_it() -> None:
+    from capt12.experiments.prior_art_comparison import _result_key
+
+    legacy = _plot_frame().drop(columns="mass_ctr_weight")
+    legacy["mass_utility_weight"] = 1.7
+    restored = validate_results(legacy)
+    assert (restored["mass_ctr_weight"] == 1.7).all()
+    off = restored.loc[restored["method"] == "mass12_calibrated"].iloc[0].to_dict()
+    on = {**off, "mass_ctr_weight": 0.0}
+    assert _result_key(off) != _result_key(on)
 
 
 def test_comparison_errorbar_preserves_interval_outside_point_estimate() -> None:
