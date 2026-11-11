@@ -1,21 +1,44 @@
 # Prior-art comparison implementation report
 
-## Implemented without experiment execution
+## Current neural MaSS path (2026-11-11)
 
-- Method contracts encode online inputs, `A_S` use, deployability, output interface, formal eligibility, oracle/diagnostic/reject role, and exclusion reasons.
-- PBP oracle and common-channel nominal LPs implement ordered nominal profile constraints and D_design-only fitting guards.
-- MaSS-12 learns a finite block distribution, lifts it through the common decoder, computes discrete conditional MI exactly, preserves the paper's `m/n` directions and operational checks, and exposes no sensitive value on inference paths.
-- Common-cover calibration freezes a full-support D_design cover, bisects to tolerance at most `1e-8`, independently reverifies the endpoint, and records utility/TV/constant-channel provenance.
-- The attack-CMI diagnostic freezes equal-budget, user-day cross-fitted attacker families on `D_attack_train` and evaluates/bootstraps on `D_test` only.
-- Results validation and Figures A–E enforce the formal/empirical separation. Review ZIP creation and plot metadata are deterministic by construction.
-- `capt12 prior-art-comparison --phase pilot|full` now connects native CAPT/LDP runs to D_design MaSS fitting, exact robust verification, cover calibration, D_test evaluation, checkpointed result writing, and rendering. `run-grid` rejects prior-art/MaSS controls to prevent an accidental CAPT-only run.
-- Comparison certificates store the K-by-L input-to-block factor, L-by-K decoder, full-support cover, confidence boxes, and ordered adjacency. The independent verifier reconstructs the exact K-by-K `Q` per public context and reruns the existing support verifier; it does not accept configured MaSS `m` as achieved privacy.
-- The main renderer emits the requested certified privacy–utility frontier and epsilon=1 L-sensitivity view. The former Figures A–E are emitted under `figures/supplementary/`.
+The dedicated runner uses comparison/mass_nn.py. It implements a
+Gaussian-noise residual generator, pretrained attribute MLPs, a pretrained
+shared InfoNCE MLP, CE-based MI penalties, and alternating generator/feature
+then attribute updates following the official MaSS learning structure. The
+upstream source is pinned to 6fbe9be1ff155b3fdd2677de7977d801d10000b5.
 
-## Difference from official MaSS code
+MaSS receives the frozen input token directly and can generate all K output
+tokens. CAPT L and its medoid decoder are absent from the model and training
+signature. Models are reused across CAPT L values. The integer interface
+requires a categorical output head and score-function generator gradients;
+these adaptations, the public-context conditioning option, model sizes and
+training/evaluation controls are explicit in provenance.
 
-No official upstream file is vendored, modified, imported, or called. The CAPT adaptation replaces continuous neural generation and adversarial CE estimates with an exact finite categorical channel and exact discrete conditional MI over the design split. It retains the paper's constraint directions and penalty form. Consequently, it must be named `MaSS-12 (finite-output adaptation)`; the cover-wrapped method must be named `MaSS-12 + certified cover calibration`.
+No post-training common-cover mixture or MaSS CAPT certificate is generated.
+Only mass12_raw with mass_backend=neural_token is produced. Its own m/n and
+classifier MI estimates are saved separately from CAPT epsilon fields.
+Prediction/CTR evaluation integrates the categorical output analytically and
+uses Monte Carlo for Gaussian input noise. This approximation is identified
+in model metadata and does not change runtime sampling.
 
-## Deferred verification
+.pt checkpoints save all three network types, pretrained initial states,
+configuration, context/label vocabularies, entropy statistics, fixed design
+probe indices, and pre/post histories. Models reload through MassNN.load.
 
-Tests have been authored but not run in this turn. The required pilot/full grids, ruff, pytest, independent certificate verification, deterministic two-render hashes, runtime/memory report, and review packet creation must be executed only after the ongoing experiment is confirmed complete.
+The old finite-table utilities and PBP calibration helpers remain available
+for historical diagnostics; they are not selected by the dedicated MaSS
+runner. Existing historical measurement files are not rewritten.
+
+## Verification
+
+Tests compare the neural CE penalties and cross-view InfoNCE with the official
+formulas. A fully enumerated tiny categorical problem verifies the expected
+generator score-function gradient, including in-batch negatives. Tests cover
+pretrained initialization transfer, alternating network updates, hard-token
+inference, checkpoint roundtrip, direct K-way output, missing postprocessing,
+and real CLI CAPT/MaSS integration. The multi-L CLI smoke checks one shared
+MaSS checkpoint and identical MaSS CTR results across CAPT L values.
+
+Synthetic smoke measurements are implementation checks, not Criteo research
+results. No full Criteo experiment is claimed here.

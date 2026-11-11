@@ -14,19 +14,24 @@ from capt12.cli import app
 
 @pytest.mark.parametrize(
     ("arguments", "k", "l_count", "ctr_weight", "pretrain_epochs"),
-    [(["--K", "32", "--L", "3"], 32, 3, 0.0, 100),
+    [(["--K", "32", "--L", "3"], 32, 3, 0.0, 2),
      (["--input-bits", "2", "--output-bits", "2", "--mass-ctr-weight", "0.7",
-       "--mass-infonce-pretrain-epochs", "0"], 4, 4, 0.7, 0)],
+       "--mass-infonce-pretrain-epochs", "0"], 4, 4, 0.7, 0),
+     (["--K", "8", "--L", "2", "--L-list", "2,3", "--phase", "full"], 8, (2, 3), 0.0, 2)],
 )
 def test_comparison_cli_smoke_with_shared_alphabet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    arguments: list[str], k: int, l_count: int, ctr_weight: float, pretrain_epochs: int,
+    arguments: list[str], k: int, l_count: int | tuple[int, ...], ctr_weight: float, pretrain_epochs: int,
 ) -> None:
     # Only source provenance is substituted for a test checkout. Data loading,
-    # model fitting, both optimizers, calibration, and certificates are real.
+    # model fitting, neural/attribute optimizers, native certificates, and rendering are real.
     monkeypatch.setattr("capt12.pipeline.require_clean_worktree", lambda: "test-source-sha")
     monkeypatch.setattr(
         "capt12.certification.artifact.require_clean_worktree", lambda: "test-source-sha"
+    )
+    monkeypatch.setattr(
+        "capt12.comparison.calibration.calibrate_common_cover",
+        lambda *args, **kwargs: pytest.fail("MaSS cover calibration must not run"),
     )
     data_root = tmp_path / "data"
     rng = np.random.default_rng(19)
@@ -55,10 +60,17 @@ def test_comparison_cli_smoke_with_shared_alphabet(
             [[day] for day in range(1, 6)], strict=True,
         )),
         "cost_list": ["teacher_kl"],
-        "mass_epochs": 2, "mass_pilot_m_list": [0.1], "mass_pilot_n_list": [0.0],
+        "mass_epochs": 2, "mass_batch_size": 32, "mass_token_dim": 8,
+        "mass_hidden_dim": 16, "mass_attribute_pretrain_epochs": 2,
+        "mass_infonce_pretrain_epochs": 2, "mass_infonce_batch_size": 16,
+        "mass_infonce_embedding_dim": 4, "mass_eval_noise_samples": 2,
+        "mass_pilot_m_list": [0.1], "mass_pilot_n_list": [0.0],
         "mass_pilot_privacy_weight_list": [1.0], "mass_pilot_utility_weight_list": [1.0],
         "utility_cluster_bootstrap_replicates": 2,
         "solver_verbose": False,
+        "seeds": [0], "epsilon_list": [1.0], "require_mass_pilot_for_full": False,
+        "mass_privacy_weight_list": [1.0], "mass_utility_weight_list": [1.0],
+        "mass_temperature_list": [1.0], "mass_seed_list": [0],
     }
     config_path = tmp_path / "smoke.yaml"
     config_path.write_text(yaml.safe_dump(config))
@@ -70,60 +82,50 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     )
     assert result.exit_code == 0, f"{result.output[-5000:]}\n{result.exception!r}"
     results = pd.read_csv(publication / "results.csv")
-    assert set(results["method"]) == {"capt", "optimal_ldp", "mass12_raw", "mass12_calibrated"}
+    assert set(results["method"]) == {"capt", "optimal_ldp", "mass12_raw"}
     assert set(results["K"]) == {k}
-    assert set(results["L"]) == {l_count}
-    mass_rows = results.loc[results["method"].str.startswith("mass12")]
-    assert set(mass_rows["mass_n"]) == {0.01}
-    assert set(mass_rows["mass_infonce_direction"]) == {"symmetric"}
-    assert set(mass_rows["mass_ctr_weight"]) == {ctr_weight}
-    assert set(mass_rows["mass_infonce_pretrain_epochs"]) == {pretrain_epochs}
-    assert set(mass_rows["mass_infonce_pretrain_learning_rate"]) == {0.01}
-    assert np.isfinite(mass_rows["empirical_log_loss"]).all()
-    assert (mass_rows["empirical_log_loss"] > 0).all()
-    assert results.loc[results["method"] == "mass12_calibrated", "certificate_valid"].all()
-    model_paths = list((publication / "runs").glob("*/models/mass-*.npz"))
+    levels = {l_count} if isinstance(l_count, int) else set(l_count)
+    assert set(results["L"]) == levels
+    mass = results.loc[results["method"] == "mass12_raw"]
+    assert len(mass) == len(levels)
+    assert mass["model_path"].nunique() == 1
+    assert mass["model_sha256"].nunique() == 1
+    assert mass["empirical_log_loss"].nunique() == 1
+    assert set(mass["mass_output_count"]) == {k}
+    assert set(mass["mass_backend"]) == {"neural_token"}
+    assert set(mass["mass_n"]) == {0.01}
+    assert set(mass["mass_ctr_weight"]) == {ctr_weight}
+    assert set(mass["mass_infonce_pretrain_epochs"]) == {pretrain_epochs}
+    assert np.isfinite(mass["empirical_log_loss"]).all()
+    assert np.isfinite(mass["mass_sensitive_mi_estimate_nats"]).all()
+    assert not mass["formal_comparable"].any()
+    assert not mass["certificate_valid"].any()
+    assert mass["certificate_path"].isna().all()
+    assert (mass["cover_lambda"] == 0).all()
+    assert (mass["cover_row_tv"] == 0).all()
+    assert mass["certified_upper_epsilon"].isna().all()
+    assert not list((publication / "runs").glob("*/certificates/mass-*"))
+    assert not list((publication / "runs").glob("*/mechanism/common_token_cover.*"))
+    from capt12.comparison.mass_nn import MassNN
+    model_paths = list((publication / "runs").glob("*/models/mass-nn-*.pt"))
     assert len(model_paths) == 1
-    with np.load(model_paths[0]) as model:
-        assert model["logits"].shape[1:] == (k, l_count)
-        assert model["decoder"].shape == (l_count, k)
-        assert model["infonce_embeddings"].shape == (k, 32)
-        assert float(model["infonce_weight"]) == 1.0
-        assert float(model["ctr_weight"]) == ctr_weight
-        assert int(model["infonce_pretrain_epochs"]) == pretrain_epochs
-        assert int(model["infonce_pretrain_completed_epochs"]) == pretrain_epochs
-        assert model["infonce_initial_embeddings"].shape == (k, 32)
-        initial_embeddings = model["infonce_initial_embeddings"].copy()
-        random_weights = np.random.default_rng(np.random.SeedSequence([0, 701])).normal(
-            0, 0.1, size=(k, 32)
-        )
-        if pretrain_epochs:
-            assert not np.allclose(initial_embeddings, random_weights)
-        else:
-            np.testing.assert_array_equal(initial_embeddings, random_weights)
-        assert np.isfinite(model["infonce_embeddings"]).all()
-        assert str(model["infonce_direction"]) == "symmetric"
-        assert float(model["privacy_quadratic_weight"]) == 2.0
-        assert float(model["privacy_linear_weight"]) == 0.5
-        if l_count == k:
-            np.testing.assert_array_equal(model["decoder"], np.eye(k))
-    native_paths = list((publication / "runs").glob("*/native_runs/*/mechanism/context_channels-*.npz"))
-    assert len(native_paths) == 1
-    with np.load(native_paths[0]) as native:
-        assert native["decoder"].shape == (l_count, k)
-    histories = list((publication / "runs").glob("*/tables/mass-*-history.csv"))
+    model = MassNN.load(model_paths[0])
+    assert model.generator.output.out_features == k
+    assert model.features.head[-1].out_features == 4
+    assert "L" not in model.config
+    assert "decoder" not in model.config
+    assert model.provenance()["postprocessing"] == "none"
+    assert model.provenance()["uses_capt_decoder"] is False
+    histories = list((publication / "runs").glob("*/tables/mass-nn-*-history.csv"))
     assert len(histories) == 1
     history = pd.read_csv(histories[0])
-    assert set(history["mass_infonce_pretrain_completed_epochs"]) == {pretrain_epochs}
-    assert set(history["mass_ctr_weight"]) == {ctr_weight}
-    assert (history["pre_update_infonce_loss"] > 0).all()
-    assert (history["post_update_infonce_loss"] > 0).all()
+    assert len(history) == 2
     for stage in ("pre_update", "post_update"):
-        np.testing.assert_allclose(
-            history[f"{stage}_infonce_loss"],
-            (history[f"{stage}_infonce_output_to_source_loss"]
-             + history[f"{stage}_infonce_source_to_output_loss"]) / 2,
-        )
+        assert np.isfinite(history[f"{stage}_loss"]).all()
+        assert np.isfinite(history[f"{stage}_infonce_loss"]).all()
+        np.testing.assert_allclose(history[f"{stage}_infonce_loss"],
+                                  (history[f"{stage}_infonce_output_to_source_loss"]
+                                   + history[f"{stage}_infonce_source_to_output_loss"]) / 2)
         sensitive = history[f"{stage}_sensitive_mi_nats"].map(
             lambda value: max(next(iter(json.loads(value).values())) - 0.1, 0)
         )
@@ -132,24 +134,17 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         )
         np.testing.assert_allclose(
             history[f"{stage}_loss"],
-            ctr_weight * history[f"{stage}_distortion"]
-            + 2 * sensitive**2 + 0.5 * sensitive
-            + 1.5 * useful**2 + 0.75 * useful
-            + history[f"{stage}_infonce_loss"],
+            2 * sensitive**2 + 0.5 * sensitive + 1.5 * useful**2 + 0.75 * useful
+            + history[f"{stage}_infonce_loss"] + ctr_weight * history[f"{stage}_distortion"],
+            rtol=1e-6,
         )
-    for certificate in mass_rows["certificate_path"]:
-        if isinstance(certificate, str) and certificate:
-            metadata = json.loads(Path(certificate).read_text())["metadata"]
-            assert metadata["ctr_weight"] == ctr_weight
-            assert metadata["infonce_pretrain_completed_epochs"] == pretrain_epochs
-    pretrain_paths = list((publication / "runs").glob("*/tables/mass-*-infonce-pretrain.csv"))
-    assert len(pretrain_paths) == 1
-    pretrain = pd.read_csv(pretrain_paths[0])
-    assert len(pretrain) == pretrain_epochs
-    assert np.isfinite(pretrain[["pre_update_infonce_loss", "post_update_infonce_loss"]].to_numpy(dtype=float)).all()
-    summary = json.loads((publication / "pilot_summary.json").read_text())
-    assert summary["mass_ctr_weight"] == ctr_weight
-    assert summary["mass_infonce_pretrain_epochs"] == pretrain_epochs
+    pretrain = pd.read_csv(next((publication / "runs").glob("*/tables/mass-nn-*-pretrain.csv")))
+    assert len(pretrain.loc[pretrain["stage"] == "infonce"]) == pretrain_epochs
+    assert len(pretrain.loc[pretrain["stage"] == "attributes"]) == 2
+    assert np.isfinite(pretrain[["pre_update_loss", "post_update_loss"]]).all().all()
     contracts = json.loads((publication / "method_contracts.json").read_text())["methods"]
-    assert all(item["output_bits"] == (k - 1).bit_length()
-               for item in contracts if item["single_output"])
+    mass_contract = next(item for item in contracts if item["method"] == "mass12_raw")
+    assert not mass_contract["formal_comparable"]
+    assert all(item["method"] != "mass12_calibrated" for item in contracts)
+    assert mass_contract["output_bits"] == (k - 1).bit_length()
+    assert (publication / "figures/main_privacy_utility_comparison.png").is_file()

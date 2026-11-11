@@ -1,5 +1,12 @@
 # Prior-art feasibility audit
 
+Current status (2026-11-11): the original table below describes the historical
+finite-table/privacy-matched design. The dedicated runner now uses neural
+MaSS with CE-based MI learning, direct K-token output, and no CAPT decoder or
+post-training cover. See privacy_comparison_methodology.md and
+prior_art_implementation_report.md for the current protocol. Historical rows
+and execution restrictions below do not describe the current runner.
+
 Status: implementation-time audit completed; comparison experiments have not been run. Retrieval date: 2026-08-25.
 
 ## Repository provenance gate

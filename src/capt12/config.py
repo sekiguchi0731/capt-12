@@ -57,7 +57,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def comparison_design_name(k: int, block_count: int) -> str:
-    """Select the shared CAPT/MaSS decoder, including the uncompressed case."""
+    """Select the CAPT decoder, including the uncompressed case."""
     if not 1 <= block_count <= k <= 4096:
         raise ValueError("comparison dimensions must satisfy 1 <= L <= K <= 4096")
     if block_count == k:
@@ -265,10 +265,28 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         key.startswith("mass_") for key in cfg
     )
     if prior_art_comparison:
-        if cfg.get("mass_output_mode", "finite_block") != "finite_block":
-            raise ValueError("MaSS-12 comparison requires mass_output_mode: finite_block")
-        cfg["mass_output_mode"] = "finite_block"
-        mass_epochs = int(cfg.get("mass_epochs", 100))
+        if cfg.get("mass_output_mode", "neural_token") != "neural_token":
+            raise ValueError("MaSS comparison requires mass_output_mode: neural_token; CAPT decoders are not used")
+        cfg["mass_output_mode"] = "neural_token"
+        cfg["mass_backend"] = "neural_token"
+        conditioning = str(cfg.get("mass_mi_conditioning", "conditional"))
+        if conditioning not in {"conditional", "unconditional"}:
+            raise ValueError("mass_mi_conditioning must be conditional or unconditional")
+        cfg["mass_mi_conditioning"] = conditioning
+        for key, default, minimum in (
+            ("mass_batch_size", 128, 2), ("mass_token_dim", 32, 2),
+            ("mass_hidden_dim", 512, 2), ("mass_attribute_pretrain_epochs", 100, 0),
+            ("mass_eval_noise_samples", 64, 1),
+        ):
+            value = int(cfg.get(key, default))
+            if value < minimum:
+                raise ValueError(f"{key} must be at least {minimum}")
+            cfg[key] = value
+        decay = float(cfg.get("mass_weight_decay", 0.001))
+        if not math.isfinite(decay) or decay < 0:
+            raise ValueError("mass_weight_decay must be finite and nonnegative")
+        cfg["mass_weight_decay"] = decay
+        mass_epochs = int(cfg.get("mass_epochs", 50))
         if mass_epochs < 1:
             raise ValueError("mass_epochs must be positive")
         cfg["mass_epochs"] = mass_epochs
@@ -325,9 +343,9 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if not 0 < cover_floor < 1 / int(cfg.get("K", 4096)):
             raise ValueError("cover_probability_floor must be in (0, 1/K)")
         cfg["cover_probability_floor"] = cover_floor
-        mass_learning_rate = float(cfg.get("mass_learning_rate", 0.05))
-        if mass_learning_rate <= 0:
-            raise ValueError("mass_learning_rate must be positive")
+        mass_learning_rate = float(cfg.get("mass_learning_rate", 0.0005))
+        if not math.isfinite(mass_learning_rate) or mass_learning_rate <= 0:
+            raise ValueError("mass_learning_rate must be finite and positive")
         cfg["mass_learning_rate"] = mass_learning_rate
         utility_bootstrap = int(cfg.get("utility_cluster_bootstrap_replicates", 2000))
         if utility_bootstrap < 1:
@@ -335,10 +353,10 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         cfg["utility_cluster_bootstrap_replicates"] = utility_bootstrap
         if not isinstance(cfg.get("require_mass_pilot_for_full", True), bool):
             raise ValueError("require_mass_pilot_for_full must be a boolean")
-        pilot_range = float(cfg.get("mass_pilot_min_epsilon_range", 1e-6))
+        pilot_range = float(cfg.get("mass_pilot_min_mi_range", cfg.get("mass_pilot_min_epsilon_range", 1e-6)))
         if pilot_range <= 0:
-            raise ValueError("mass_pilot_min_epsilon_range must be positive")
-        cfg["mass_pilot_min_epsilon_range"] = pilot_range
+            raise ValueError("mass_pilot_min_mi_range must be positive")
+        cfg["mass_pilot_min_mi_range"] = pilot_range
         comparison_blocks = cfg.get("comparison_L_list", [int(cfg.get("L", 16))])
         if not comparison_blocks or any(
             not 1 <= int(value) <= int(cfg.get("K", 4096)) for value in comparison_blocks

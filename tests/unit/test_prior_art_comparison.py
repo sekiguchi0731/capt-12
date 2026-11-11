@@ -578,7 +578,7 @@ def test_prior_art_config_and_cli_reject_ordinary_grid_and_dispatch_dedicated_ru
             "mass_utility_weight_list": "1,10",
             "mass_seed_list": "0,1",
             "mass_epochs": 2,
-            "mass_output_mode": "finite_block",
+            "mass_output_mode": "neural_token",
             "mass_temperature_list": "0.5,1",
         }
     )
@@ -604,7 +604,7 @@ def test_prior_art_config_and_cli_reject_ordinary_grid_and_dispatch_dedicated_ru
             "--mass-epochs",
             "2",
             "--mass_output_mode",
-            "finite_block",
+            "neural_token",
             "--mass-temperature-list",
             "0.5,1",
             "--dry-run",

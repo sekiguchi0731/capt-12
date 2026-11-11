@@ -23,6 +23,25 @@ RESULT_COLUMNS = (
     "cost",
     "seed",
     "mass_seed",
+    "mass_backend",
+    "mass_control_sha256",
+    "mass_output_count",
+    "mass_mi_conditioning",
+    "mass_batch_size",
+    "mass_learning_rate",
+    "mass_weight_decay",
+    "mass_token_dim",
+    "mass_hidden_dim",
+    "mass_attribute_pretrain_epochs",
+    "mass_eval_noise_samples",
+    "mass_sensitive_mi_estimate_nats",
+    "mass_useful_mi_estimate_nats",
+    "mass_sensitive_mi_by_attribute_nats",
+    "mass_useful_mi_by_attribute_nats",
+    "mass_classifier_ce_nats",
+    "mass_final_loss",
+    "model_path",
+    "model_sha256",
     "target_epsilon",
     "K",
     "L",
@@ -253,6 +272,14 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
         # Legacy runs always scaled CTR cost with the useful-MI weight.
         frame = frame.assign(mass_ctr_weight=frame["mass_utility_weight"])
     legacy_defaults = {
+        "mass_backend": "finite_table",
+        **{name: math.nan for name in (
+            "mass_control_sha256", "mass_output_count", "mass_mi_conditioning",
+            "mass_batch_size", "mass_learning_rate", "mass_weight_decay", "mass_token_dim", "mass_hidden_dim",
+            "mass_attribute_pretrain_epochs", "mass_eval_noise_samples", "mass_sensitive_mi_estimate_nats",
+            "mass_useful_mi_estimate_nats", "mass_sensitive_mi_by_attribute_nats", "mass_useful_mi_by_attribute_nats",
+            "mass_classifier_ce_nats", "mass_final_loss", "model_path", "model_sha256",
+        )},
         "mass_infonce_direction": "output_to_source",
         "mass_infonce_pretrain_epochs": 0,
         "mass_infonce_pretrain_learning_rate": 0.01,
@@ -290,10 +317,68 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
     invalid_formal = result["formal_comparable"] & ~result["certificate_valid"]
     if invalid_formal.any():
         raise ValueError("formal-comparable rows require valid certificates")
+    neural = result["mass_backend"].eq("neural_token")
+    if (neural & (result["formal_comparable"] | result["certificate_valid"])).any():
+        raise ValueError("neural MaSS MI estimates are not CAPT certificates")
+    if (neural & ((result["cover_lambda"] != 0) | (result["cover_row_tv"] != 0))).any():
+        raise ValueError("neural MaSS must not contain a post-training cover")
+    if (neural & (result["mass_output_count"] != result["K"])).any():
+        raise ValueError("neural MaSS must expose all K output candidates")
     leaked_oracle = result["uses_sensitive_value_online"] & result["deployable_under_capt"]
     if leaked_oracle.any():
         raise ValueError("rows using A_S online cannot be deployable under CAPT")
     return result.sort_values(["cost", "method", "seed", "target_epsilon"], kind="stable")
+
+
+def _neural_comparison_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, Path]:
+    fig, axes = plt.subplots(1, 2, figsize=(11.8, 4.4), sharey=True)
+    native = frame.loc[frame["formal_comparable"] & frame["certificate_valid"]]
+    for (_method, cost), group in native.groupby(["method", "cost"], sort=True):
+        axes[0].scatter(group["certified_upper_epsilon"], group["empirical_log_loss"],
+                        label=f"{group['display_name'].iloc[0]} / {cost}", alpha=0.65, s=24)
+    mass = frame.loc[frame["mass_backend"] == "neural_token"].drop_duplicates("model_sha256")
+    for cost, group in mass.groupby("cost", sort=True):
+        axes[1].scatter(group["mass_sensitive_mi_estimate_nats"], group["empirical_log_loss"],
+                        label=f"MaSS / {cost}", alpha=0.75, s=26)
+    axes[0].set_xlabel("Robust certified upper epsilon")
+    axes[1].set_xlabel("MaSS classifier MI estimate on D_design (nats)")
+    axes[0].set_title("CAPT / LDP: certified privacy", loc="left")
+    axes[1].set_title("MaSS: classifier-based MI", loc="left")
+    epsilon = native["certified_upper_epsilon"].to_numpy(float)
+    if len(epsilon) and np.ptp(epsilon) < 1e-6 * max(1.0, abs(float(epsilon.mean()))):
+        center = float(epsilon.mean())
+        padding = max(0.05, abs(center) * 0.05)
+        axes[0].set_xlim(center - padding, center + padding)
+    axes[0].ticklabel_format(axis="x", style="plain", useOffset=False)
+    for axis in axes:
+        axis.set_ylabel("Held-out CTR log loss")
+        axis.grid(alpha=0.2)
+        if axis.get_legend_handles_labels()[0]:
+            axis.legend(frameon=False, fontsize=6)
+    fig.text(0.5, 0.015, "Different privacy notions and scales; MaSS MI is not a CAPT epsilon certificate.",
+             ha="center", fontsize=8)
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.20, top=0.90, wspace=0.28)
+    return _save_figure(fig, output / "main_privacy_utility_comparison")
+
+
+def _neural_mi_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, Path]:
+    mass = frame.loc[frame["mass_backend"] == "neural_token"].drop_duplicates("model_sha256")
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
+    for axis, target, estimate, name in (
+        (axes[0], "mass_m", "mass_sensitive_mi_estimate_nats", "sensitive"),
+        (axes[1], "mass_n", "mass_useful_mi_estimate_nats", "useful"),
+    ):
+        for cost, group in mass.groupby("cost", sort=True):
+            axis.scatter(group[target], group[estimate], label=cost, alpha=0.7)
+        maximum = max(0.01, float(mass[target].max()), float(mass[estimate].max()))
+        axis.plot([0, maximum], [0, maximum], "--", color="#9CA3AF", linewidth=1)
+        axis.set_xlabel(f"Requested {name} MI target (nats)")
+        axis.set_ylabel("Classifier MI estimate on D_design (nats)")
+        axis.grid(alpha=0.2)
+    axes[0].legend(frameon=False, fontsize=7)
+    fig.suptitle("MaSS MI diagnostics; finite penalties do not certify target attainment")
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.18, top=0.86, wspace=0.30)
+    return _save_figure(fig, output / "figure_mass_mi_targets")
 
 
 def summarize_seed_metrics(frame: pd.DataFrame) -> pd.DataFrame:
@@ -582,10 +667,11 @@ def render_prior_art_figures(
     frame = validate_results(results)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = list(_main_publication_figure(frame, output))
+    neural = frame["mass_backend"].eq("neural_token").any()
+    paths: list[Path] = list((_neural_comparison_figure if neural else _main_publication_figure)(frame, output))
     supplementary = output / "supplementary"
     supplementary.mkdir(parents=True, exist_ok=True)
-    for renderer in (_figure_a, _figure_b, _figure_c, _figure_d):
+    for renderer in ((_neural_mi_figure,) if neural else (_figure_a, _figure_b, _figure_c, _figure_d)):
         paths.extend(renderer(frame, supplementary))
     paths.extend(_figure_e(frame, contracts, supplementary))
     return paths

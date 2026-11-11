@@ -1,4 +1,10 @@
-# Privacy-matched prior-art comparison results
+# Prior-art comparison results
+
+Current protocol (2026-11-11): neural MaSS is evaluated under its own learned
+MI objective, with no post-training cover and no CAPT certification claim.
+The historical privacy-matched sections below are superseded for MaSS.
+Implementation/unit/synthetic CLI smoke checks have been run; no full Criteo
+performance result is reported by this update.
 
 ## Execution status
 

@@ -19,13 +19,20 @@ mass_n_list: [0.0]
 mass_privacy_weight_list: [0.1, 1.0, 10.0, 100.0]
 mass_utility_weight_list: [0.1, 1.0, 10.0]
 mass_seed_list: [0, 1, 2, 3, 4]
-mass_epochs: 300
-mass_learning_rate: 0.05
+mass_epochs: 50
+mass_learning_rate: 0.0005
+mass_batch_size: 128
+mass_token_dim: 32
+mass_hidden_dim: 512
+mass_weight_decay: 0.001
+mass_attribute_pretrain_epochs: 100
+mass_eval_noise_samples: 64
+mass_mi_conditioning: conditional
 mass_ctr_weight: 0.0
 mass_infonce_weight: 1.0
 mass_infonce_direction: symmetric
 mass_infonce_pretrain_epochs: 100
-mass_infonce_pretrain_learning_rate: 0.01
+mass_infonce_pretrain_learning_rate: 0.0005
 mass_privacy_quadratic_weight: 1.0
 mass_privacy_linear_weight: 1.0
 mass_useful_quadratic_weight: 1.0
@@ -33,7 +40,7 @@ mass_useful_linear_weight: 1.0
 mass_infonce_temperature: 0.07
 mass_infonce_batch_size: 64
 mass_infonce_embedding_dim: 32
-mass_output_mode: finite_block
+mass_output_mode: neural_token
 mass_temperature_list: [0.25, 0.5, 1.0, 2.0]
 mass_pilot_m_list: [0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
 mass_pilot_n_list: [0.0]
@@ -42,7 +49,7 @@ mass_pilot_utility_weight_list: [1.0]
 mass_pilot_seed_list: [0]
 mass_pilot_temperature_list: [1.0]
 require_mass_pilot_for_full: true
-mass_pilot_min_epsilon_range: 1.0e-6
+mass_pilot_min_mi_range: 1.0e-6
 cover_probability_floor: 1.0e-12
 cover_bisection_tolerance: 1.0e-8
 formal_comparison_epsilon: 1.0

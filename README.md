@@ -430,187 +430,115 @@ reported as a successful fail-safe retreat to profile-wide common cover, not
 as evidence of a nontrivial CAPT gain. Reported Criteo utility is a frozen
 reference-score surrogate; downstream CTR or auction utility is not claimed.
 
-## Privacy-matched prior-art comparison
+## Prior-art comparison with neural MaSS
 
-`configs/criteo_prior_art_privacy_matched.yaml` freezes the L=16, five-seed,
-three-cost comparison grid and all MaSS-12 pilot controls. The implementation
-separates PBP oracle, common nominal PBP, `MaSS-12 (finite-output adaptation)`,
-and the `MaSS-12 + certified cover calibration` wrapper. Oracle and empirical
-rows cannot pass the formal-comparison claim gate by label alone: a formal row
-requires an independently valid robust certificate.
+The dedicated `prior-art-comparison` runner now uses neural MaSS. Install its
+optional dependency with `uv sync --extra mass`. The original MaSS source is
+[JPMorgan Chase MaSS](https://github.com/jpmorganchase/MaSS), pinned to
+`6fbe9be1ff155b3fdd2677de7977d801d10000b5` (Apache-2.0).
 
-The feasibility, methodology, implementation, and pending-results reports are
-under `reports/`. `results/prior_art_comparison/results.csv` is schema-only
-and remains the checked-in contract fixture; it contains no zero-filled or
-fabricated measurement rows. Measured output goes to ignored `outputs/`. The
-ordinary `run-grid` command rejects this config so it
-cannot silently run a CAPT-only grid. The dedicated end-to-end commands are:
-
-```bash
-# Pilot: configured pilot controls at epsilon=1 and L=16.
-capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml \
-  --phase pilot
-
-# Full: allowed only if every cost shows finite raw-epsilon variation in the pilot.
-# It adds the configured epsilon grid and L=8,16,32 sensitivity.
-capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml \
-  --phase full
-
-# Shared dimensions for CAPT and MaSS; arbitrary counts up to K=4096.
-capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml \
-  --K 32 --L 7 --phase pilot
-
-# Equivalent bit-width controls; L=K selects a singleton/identity decoder.
-capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml \
-  --input-bits 5 --output-bits 5 --phase pilot
-```
-
-`--K` (`--input-count`) sets the input and released-token alphabet for both
-methods. `--L` (`--output-count`) sets their shared number of representative
-output candidates, with `1 <= L <= K <= 4096`. The bit options mean `K=2^b`
-and `L=2^b`; conflicting count/bit options are rejected. A smaller K alone
-clamps the configured primary L and filters the full-phase L grid to fit K.
-An explicit L selects a one-value grid; `--L-list 3,7,32` overrides the full
-grid. Pilot uses the selected primary L. L=K uses the identity decoder so
-every input token is an available output candidate. Other L values build
-the shared cost-medoid decoder. The output candidate width is distinct from
-the released token's encoding width, which is `ceil(log2(K))`. Results record
-K and L, and method contracts record the actual token encoding width.
-
-MaSS now adds an InfoNCE information-preservation term by default
-(`mass_infonce_weight: 1.0`). Its default `symmetric` mode averages both
-output-to-source and source-to-output in-batch losses. Source pairs are drawn
-within the same public context. The reverse direction enumerates the output
-expectation exactly. The forward direction samples output candidates and
-enumerates one candidate at a time conditional on the other outputs, yielding
-unbiased channel gradients that include negative-candidate distributions.
-It is a conditional Monte Carlo estimate, not a full output enumeration.
-This finite adaptation uses a pretrained token embedding in place of the
-official neural feature extractor. Its main condition uses InfoNCE
-and MI penalties, with the additional CTR cost disabled by default.
-
-`--mass-ctr-weight 0` explicitly selects this main condition (config:
-`mass_ctr_weight: 0.0`). `--mass-ctr-weight 1` enables the CTR-oriented extension;
-any finite nonnegative weight is accepted. This coefficient independently
-scales the selected `teacher_kl`, `empirical_logloss`, or hybrid cost. It does
-not change the InfoNCE or useful-MI coefficients. All conditions are still
-evaluated with held-out CTR log loss. For example, run the same command with
-separate output directories to compare conditions:
+MaSS takes the frozen input token Z directly. A residual MLP with Gaussian
+input noise generates logits over all K output tokens, then samples one
+integer O. It uses no CAPT partition, medoid, shared decoder, confidence set,
+or post-training cover. `--K`/`--input-count` and `--input-bits` set the common
+input/transmitted-token alphabet for CAPT and MaSS. `--L`/`--capt-blocks`,
+`--L-list`, and `--capt-block-bits` control CAPT only. The historical aliases
+`--output-count` and `--output-bits` also refer only to CAPT blocks.
 
 ```bash
 capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml --K 32 --L 32 \
-  --mass-ctr-weight 0 --output-dir outputs/prior_art_no_ctr
-capt12 prior-art-comparison \
-  --config configs/criteo_prior_art_privacy_matched.yaml --K 32 --L 32 \
-  --mass-ctr-weight 1 --output-dir outputs/prior_art_with_ctr
+  --config configs/criteo_prior_art_privacy_matched.yaml \
+  --K 32 --L 3 --phase pilot
 ```
 
-Disabling this term does not remove the shared CTR-derived decoder or the
-other finite-output adaptations; this remains an adaptation of MaSS.
+The config filename is retained for compatibility; the MaSS result is no
+longer a privacy-matched CAPT certificate. The runner emits `mass12_raw` with
+`mass_backend: neural_token`, and never emits `mass12_calibrated`. Its result
+column L identifies the paired CAPT reference, while `mass_output_count=K`
+records MaSS's output capacity. A model is trained once per data/seed/control
+cell and reused across CAPT L values. Models contain no L or decoder.
 
-The dedicated CLI also accepts `--mass-infonce-weight`,
-`--mass-infonce-temperature`, `--mass-infonce-batch-size`, and
-`--mass-infonce-embedding-dim`. `--mass-infonce-direction` selects `symmetric`,
-`output_to_source` (the previous implementation), or `source_to_output`.
-InfoNCE weight zero disables just the InfoNCE term as
-an ablation. Defaults are weight 1, temperature 0.07, batch size 64, and
-embedding dimension 32. The shared embeddings are optimized jointly with the
-channel and saved in each model NPZ. They are not inference inputs.
+The learning structure follows official MaSS: supervised pretraining of
+attribute-prediction MLPs on the original Z, identity-pair pretraining of a
+shared InfoNCE MLP, then alternating generator/InfoNCE updates and supervised
+attribute-network updates on transformed tokens. Attribute MI is estimated
+as entropy minus classifier cross-entropy; exact finite-channel MI is not
+used in this training. Sensitive violations use `min(CE-H+m,0)` and useful
+violations use `max(CE-H+n,0)`, with the upstream squared-plus-absolute penalty.
+Both InfoNCE directions use cross-view-only in-batch negatives.
 
-Before MaSS training, these embeddings are pretrained on the frozen
-`D_design` tokens using identity-pair InfoNCE: each token instance is its own
-positive and other batch instances are negatives. Batches are sampled within
-public contexts; repeated token IDs remain repeated negatives. No raw-feature
-encoder, sensitive labels, or click labels are trained or changed in this
-stage, and neither `D_cert` nor `D_test` is used. The pretrained weights
-initialize the embeddings for joint MaSS/channel training, with fresh Adam
-state. This is the original MaSS pretraining pattern adapted to tokens,
-not reuse of the upstream NN architecture or weights.
+Two interface adaptations remain explicit. Nominal token IDs use learned
+input embeddings, and the original continuous output is replaced with a
+K-way categorical head. Gradients through its hard samples use an unbiased
+score-function estimator with a baseline based only on past batches. The
+joint batch log probability includes every sampled output, including InfoNCE
+negative candidates. The Gaussian input noise is retained. These are learned
+randomization inside MaSS, not post-training CAPT randomization.
 
-Defaults are 100 pretraining updates and learning rate 0.01. Set
-`--mass-infonce-pretrain-epochs` and
-`--mass-infonce-pretrain-learning-rate` (matching `mass_*` config keys) to
-change them. Each pretraining epoch is one update with one fresh sampled batch
-per observed context, not a complete pass over all records. Epochs 0 recovers
-random embedding initialization; InfoNCE weight 0 skips the stage entirely.
-Pretraining forms batch-sized similarity matrices and does not allocate a
-K-by-K channel.
+All training/pretraining uses `D_design`. Online inputs are Z and public
+context/profile only; sensitive values are labels, never generator inputs.
+`--mass-mi-conditioning conditional` (default) uses H(attribute|B,S) and
+context-aware prediction networks; `unconditional` uses the original
+unconditioned entropy/MI form. Conditional InfoNCE draws negatives within
+public contexts. This choice is recorded in model provenance.
 
-Each model NPZ saves the main-training initializer as
-`infonce_initial_embeddings` and the final embeddings as
-`infonce_embeddings`, along with requested/completed pretraining epochs and
-learning rate. `tables/mass-*-infonce-pretrain.csv` records pre/post losses and
-the batch seed for each pretraining update; it has headers and no rows when
-pretraining is disabled. Results, certificate metadata, and main history also
-record the pretraining controls. Resume/plot keys distinguish them, and pilot
-and full phases must use the same controls. Older results without these
-columns are interpreted as having no pretraining.
+Main training defaults to 50 full-data epochs, batch size 128, AdamW with
+base learning rate 0.0005 (generator/attribute joint-training LR is scaled by
+batch_size/256), weight decay 0.001, and cosine decay. Token embeddings are
+32-dimensional; attribute hidden widths are 512/256 and the InfoNCE encoder
+has two 512-wide layers by default. `--mass-epochs`, `--mass-batch-size`,
+`--mass-learning-rate`, `--mass-weight-decay`, `--mass-token-dim`, and
+`--mass-hidden-dim` expose these controls.
 
-The runner resumes completed native and MaSS cells by default, trains MaSS
-only from `D_design`, constructs formal uncertainty sets only from `D_cert`,
-evaluates CTR utility only on `D_test`, writes compact factorized certificate
-bundles, independently reconstructs each exact token channel `Q`, and renders
-the publication and supplementary figures under `outputs/prior_art_comparison/`.
-Keeping generated output under the ignored `outputs/` tree preserves the clean
-source checkout required by every nested certificate run. A bundle can be
-rechecked with `capt12 verify-prior-art-certificate CERTIFICATE.json`.
+Attribute and InfoNCE pretraining each default to 100 sampled-batch updates;
+these stages do not count complete dataset passes. They are controlled by
+`--mass-attribute-pretrain-epochs`, `--mass-infonce-pretrain-epochs`, and
+`--mass-infonce-pretrain-learning-rate`. InfoNCE also supports weight,
+temperature, batch-size, embedding-dimension and direction controls. Zero
+pretraining updates selects random initialization; zero InfoNCE weight skips
+its pretraining. Pretrained network states initialize joint training, and
+optimizer state is reset between stages.
 
-To render again from completed measurements without rerunning training:
+`--mass-m-list`, `--mass-n-list`, `--mass-privacy-weight-list`, and
+`--mass-utility-weight-list` override both pilot and full grids. The four
+quadratic/linear penalty coefficients remain separately configurable with
+`--mass-{privacy,useful}-{quadratic,linear}-weight`. The optional CTR extension
+uses `--mass-ctr-weight` (default 0); both settings are evaluated on held-out
+CTR log loss with the same fixed f_ref.
 
-```bash
-capt12 render-prior-art-comparison \
-  --results outputs/prior_art_comparison/results.csv \
-  --method-contracts outputs/prior_art_comparison/method_contracts.json \
-  --output-dir outputs/prior_art_comparison/figures
-```
+Each `models/mass-nn-*.pt` contains generator, attribute and shared InfoNCE
+network weights, all pretrained initial states, configuration, label/context
+vocabularies, entropy statistics, evaluation-probe indices and histories.
+`MassNN.load(path)` reconstructs the frozen model. A JSON sidecar identifies
+the upstream source, estimator and interface adaptations. Main history CSVs
+save pre/post measurements on the same fixed design probe and random seed,
+plus optimization/discriminator losses. Separate pretraining CSVs save both
+stages' pre/post losses. Negative H-CE estimates are retained; they indicate
+classifier approximation error rather than negative true information.
 
-The dedicated comparison CLI accepts `--mass-m-list`, `--mass-n-list`,
-`--mass-privacy-weight-list`, and `--mass-utility-weight-list`. Each explicitly
-provided list overrides both pilot and full settings, so a pilot-specific
-config cannot silently mask a CLI override. Configured m/n are MI bounds in
-nats, never achieved robust epsilon; a positive n is a requested information
-floor, not an automatic guarantee of achieving it.
+MaSS runtime sampling uses fresh Gaussian noise. For expected CTR evaluation,
+`--mass-eval-noise-samples` (default 64) averages categorical probabilities
+over a reproducible Monte Carlo sample of that noise. This is a numerical
+utility estimate, not a replacement mechanism or exact privacy channel.
+Bootstrap intervals are conditional on that evaluation noise sample; they do
+not quantify its Monte Carlo error. Model SHA and evaluation controls are
+saved with each result.
 
-Quadratic and linear penalty coefficients can be set independently with
-`--mass-privacy-quadratic-weight`, `--mass-privacy-linear-weight`,
-`--mass-useful-quadratic-weight`, and `--mass-useful-linear-weight`.
-All four default to 1. Sensitive penalties are
-`privacy_weight * (privacy_quadratic_weight*d^2 + privacy_linear_weight*d)`;
-useful penalties use the analogous useful coefficients and `utility_weight`.
-CTR cost is separately scaled by `mass_ctr_weight`; `utility_weight` scales
-only the useful MI penalties. The total objective is
-`mass_ctr_weight * distortion + sensitive_penalties + useful_penalties + mass_infonce_weight * infonce_loss`.
-Before this control was added, the CTR coefficient equaled `utility_weight`;
-set `mass_ctr_weight` to that value to reproduce a prior cell's objective.
-These controls are passed
-through config to the dedicated runner; `run-grid` remains CAPT-only.
+MaSS has no CAPT upper certificate and undergoes no common-cover calibration.
+Its configured m/n values and learned classifier MI estimates are not achieved
+privacy guarantees. Results always mark neural MaSS as `certificate_valid=false`
+and `formal_comparable=false`, leave epsilon/certificate fields empty, and
+record zero post-training cover. Figures show its MI/CTR results separately
+from the CAPT/LDP certified-epsilon axis. The pilot gate checks variation in
+the classifier MI estimate, not variation in certified epsilon. A full grid
+requires a completed pilot from the same source/config controls unless the
+explicit pilot gate is disabled in config.
 
-Each MaSS `tables/mass-*-history.csv` records `pre_update_*` and
-`post_update_*` loss, distortion, sensitive MI, and useful MI for every epoch.
-The final `post_update_*` values describe the returned raw model on `D_design`,
-before cover calibration. MI columns are JSON objects keyed by attribute name
-and use nats. The legacy unprefixed metric columns remain aliases for the
-pre-update measurements. Existing CSVs are not rewritten; regenerating these
-additional columns requires retraining the corresponding MaSS cell.
-The CTR weight is saved in results/history as `mass_ctr_weight`, and in model
-NPZs and certificate metadata as `ctr_weight`. Unweighted distortion remains
-logged at weight zero, so a positive distortion is not evidence of an active
-CTR training term. Resume/plot keys distinguish the CTR coefficient, and the
-full phase requires a pilot with the same coefficient. Rendering older results
-without this column recovers their CTR coefficient from `mass_utility_weight`.
-InfoNCE adds `pre_update_infonce_loss`, `post_update_infonce_loss`, and
-`infonce_batch_seed`. Each stage also records the two directional losses and
-`infonce_output_seed`. The combined loss is their mean in symmetric mode.
-Losses are unweighted; total loss includes the configured InfoNCE weight.
-Both stages use the same source batch and output-sampling random numbers
-within an epoch; outputs are sampled from the corresponding pre/post channel.
-Successive epochs draw fresh batches. The seeds, direction, and final
-embeddings allow the final InfoNCE measurement to be reproduced from `D_design`.
+The finite-table utilities in `comparison/mass12.py` and their tests are
+retained only for historical diagnostics. The dedicated comparison runner
+cannot select the old `finite_block` backend. Historical result files remain
+renderable with their original metadata; rerunning the neural comparison
+requires new training.
 
 ## Deployment requirements
 

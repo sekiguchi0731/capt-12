@@ -20,6 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 lightgbm = ["lightgbm>=4"]
+mass = [
+    "torch>=2.2",
+]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]

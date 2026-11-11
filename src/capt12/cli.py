@@ -534,11 +534,23 @@ def plot(
 @app.command("prior-art-comparison")
 def prior_art_comparison(
     config: Path = typer.Option(..., "--config", exists=True),
-    k: int | None = typer.Option(None, "--K", "--input-count", min=1, max=4096),
+    k: int | None = typer.Option(None, "--K", "--input-count", min=1, max=4096,
+                               help="Shared input/transmitted-token alphabet for CAPT and MaSS."),
     input_bits: int | None = typer.Option(None, "--input-bits", min=0, max=12),
-    l_count: int | None = typer.Option(None, "--L", "--output-count", min=1, max=4096),
-    output_bits: int | None = typer.Option(None, "--output-bits", min=0, max=12),
-    l_list: str | None = typer.Option(None, "--L-list", help="Full-phase output-candidate counts."),
+    l_count: int | None = typer.Option(None, "--L", "--capt-blocks", "--output-count", min=1, max=4096,
+                                     help="CAPT blocks only; MaSS directly generates any of K tokens."),
+    output_bits: int | None = typer.Option(None, "--capt-block-bits", "--output-bits", min=0, max=12,
+                                         help="CAPT L=2^bits only; MaSS output count stays K."),
+    l_list: str | None = typer.Option(None, "--L-list", help="Full-phase CAPT block counts; MaSS always has K outputs."),
+    mass_epochs: int | None = typer.Option(None, "--mass-epochs", min=1),
+    mass_batch_size: int | None = typer.Option(None, "--mass-batch-size", min=2),
+    mass_learning_rate: float | None = typer.Option(None, "--mass-learning-rate"),
+    mass_token_dim: int | None = typer.Option(None, "--mass-token-dim", min=2),
+    mass_hidden_dim: int | None = typer.Option(None, "--mass-hidden-dim", min=2),
+    mass_weight_decay: float | None = typer.Option(None, "--mass-weight-decay", min=0),
+    mass_attribute_pretrain_epochs: int | None = typer.Option(None, "--mass-attribute-pretrain-epochs", min=0),
+    mass_eval_noise_samples: int | None = typer.Option(None, "--mass-eval-noise-samples", min=1),
+    mass_mi_conditioning: str | None = typer.Option(None, "--mass-mi-conditioning"),
     mass_ctr_weight: float | None = typer.Option(
         None, "--mass-ctr-weight", min=0,
         help="Independent weight for the optional MaSS CTR cost; 0 disables it (default).",
@@ -572,7 +584,7 @@ def prior_art_comparison(
     ),
     resume: bool = typer.Option(True, "--resume/--no-resume"),
 ) -> None:
-    """Run CAPT/LDP and the finite-output MaSS comparison end to end."""
+    """Run CAPT/LDP and neural MaSS without CAPT postprocessing of MaSS."""
     if phase not in {"pilot", "full"}:
         raise typer.BadParameter("phase must be pilot or full", param_hint="--phase")
     cfg = _load(
@@ -582,6 +594,15 @@ def prior_art_comparison(
                 str(comparison_output_dir) if comparison_output_dir is not None else None
             ),
             "mass_ctr_weight": mass_ctr_weight,
+            "mass_epochs": mass_epochs,
+            "mass_batch_size": mass_batch_size,
+            "mass_learning_rate": mass_learning_rate,
+            "mass_token_dim": mass_token_dim,
+            "mass_hidden_dim": mass_hidden_dim,
+            "mass_weight_decay": mass_weight_decay,
+            "mass_attribute_pretrain_epochs": mass_attribute_pretrain_epochs,
+            "mass_eval_noise_samples": mass_eval_noise_samples,
+            "mass_mi_conditioning": mass_mi_conditioning,
             "mass_infonce_weight": mass_infonce_weight,
             "mass_infonce_temperature": mass_infonce_temperature,
             "mass_infonce_batch_size": mass_infonce_batch_size,

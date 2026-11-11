@@ -5,7 +5,7 @@ import json
 import math
 import time
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -21,10 +21,9 @@ from capt12.comparison.artifacts import (
     write_method_contracts,
     write_review_packet,
 )
-from capt12.comparison.calibration import calibrate_common_cover, design_cover_distribution
 from capt12.comparison.certificate import write_factorized_certificate
 from capt12.comparison.contracts import default_method_contracts
-from capt12.comparison.mass12 import Mass12FiniteChannel, _softmax, fit_mass12_finite
+from capt12.comparison.mass12 import Mass12FiniteChannel
 from capt12.comparison.utility import FrozenCTRUtility, evaluate_frozen_ctr_utility
 from capt12.config import comparison_design_name, run_id, validate_config
 from capt12.data.loader import load_parquet_sample
@@ -432,6 +431,8 @@ def _result_key(row: dict[str, Any]) -> tuple[Any, ...]:
             "cost",
             "seed",
             "mass_seed",
+            "mass_backend",
+            "mass_control_sha256",
             "target_epsilon",
             "K",
             "L",
@@ -648,293 +649,84 @@ def _verification_summary(
 
 
 def _mass_rows(
-    config: dict[str, Any],
-    comparison_path: Path,
-    native_path: Path,
-    data: PreparedComparisonData,
-    common_cover: np.ndarray,
-    boxes: dict[str, dict[str, Any]],
-    adjacency: dict[str, list[AdjacentPair]],
-    groups: dict[str, list[Group]],
-    *,
-    cost: str,
-    block_count: int,
-    frozen_seed: int,
-    mass_seed: int,
-    loss_m: float,
-    loss_n: float,
-    privacy_weight: float,
-    utility_weight: float,
+    config: dict[str, Any], comparison_path: Path, data: PreparedComparisonData,
+    *, cost: str, block_count: int, frozen_seed: int, mass_seed: int,
+    loss_m: float, loss_n: float, privacy_weight: float, utility_weight: float,
     temperature: float,
 ) -> list[dict[str, Any]]:
-    design_name = comparison_design_name(int(config["K"]), block_count)
-    with np.load(
-        native_path / "mechanism" / f"context_channels-{design_name}.npz"
-    ) as payload:
-        decoder = np.asarray(payload["decoder"], dtype=float).copy()
-    formal_epsilon = float(config.get("formal_comparison_epsilon", 1.0))
-    contexts = tuple(sorted(boxes))
-    sensitive = {
-        attribute: data.design_frame[attribute].astype(str).to_numpy()
-        for attribute in config["profiles"][0].split("+")
-    }
+    from capt12.comparison.mass_nn import MassNN, NeuralChannels, fit_mass_nn
+    from capt12.utils.artifacts import sha256_file
+
+    sensitive = {attribute: data.design_frame[attribute].astype(str).to_numpy()
+                 for attribute in config["profiles"][0].split("+")}
     useful = {"click": data.design_frame[config.get("label_col", "is_clicked")].to_numpy()}
-    penalty_weights = {
-        key: float(config.get(f"mass_{key}", 1.0))
-        for key in ("privacy_quadratic_weight", "privacy_linear_weight",
-                    "useful_quadratic_weight", "useful_linear_weight")
+    contexts = tuple(sorted(data.service_probabilities))
+    controls = {
+        **{key: value for key, value in config.items() if key.startswith("mass_") and not key.endswith("_list")},
+        "K": int(config["K"]), "loss_m": loss_m, "loss_n": loss_n,
+        "privacy_weight": privacy_weight, "utility_weight": utility_weight,
+        "temperature": temperature, "mass_seed": mass_seed,
     }
-    model = fit_mass12_finite(
-        data.design_tokens,
-        data.design_context,
-        sensitive,
-        decoder,
-        data.representation_token_cost,
-        useful_labels=useful,
-        loss_m=loss_m,
-        loss_n=loss_n,
-        privacy_weight=privacy_weight,
-        utility_weight=utility_weight,
-        ctr_weight=float(config.get("mass_ctr_weight", 0.0)),
-        **penalty_weights,
-        seed=mass_seed,
-        epochs=int(config.get("mass_epochs", 100)),
-        learning_rate=float(config.get("mass_learning_rate", 0.05)),
-        temperature=temperature,
-        infonce_weight=float(config.get("mass_infonce_weight", 1.0)),
-        infonce_temperature=float(config.get("mass_infonce_temperature", 0.07)),
-        infonce_batch_size=int(config.get("mass_infonce_batch_size", 64)),
-        infonce_embedding_dim=int(config.get("mass_infonce_embedding_dim", 32)),
-        infonce_direction=str(config.get("mass_infonce_direction", "symmetric")),
-        infonce_pretrain_epochs=int(config.get("mass_infonce_pretrain_epochs", 100)),
-        infonce_pretrain_learning_rate=float(config.get("mass_infonce_pretrain_learning_rate", 0.01)),
-        source_split="D_design",
-        objective_name=cost,
-        frozen_context_values=contexts,
-    )
-    stem = (
-        f"mass-{cost}-L{block_count}-fseed{frozen_seed}-mseed{mass_seed}"
-        f"-m{loss_m:g}-n{loss_n:g}-pw{privacy_weight:g}-uw{utility_weight:g}-t{temperature:g}"
-        f"-cw{model.ctr_weight:g}"
-        f"-iw{model.infonce_weight:g}"
-        f"-id{model.infonce_direction}"
-        f"-pe{model.infonce_pretrain_epochs}-plr{model.infonce_pretrain_learning_rate:g}"
-    )
-    model_path = comparison_path / "models" / f"{stem}.npz"
-    probabilities = {
-        context: _softmax(model.logits[index], model.temperature)
-        for index, context in enumerate(model.context_values)
-    }
-    np.savez_compressed(
-        model_path,
-        contexts=np.asarray(model.context_values, dtype=str),
-        logits=model.logits,
-        decoder=model.decoder,
-        temperature=np.asarray(model.temperature),
-        ctr_weight=np.asarray(model.ctr_weight),
-        infonce_embeddings=(
-            model.infonce_embeddings if model.infonce_embeddings is not None
-            else np.empty((len(decoder[0]), 0))
-        ),
-        infonce_weight=np.asarray(model.infonce_weight),
-        infonce_temperature=np.asarray(model.infonce_temperature),
-        infonce_batch_size=np.asarray(model.infonce_batch_size),
-        infonce_direction=np.asarray(model.infonce_direction),
-        infonce_pretrain_epochs=np.asarray(model.infonce_pretrain_epochs),
-        infonce_pretrain_completed_epochs=np.asarray(len(model.infonce_pretrain_history)),
-        infonce_pretrain_learning_rate=np.asarray(model.infonce_pretrain_learning_rate),
-        infonce_initial_embeddings=(
-            model.infonce_initial_embeddings if model.infonce_initial_embeddings is not None
-            else np.empty((len(decoder[0]), 0))
-        ),
-        **{key: np.asarray(value) for key, value in penalty_weights.items()},
-    )
-    _mass_history(model, comparison_path / "tables" / f"{stem}-history.csv")
-    _mass_pretrain_history(model, comparison_path / "tables" / f"{stem}-infonce-pretrain.csv")
-
-    raw_channels = FactorizedChannels(probabilities, decoder)
-    raw_upper, raw_results = _verification_summary(raw_channels, boxes, adjacency)
-    mixing: dict[str, float] = {}
-    calibration_provenance: dict[str, dict[str, object]] = {}
-    calibration_tv: dict[str, float] = {}
-    frequencies_by_context = {
-        context: np.bincount(
-            data.design_tokens[data.design_context == context], minlength=int(config["K"])
-        ).astype(float)
-        for context in contexts
-    }
-    global_frequencies = np.bincount(data.design_tokens, minlength=int(config["K"])).astype(float)
-    for context in contexts:
-        weights = frequencies_by_context[context]
-        if weights.sum() == 0:
-            weights = global_frequencies
-        calibration = calibrate_common_cover(
-            raw_channels[context],
-            common_cover,
-            boxes[context],
-            adjacency[context],
-            target_epsilon=formal_epsilon,
-            bisection_tolerance=float(config.get("cover_bisection_tolerance", 1e-8)),
-            verifier_tolerance=float(config.get("solver_tolerance", 1e-8)),
-            input_weights=weights,
-            cost=data.representation_token_cost,
+    control_sha = hashlib.sha256(json.dumps(controls, sort_keys=True).encode()).hexdigest()
+    # Neither CAPT L nor its decoder is a training input/cache key. Reuse the
+    # same frozen neural model when paired with different CAPT block counts.
+    stem = f"mass-nn-{cost}-fseed{frozen_seed}-mseed{mass_seed}-{control_sha[:12]}"
+    model_path = comparison_path / "models" / f"{stem}.pt"
+    if model_path.is_file():
+        model = MassNN.load(model_path)
+    else:
+        model = fit_mass_nn(
+            data.design_tokens, data.design_context, sensitive, useful, config=config,
+            loss_m=loss_m, loss_n=loss_n, privacy_weight=privacy_weight,
+            utility_weight=utility_weight, seed=mass_seed, temperature=temperature,
+            cost=data.representation_token_cost if config["mass_ctr_weight"] else None,
+            frozen_context_values=contexts,
         )
-        mixing[context] = calibration.mixing_weight
-        calibration_provenance[context] = calibration.provenance()
-        calibration_tv[context] = calibration.max_row_tv_change
-    calibrated_channels = FactorizedChannels(
-        probabilities,
-        decoder,
-        cover_distribution=common_cover,
-        mixing_weights=mixing,
-    )
-    calibrated_upper, _ = _verification_summary(calibrated_channels, boxes, adjacency)
-
-    raw_certificate = ""
-    raw_valid = False
-    if math.isfinite(raw_upper):
-        claimed = max(raw_upper, 0.0) + 1e-12
-        raw_adjacency = {
-            context: [replace(pair, epsilon=claimed) for pair in pairs]
-            for context, pairs in adjacency.items()
-        }
-        raw_path, raw_verification = write_factorized_certificate(
-            comparison_path / "certificates" / f"{stem}-raw.json",
-            input_to_block=probabilities,
-            decoder=decoder,
-            cover_distribution=common_cover,
-            mixing_weights={context: 0.0 for context in contexts},
-            boxes=boxes,
-            adjacency=raw_adjacency,
-            groups=groups,
-            adjacency_spec={
-                "mode": config.get(
-                    "adjacency", config.get("privacy_scope", "tuple_adjacent")
-                ),
-                "epsilon": claimed,
-                "epsilon_by_attr": {},
-            },
-            metadata={
-                **model.provenance(),
-                "variant": "raw",
-                "source_git_sha": config["source_git_sha"],
-                "claimed_epsilon": claimed,
-                "measured_upper_epsilon": raw_upper,
-                "model_path": str(model_path),
-            },
+        model.save(model_path)
+        pd.DataFrame(model.history).to_csv(comparison_path / "tables" / f"{stem}-history.csv", index=False)
+        pd.DataFrame(model.pretrain_history, columns=["stage", "update", "pre_update_loss", "post_update_loss"]).to_csv(
+            comparison_path / "tables" / f"{stem}-pretrain.csv", index=False,
         )
-        raw_certificate = str(raw_path)
-        raw_valid = raw_verification.valid
-    calibrated_path, calibrated_verification = write_factorized_certificate(
-        comparison_path / "certificates" / f"{stem}-calibrated.json",
-        input_to_block=probabilities,
-        decoder=decoder,
-        cover_distribution=common_cover,
-        mixing_weights=mixing,
-        boxes=boxes,
-        adjacency=adjacency,
-        groups=groups,
-        adjacency_spec={
-            "mode": config.get("adjacency", config.get("privacy_scope", "tuple_adjacent")),
-            "epsilon": formal_epsilon,
-            "epsilon_by_attr": config.get("epsilon_by_attr", {}),
-        },
-        metadata={
-            **model.provenance(),
-            "variant": "common-cover calibrated",
-            "source_git_sha": config["source_git_sha"],
-            "target_epsilon": formal_epsilon,
-            "model_path": str(model_path),
-            "calibrations": {
-                context: calibration_provenance[context] for context in contexts
-            },
-        },
-    )
-    raw_utility = _evaluate(raw_channels, data, config, seed=frozen_seed)
-    calibrated_utility = _evaluate(
-        calibrated_channels, data, config, seed=frozen_seed
-    )
-    rows: list[dict[str, Any]] = []
-    for method, display_name, channels, utility, certified, valid, certificate in (
-        (
-            "mass12_raw",
-            "MaSS-12 (finite-output adaptation)",
-            raw_channels,
-            raw_utility,
-            raw_upper,
-            raw_valid,
-            raw_certificate,
-        ),
-        (
-            "mass12_calibrated",
-            "MaSS-12 + certified cover calibration",
-            calibrated_channels,
-            calibrated_utility,
-            calibrated_upper,
-            calibrated_verification.valid,
-            str(calibrated_path),
-        ),
-    ):
-        row = _empty_row()
-        row.update(
-            {
-                "method": method,
-                "K": int(config["K"]),
-                "display_name": display_name,
-                "cost": cost,
-                "seed": frozen_seed,
-                "mass_seed": mass_seed,
-                "target_epsilon": formal_epsilon,
-                "L": block_count,
-                "mass_m": loss_m,
-                "mass_n": loss_n,
-                "mass_privacy_weight": privacy_weight,
-                "mass_utility_weight": utility_weight,
-                "mass_ctr_weight": model.ctr_weight,
-                "mass_temperature": temperature,
-                "mass_infonce_weight": model.infonce_weight,
-                "mass_infonce_direction": model.infonce_direction,
-                "mass_infonce_pretrain_epochs": model.infonce_pretrain_epochs,
-                "mass_infonce_pretrain_learning_rate": model.infonce_pretrain_learning_rate,
-                **{f"mass_{key}": value for key, value in penalty_weights.items()},
-                "raw_upper_epsilon": raw_upper,
-                "certified_upper_epsilon": certified,
-                "certificate_valid": valid,
-                "cover_lambda": (0.0 if method == "mass12_raw" else max(mixing.values())),
-                "cover_row_tv": (
-                    0.0
-                    if method == "mass12_raw"
-                    else max(calibration_tv.values())
-                ),
-                "constant_channel": bool(
-                    all(
-                        np.allclose(value, value[0][None, :], atol=1e-10, rtol=0)
-                        for value in channels.values()
-                    )
-                ),
-                # VerificationResult exposes the worst constraint and aggregate
-                # count checked, but not the exact number of positive violations.
-                # Do not substitute a context count for a constraint count.
-                "violating_constraint_count": math.nan,
-                "worst_witness": json.dumps(
-                    {
-                        context: result.worst_case
-                        for context, result in raw_results.items()
-                        if result.worst_case is not None
-                    },
-                    sort_keys=True,
-                ),
-                "formal_comparable": valid,
-                "deployable_under_capt": True,
-                "uses_sensitive_value_online": False,
-                "oracle": False,
-                "channel_sha256": _channel_sha256(channels),
-                "certificate_path": certificate,
-            }
+        (comparison_path / "models" / f"{stem}.json").write_text(
+            json.dumps(model.provenance(), indent=2, sort_keys=True) + "\n", encoding="utf-8",
         )
-        _utility_row(row, utility)
-        rows.append(row)
-    return rows
+    channels = NeuralChannels(model)
+    utility = _evaluate(channels, data, config, seed=frozen_seed)
+    final = model.history[-1]
+    sensitive_mi = json.loads(final["post_update_sensitive_mi_nats"])
+    useful_mi = json.loads(final["post_update_useful_mi_nats"])
+    row = _empty_row()
+    row.update({
+        "method": "mass12_raw", "display_name": "MaSS neural (token interface)",
+        "mass_backend": "neural_token", "mass_control_sha256": control_sha,
+        "cost": cost, "seed": frozen_seed, "mass_seed": mass_seed,
+        "K": int(config["K"]), "mass_output_count": int(config["K"]),
+        # L labels only the CAPT reference for pairing; it does not constrain MaSS.
+        "L": block_count, "target_epsilon": float(config.get("formal_comparison_epsilon", 1.0)),
+        "mass_m": loss_m, "mass_n": loss_n, "mass_privacy_weight": privacy_weight,
+        "mass_utility_weight": utility_weight, "mass_temperature": temperature,
+        "mass_ctr_weight": config["mass_ctr_weight"],
+        **{key: config[key] for key in (
+            "mass_infonce_weight", "mass_infonce_direction", "mass_infonce_pretrain_epochs",
+            "mass_infonce_pretrain_learning_rate", "mass_privacy_quadratic_weight",
+            "mass_privacy_linear_weight", "mass_useful_quadratic_weight", "mass_useful_linear_weight",
+            "mass_batch_size", "mass_learning_rate", "mass_weight_decay", "mass_token_dim",
+            "mass_hidden_dim", "mass_attribute_pretrain_epochs", "mass_eval_noise_samples", "mass_mi_conditioning",
+        )},
+        "mass_sensitive_mi_estimate_nats": max(sensitive_mi.values(), default=0.0),
+        "mass_useful_mi_estimate_nats": min(useful_mi.values(), default=0.0),
+        "mass_sensitive_mi_by_attribute_nats": json.dumps(sensitive_mi, sort_keys=True),
+        "mass_useful_mi_by_attribute_nats": json.dumps(useful_mi, sort_keys=True),
+        "mass_classifier_ce_nats": final["post_update_attribute_ce_nats"],
+        "mass_final_loss": final["post_update_loss"],
+        "model_path": str(model_path), "model_sha256": sha256_file(model_path),
+        "cover_lambda": 0.0, "cover_row_tv": 0.0,
+        "formal_comparable": False, "certificate_valid": False,
+        "deployable_under_capt": True, "uses_sensitive_value_online": False, "oracle": False,
+        "exclusion_reason": "Own CE-based MI objective; no CAPT certificate or post-training randomization",
+    })
+    _utility_row(row, utility)
+    return [row]
 
 
 def _phase_values(
@@ -953,6 +745,13 @@ def _phase_values(
     if formal not in epsilons:
         epsilons.append(formal)
     return costs, sorted(set(block_counts)), seeds, sorted(set(epsilons))
+
+
+def _mass_training_signature(config: dict[str, Any]) -> str:
+    controls = {key: value for key, value in config.items()
+                if key.startswith("mass_") and not key.endswith("_list")
+                and not key.startswith("mass_pilot_")}
+    return hashlib.sha256(json.dumps(controls, sort_keys=True).encode()).hexdigest()
 
 
 def run_prior_art_comparison(
@@ -978,6 +777,8 @@ def run_prior_art_comparison(
         pilot_summary = json.loads(pilot_summary_path.read_text(encoding="utf-8"))
         if pilot_summary.get("source_git_sha") != config["source_git_sha"]:
             raise ValueError("full comparison and MaSS pilot must use the same source Git SHA")
+        if pilot_summary.get("mass_training_signature") != _mass_training_signature(config):
+            raise ValueError("full comparison and MaSS pilot must use the same neural training controls")
         if (int(pilot_summary.get("K", 4096)), int(pilot_summary.get("L", 16))) != (
             int(config["K"]), int(config["L"])
         ):
@@ -989,7 +790,7 @@ def run_prior_art_comparison(
                 raise ValueError(f"full comparison and MaSS pilot must use the same {key}")
         if not bool(pilot_summary.get("full_grid_allowed")):
             raise ValueError(
-                "MaSS pilot did not show the predeclared raw-epsilon variation required "
+                "MaSS pilot did not show the predeclared classifier-MI variation required "
                 "for the full grid"
             )
     config["comparison_phase"] = phase
@@ -1062,33 +863,6 @@ def run_prior_art_comparison(
 
     current_data = None
     formal = float(config.get("formal_comparison_epsilon", 1.0))
-    reference_data = _prepare_data(
-        config,
-        native_paths[(costs[0], block_counts[0], seeds[0], formal)],
-    )
-    common_cover = design_cover_distribution(
-        np.bincount(reference_data.design_tokens, minlength=int(config["K"])),
-        floor=float(config.get("cover_probability_floor", 1e-12)),
-        source_split="D_design",
-    )
-    reference_data = None
-    np.save(path / "mechanism" / "common_token_cover.npy", common_cover)
-    (path / "mechanism" / "common_token_cover.json").write_text(
-        json.dumps(
-            {
-                "source_split": "D_design",
-                "reference_frozen_design_seed": seeds[0],
-                "shared_across_methods_and_seeds": True,
-                "sha256": hashlib.sha256(common_cover.tobytes()).hexdigest(),
-                "floor": float(config.get("cover_probability_floor", 1e-12)),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
     prefix = "mass_pilot_" if phase == "pilot" else "mass_"
     mass_grid = product(
         config.get(f"{prefix}seed_list", config.get("mass_seed_list", [0])),
@@ -1111,42 +885,7 @@ def run_prior_art_comparison(
     for cost, block_count, frozen_seed in product(costs, block_counts, seeds):
         native = native_paths[(cost, block_count, frozen_seed, formal)]
         data = _prepare_data(config, native)
-        boxes, adjacency, groups = _boxes_by_context(
-            config,
-            native,
-            data,
-            target_epsilon=formal,
-        )
         for mass_seed, loss_m, loss_n, privacy_weight, utility_weight, temperature in mass_controls:
-            probe = _empty_row()
-            probe.update(
-                {
-                    "method": "mass12_calibrated",
-                    "K": int(config["K"]),
-                    "cost": cost,
-                    "seed": frozen_seed,
-                    "mass_seed": mass_seed,
-                    "target_epsilon": formal,
-                    "L": block_count,
-                    "mass_m": loss_m,
-                    "mass_n": loss_n,
-                    "mass_privacy_weight": privacy_weight,
-                    "mass_utility_weight": utility_weight,
-                    "mass_ctr_weight": float(config.get("mass_ctr_weight", 0.0)),
-                    "mass_temperature": temperature,
-                    "mass_infonce_weight": float(config.get("mass_infonce_weight", 1.0)),
-                    "mass_infonce_direction": str(config.get("mass_infonce_direction", "symmetric")),
-                    "mass_infonce_pretrain_epochs": int(config.get("mass_infonce_pretrain_epochs", 100)),
-                    "mass_infonce_pretrain_learning_rate": float(config.get("mass_infonce_pretrain_learning_rate", 0.01)),
-                    **{
-                        f"mass_{key}": float(config.get(f"mass_{key}", 1.0))
-                        for key in ("privacy_quadratic_weight", "privacy_linear_weight",
-                                    "useful_quadratic_weight", "useful_linear_weight")
-                    },
-                }
-            )
-            if resume and _result_key(probe) in records:
-                continue
             progress.emit(
                 "mass_fit_started",
                 cost=cost,
@@ -1163,12 +902,7 @@ def run_prior_art_comparison(
             rows = _mass_rows(
                 config,
                 path,
-                native,
                 data,
-                common_cover,
-                boxes,
-                adjacency,
-                groups,
                 cost=cost,
                 block_count=block_count,
                 frozen_seed=frozen_seed,
@@ -1190,13 +924,13 @@ def run_prior_art_comparison(
     if phase == "pilot":
         raw = frame.loc[
             (frame["method"] == "mass12_raw")
-            & np.isfinite(frame["raw_upper_epsilon"].astype(float))
+            & np.isfinite(frame["mass_sensitive_mi_estimate_nats"].astype(float))
         ]
         ranges = {
-            str(cost): float(group["raw_upper_epsilon"].max() - group["raw_upper_epsilon"].min())
+            str(cost): float(group["mass_sensitive_mi_estimate_nats"].max() - group["mass_sensitive_mi_estimate_nats"].min())
             for cost, group in raw.groupby("cost", sort=True)
         }
-        threshold = float(config.get("mass_pilot_min_epsilon_range", 1e-6))
+        threshold = float(config["mass_pilot_min_mi_range"])
         full_allowed = bool(ranges) and set(ranges) == set(costs) and all(
             value > threshold for value in ranges.values()
         )
@@ -1204,15 +938,16 @@ def run_prior_art_comparison(
             json.dumps(
                 {
                     "source_git_sha": config["source_git_sha"],
+                    "mass_training_signature": _mass_training_signature(config),
                     "K": int(config["K"]),
                     "L": int(config["L"]),
                     "mass_ctr_weight": float(config["mass_ctr_weight"]),
                     "mass_infonce_pretrain_epochs": int(config["mass_infonce_pretrain_epochs"]),
                     "mass_infonce_pretrain_learning_rate": float(config["mass_infonce_pretrain_learning_rate"]),
-                    "raw_epsilon_range_by_cost": ranges,
+                    "classifier_mi_range_by_cost": ranges,
                     "minimum_required_range": threshold,
                     "full_grid_allowed": full_allowed,
-                    "rule": "every configured cost must show finite raw achieved-epsilon variation",
+                    "rule": "every configured cost must show finite classifier-MI variation across pilot controls",
                 },
                 indent=2,
                 sort_keys=True,

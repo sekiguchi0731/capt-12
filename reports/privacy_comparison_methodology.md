@@ -1,55 +1,87 @@
-# Privacy-matched prior-art comparison methodology
+# CAPT / neural MaSS comparison methodology
 
-## Comparison question
+## Comparison question and privacy interpretation
 
-The formal question is whether CAPT-12 attains equal or better held-out CTR utility while satisfying the same robust profile-privacy condition, especially `robust upper epsilon <= 1`. Nominal MI parameters, attack estimates, and lower audits are never substituted for this upper certificate.
+Compare held-out CTR utility with CAPT/LDP and with a neural token adaptation
+of MaSS under each method's own privacy objective. MaSS is not calibrated to
+a CAPT epsilon budget. Its m/n controls and classifier-based MI estimates
+must never be described as CAPT certificates or equated numerically to epsilon.
 
-## Frozen data and online contract
+## Common data and evaluation contract
 
-All methods must reuse the same Criteo contribution table, one-display-per-user-day policy, temporal split IDs, fixed 12-bit encoder, `L=16` objective-aligned partition/decoder, ordered adjacency, hybrid paths, reference CTR service, costs, output budget, and seeds. Training reads only `D_design`; formal confidence objects read only `D_cert`; attack selection reads only `D_attack_train`; reporting reads `D_test`. The code rejects PBP/MaSS fitting calls whose declared source split is not `D_design`, rejects attack fitting outside `D_attack_train`, and rejects held-out attack evaluation outside `D_test`.
+Reuse the same frozen encoder Phi0, K-token input/output alphabet, public
+context/profile, contribution policy, temporal splits, fixed CTR service and
+paired seeds. L and the partition/decoder constrain CAPT only. MaSS models
+are trained independently of L and reused across CAPT references. Actual
+protected values are offline training labels and are absent from inference.
+All MaSS fitting and pretraining reads D_design, never D_cert or D_test.
+D_test is used only for evaluation. Fixed f_ref evaluation is the chosen CTR
+protocol; it differs from refitting a useful-attribute classifier on transformed
+data as done in the original MaSS experiments.
 
-The deployable inference signature is `Q(o|z,b,s)`. Sensitive values may label MaSS adversaries during training but are absent from `Mass12FiniteChannel.block_probabilities` and `.channel`. Profile-indexed PBP requires `A_S` to select `Q_g`, so it is always an oracle.
+## Neural MaSS learning
 
-## Formal robust upper epsilon
+The reference is jpmorganchase/MaSS at commit
+6fbe9be1ff155b3fdd2677de7977d801d10000b5 (Apache-2.0), particularly
+models/audiomnist/gen_model.py, models/audiomnist/disc_model.py,
+models/trainer.py, utils/losses/infonce.py, and engine/mass_engine.py.
 
-For every ordered edge and output, the existing confidence-box support solver computes the numerator supremum and denominator infimum with no denominator floor. Positive numerator over zero denominator is infinity; zero over zero contributes an impossible-output constraint with realized value minus infinity and zero additive violation. Ordered reverse edges are explicit adjacency entries. Tuple claims use only existing hybrid paths and sum their per-attribute epsilon values.
+A Gaussian-noise residual generator takes the original integer token and
+public context and generates a K-way categorical distribution. Attribute
+MLPs estimate MI through entropy minus cross-entropy, using the original
+sensitive/useful violation directions and quadratic-plus-absolute penalties.
+A single shared InfoNCE MLP evaluates original/transformed views with only
+cross-view negatives. Attribute networks are first pretrained on original
+tokens with their labels; InfoNCE is pretrained with identity pairs. Their
+weights initialize joint learning. Each minibatch first updates the generator
+and InfoNCE network, then updates attribute networks by supervised CE on the
+same detached outputs drawn before the generator update. This replaces the
+previous probability-table/exact-MI training in the dedicated runner.
 
-A row-stochastic frozen channel is formal-comparable only when its independent robust verification is valid and its realized upper epsilon is at most the selected target. Criteo point confidence is rejected by existing config and certificate code.
+A nominal token embedding and categorical output head are interface
+adaptations. A hard integer sample has no pathwise derivative, so generator
+gradients use the score-function estimator with a baseline independent of the
+current sampled outputs. The log probability is summed over the complete
+batch; negative InfoNCE outputs also depend on the generator. A tiny fully
+enumerated test checks that the expected gradient matches the exact coupled
+batch objective. Attribute/feature networks see the actual hard token, not a
+soft vector containing information that is absent from the released output.
 
-## PBP baselines
+The default conditional mode uses H(A|C)-CE(A|O,C), C=(B,S), and within-context
+InfoNCE negatives. The explicit unconditional mode uses H(A)-CE(A|O) and
+unconditioned negatives, as in original MaSS. Both remain identifiable in
+metadata. A finite penalty requests the MI target; it does not prove target
+attainment. Negative H-CE estimates are saved without clipping.
 
-The oracle LP contains one stochastic matrix per nominal profile and constrains `p_g Q_g <= exp(epsilon) p_g' Q_g'` for every ordered edge/output. Its objective uses profile weights and the selected objective-aligned cost. It is never promoted to deployable or common-channel formal comparison.
+The CTR-cost extension is opt-in with mass_ctr_weight (default 0). Its weight
+is independent of the MI and InfoNCE terms. Main training counts complete
+dataset epochs. Pretraining controls count sampled-batch updates, as recorded
+in the README and provenance. All initial/final networks, labels/context
+vocabularies and histories are saved in a reloadable .pt checkpoint.
 
-The common nominal LP shares one channel across profiles and uses nominal distributions from `D_design`. It is frozen before being sent to the robust verifier. Passing only nominal constraints yields `uncertified_nominal_baseline`; passing the robust verifier promotes the exact frozen channel.
+## No CAPT postprocessing of MaSS
 
-## MaSS-12 finite-output adaptation
+There is no shared decoder, medoid restriction, confidence-box optimization,
+common-cover mixture, or certificate repair on the MaSS path. Gaussian input
+noise and categorical sampling are part of MaSS itself. The runner emits
+only mass12_raw with mass_backend=neural_token. No mass12_calibrated result or
+MaSS certificate is generated. Results validation rejects neural rows with
+post-training cover or CAPT certification claims.
 
-For each frozen public context, including predeclared contexts absent from `D_design`, the adaptation learns logits over `L` blocks for every input token. Softmax probabilities are multiplied by the common decoder to enumerate `Q=pi D` exactly. No privacy verification samples from the mechanism.
+## Evaluation and reporting
 
-Unlike the official neural MaSS implementation, this finite discrete adaptation computes `I(A;O|B,S)` exactly from `D_design` joint masses and applies the paper's same violation direction and `d^2+|d|` penalty. If useful labels and `n` are configured, their exact discrete conditional MI uses the symmetric lower-bound penalty. This is `MaSS-12 (finite-output adaptation)`, not official or original MaSS.
+For CTR evaluation, average the categorical probabilities over a reproducible
+Monte Carlo sample of Gaussian input noise. Record the sample count, seed and
+model SHA; this estimates utility and is not an exact privacy channel.
+User-day bootstrap intervals condition on the evaluation noise sample and do
+not include its Monte Carlo error. Increase the sample count for sensitivity
+analysis. Inference itself uses fresh noise, not a frozen approximation.
 
-The main condition uses the MI penalties and InfoNCE without an additional CTR cost (`mass_ctr_weight: 0`, the default). The CTR-oriented extension independently adds `mass_ctr_weight * E[d_B(Z,O)]` for the selected teacher-KL, empirical-logloss, or hybrid cost; `--mass-ctr-weight` accepts any finite nonnegative coefficient. The useful-MI weight no longer scales this term. To recover an older cell's objective, set the CTR weight equal to that cell's useful-MI weight. All variants retain the same frozen CTR evaluation, cost-derived common decoder, and certification/calibration procedure. They remain finite-output adaptations even at CTR weight zero. Results, model/certificate metadata, and pre/post history record the CTR weight; distortion remains measurable when its training coefficient is zero. Resume and plotting distinguish weights, and pilot/full phases must use the same CTR weight.
-
-The adaptation additionally preserves source information with conditional symmetric InfoNCE, the arithmetic mean of output-to-source and source-to-output losses. Within each public context, source tokens and their in-batch negatives are sampled iid from the design marginal. The reverse loss enumerates outputs through `Q=pi D` exactly. The forward loss samples an output batch and enumerates each output slot conditional on the other sampled outputs (Rao-Blackwellization). Channel gradients therefore include the effect of changing negative-output distributions; they are unbiased estimates of the full finite-batch expectation, not gradients that treat sampled negatives as fixed. Source/output randomness is separate and reproducible. Single-direction modes are available as ablations. History records both directional losses and their mean before/after each update, both seeds, and final embeddings are retained. The training InfoNCE estimate is not a privacy certificate.
-
-Before the joint fit, the shared unit-normalized token embedding is pretrained with identity-pair InfoNCE on `D_design`: each original token instance is its own anchor/positive and other instances in the same public-context batch are negatives, including duplicates. This follows the upstream pretraining pattern while retaining the finite token lookup in place of its NN. The stage uses no sensitive/click labels, decoder outputs, `D_cert`, or `D_test`, and never changes the fixed encoder. The pretrained weights initialize joint MaSS training; optimizer moments are reset. Defaults are 100 updates (one batch per context per update) at learning rate 0.01, controlled by `--mass-infonce-pretrain-epochs` and `--mass-infonce-pretrain-learning-rate`. Epochs 0 selects the earlier random initialization and InfoNCE weight 0 skips pretraining. The calculation uses batch-sized similarities rather than a K-by-K identity channel. Pre/post pretraining losses and seeds are saved in a separate CSV, and the main-training initializer is saved alongside final embeddings in the model NPZ. Results, certificate metadata, resume/plot keys, and pilot/full checks retain the controls and completed update counts where applicable. Legacy result files are interpreted as no-pretraining runs.
-
-The dedicated CLI overrides m/n and overall privacy/utility grids in both pilot and full phases. Quadratic and linear coefficients for sensitive and useful penalties are independently configurable; default coefficients of 1 reproduce the original adaptation's `d^2+|d|` shape. All values are recorded in results and model/certificate metadata.
-
-Pilot controls are `mass_m_list`, `mass_n_list`, privacy/utility weights, training seed, epochs, finite-block mode, and temperature. A full grid is allowed only after raw achieved leakage changes across the pilot. The configured `m,n` values are never copied into achieved-privacy fields.
-
-## Certified cover calibration
-
-The cover distribution is frozen once from `D_design`, assigned a strictly positive probability floor, and shared across methods/seeds. For each raw channel, bisection finds the smallest `lambda` within `1e-8` such that the existing robust verifier reports upper epsilon at most 1. The endpoint is independently reverified. Artifacts record pre/post epsilon and utility, lambda, maximum per-input row TV change, and constant-channel status. The same wrapper applies to raw MaSS-12 and common nominal PBP. It is a CAPT comparison wrapper, not part of either prior paper.
-
-The certificate bundle is factorized rather than a redundant 4096-by-4096 JSON table: it stores `pi`, the decoder, cover and per-context `lambda`, confidence boxes, and ordered adjacency. Independent verification checks hashes, reconstructs the exact square token channel for each context, and sends it to the existing robust verifier. This compression changes storage only, not the verified channel.
-
-## Empirical diagnostic
-
-Only if no useful certified MaSS point exists, the auxiliary metric is the `cross-fitted attack-CMI proxy`: baseline conditional cross-entropy minus output-conditioned cross-entropy on `D_test`. One-hot logistic attackers use identical candidate grids and user-day group folds; hyperparameters and fold ensembles are frozen using `D_attack_train` only. User-day cluster bootstrap supplies 95% intervals. Raw and zero-clipped values, attribute-wise values, worst attribute, and profile-mass-weighted means are separate fields.
-
-The empirical plot uses only overlapping observed leakage ranges and does not extrapolate. Lower audit above 1 is a violation witness; a value at or below 1 is not a safety proof. No certificate upper/lower sandwich is claimed without a stationarity or shift bridge.
-
-## Output and claim gates
-
-The results schema refuses a `formal_comparable=true` row without a valid certificate, or a deployable row that uses `A_S` online. The main artifact uses at most two panels: an actual certified-epsilon/held-out-log-loss frontier and the paired L=8,16,32 sensitivity at epsilon 1. Frozen-design seed points and paths are shown without treating seeds as independent test samples. The detailed prior Figures A–E are Supplementary, and the empirical panel remains labeled `not a certificate`. Deterministic plotting fixes timestamps and metadata, and review packets use sorted members with fixed ZIP timestamps. A two-render hash check remains mandatory when execution is authorized.
+MaSS result fields report requested m/n, classifier MI estimates and CE,
+pre/post design-probe losses, held-out CTR metrics, and zero cover. L identifies
+the CAPT reference and mass_output_count=K identifies MaSS capacity. No MaSS
+point is placed on a certified epsilon axis. The neural pilot gate uses MI
+estimate variation across controls, not raw/certified epsilon. CAPT/LDP retain
+their existing independent certificates. The legacy finite-table and PBP
+utilities are preserved for historical diagnostics but are not the neural
+MaSS comparison path.
