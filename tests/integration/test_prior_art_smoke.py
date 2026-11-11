@@ -15,7 +15,7 @@ from capt12.cli import app
 @pytest.mark.parametrize(
     ("arguments", "k", "l_count", "ctr_weight", "pretrain_epochs"),
     [(["--K", "32", "--L", "3"], 32, 3, 0.0, 2),
-     (["--input-bits", "2", "--output-bits", "2", "--mass-ctr-weight", "0.7",
+     (["--input-bits", "2", "--output-bits", "2", "--attack-method", "none", "--mass-ctr-weight", "0.7",
        "--mass-infonce-pretrain-epochs", "0"], 4, 4, 0.7, 0),
      (["--K", "8", "--L", "2", "--L-list", "2,3", "--phase", "full"], 8, (2, 3), 0.0, 2)],
 )
@@ -148,3 +148,43 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     assert all(item["method"] != "mass12_calibrated" for item in contracts)
     assert mass_contract["output_bits"] == (k - 1).bit_length()
     assert (publication / "figures/main_privacy_utility_comparison.png").is_file()
+    if "none" in arguments:
+        assert set(results["attribute_attack_status"]) == {"disabled"}
+        assert not list((publication / "runs").glob("*/attribute_attacks"))
+        return
+    assert set(results["attribute_attack_method"]) == {"likelihood_ratio"}
+    assert set(results["attribute_attack_status"]) == {"complete"}
+    assert results["attribute_attack_worst_roc_auc"].between(0, 1).all()
+    assert results["attribute_attack_eligible_pairs"].eq(2).all()
+    assert mass["attribute_attack_id"].nunique() == 1
+    assert (publication / "figures/attribute_inference_privacy_utility.png").is_file()
+    for path in results["attribute_attack_path"].unique():
+        directory = Path(path)
+        summary = json.loads((directory / "summary.json").read_text())
+        assert summary["fit_split"] == "D_attack_train"
+        assert summary["test_split"] == "D_test"
+        assert not summary["certificate"] and not summary["epsilon_estimated"]
+        pairs = pd.read_csv(directory / "pairs.csv")
+        assert pairs["status"].eq("complete").sum() == 2
+        pairs = pairs.loc[pairs["status"] == "complete"]
+        assert (pairs["fpr_ci_low"] <= pairs["fpr"]).all()
+        assert (pairs["fpr"] <= pairs["fpr_ci_high"]).all()
+        assert (directory / "roc.csv").is_file()
+        assert (directory / "roc.pdf").is_file()
+    if k == 32:
+        from capt12.utils.artifacts import sha256_file
+        run = model_paths[0].parent.parent
+        original_results = sha256_file(run / "tables/results.csv")
+        original_model = sha256_file(model_paths[0])
+        monkeypatch.setattr("capt12.comparison.mass_nn.fit_mass_nn", lambda *args, **kwargs: pytest.fail("attack reevaluation must not train MaSS"))
+        monkeypatch.setattr("capt12.experiments.prior_art_comparison._native_run", lambda *args, **kwargs: pytest.fail("attack reevaluation must not run CAPT training"))
+        output = tmp_path / "new-attack"
+        repeated = CliRunner().invoke(app, ["evaluate-prior-art-attacks", "--run-dir", str(run),
+            "--output-dir", str(output), "--attack-smoothing", "0.5", "--attack-target-fpr", "0.1"])
+        assert repeated.exit_code == 0, f"{repeated.output}\n{repeated.exception!r}"
+        revised = pd.read_csv(output / "results.csv")
+        assert revised["attribute_attack_status"].eq("complete").all()
+        assert revised["attribute_attack_target_fpr"].eq(0.1).all()
+        assert sha256_file(run / "tables/results.csv") == original_results
+        assert sha256_file(model_paths[0]) == original_model
+        assert (output / "figures/attribute_inference_privacy_utility.png").is_file()

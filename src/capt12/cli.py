@@ -534,6 +534,12 @@ def plot(
 @app.command("prior-art-comparison")
 def prior_art_comparison(
     config: Path = typer.Option(..., "--config", exists=True),
+    attack_method: str | None = typer.Option(None, "--attack-method", help="Shared attribute attack: likelihood_ratio or none."),
+    attack_smoothing: float | None = typer.Option(None, "--attack-smoothing"),
+    attack_target_fpr: float | None = typer.Option(None, "--attack-target-fpr"),
+    attack_confidence: float | None = typer.Option(None, "--attack-confidence"),
+    attack_calibration_fraction: float | None = typer.Option(None, "--attack-calibration-fraction"),
+    attack_seed: int | None = typer.Option(None, "--attack-seed", min=0),
     k: int | None = typer.Option(None, "--K", "--input-count", min=1, max=4096,
                                help="Shared input/transmitted-token alphabet for CAPT and MaSS."),
     input_bits: int | None = typer.Option(None, "--input-bits", min=0, max=12),
@@ -593,6 +599,12 @@ def prior_art_comparison(
             "comparison_output_dir": (
                 str(comparison_output_dir) if comparison_output_dir is not None else None
             ),
+            "attribute_attack_method": attack_method,
+            "attribute_attack_smoothing": attack_smoothing,
+            "attribute_attack_target_fpr": attack_target_fpr,
+            "attribute_attack_confidence": attack_confidence,
+            "attribute_attack_calibration_fraction": attack_calibration_fraction,
+            "attribute_attack_seed": attack_seed,
             "mass_ctr_weight": mass_ctr_weight,
             "mass_epochs": mass_epochs,
             "mass_batch_size": mass_batch_size,
@@ -672,6 +684,32 @@ def prior_art_comparison(
             sort_keys=True,
         )
     )
+
+
+@app.command("evaluate-prior-art-attacks")
+def evaluate_prior_art_attacks(
+    run_dir: Path = typer.Option(..., "--run-dir", exists=True, file_okay=False),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    attack_method: str | None = typer.Option(None, "--attack-method"),
+    attack_smoothing: float | None = typer.Option(None, "--attack-smoothing"),
+    attack_target_fpr: float | None = typer.Option(None, "--attack-target-fpr"),
+    attack_confidence: float | None = typer.Option(None, "--attack-confidence"),
+    attack_calibration_fraction: float | None = typer.Option(None, "--attack-calibration-fraction"),
+    attack_seed: int | None = typer.Option(None, "--attack-seed", min=0),
+) -> None:
+    """Change the attribute attack evaluation of saved CAPT/LDP/MaSS models; no retraining."""
+    from capt12.experiments.prior_art_comparison import reevaluate_attribute_attacks
+
+    overrides = {f"attribute_attack_{key}": value for key, value in {
+        "method": attack_method, "smoothing": attack_smoothing, "target_fpr": attack_target_fpr,
+        "confidence": attack_confidence, "calibration_fraction": attack_calibration_fraction,
+        "seed": attack_seed,
+    }.items() if value is not None}
+    try:
+        output = reevaluate_attribute_attacks(run_dir.resolve(), overrides, output_dir)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--attack-method/--attack-target-fpr") from error
+    typer.echo(json.dumps({"output": str(output), "mechanisms_retrained": False}, indent=2))
 
 
 @app.command("render-prior-art-comparison")

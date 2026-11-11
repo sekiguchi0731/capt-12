@@ -58,3 +58,9 @@ attack_crossfit_folds: 5
 attack_cluster_bootstrap_replicates: 2000
 attack_regularization_grid: [0.01, 0.1, 1.0, 10.0]
 comparison_output_dir: outputs/prior_art_comparison
+attribute_attack_method: likelihood_ratio
+attribute_attack_smoothing: 1.0
+attribute_attack_target_fpr: 0.01
+attribute_attack_confidence: 0.95
+attribute_attack_calibration_fraction: 0.5
+attribute_attack_seed: 0

@@ -265,6 +265,27 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         key.startswith("mass_") for key in cfg
     )
     if prior_art_comparison:
+        from capt12.comparison.attribute_inference import ATTACK_FACTORIES
+
+        attack_method = str(cfg.get("attribute_attack_method", "likelihood_ratio"))
+        if attack_method not in {*ATTACK_FACTORIES, "none"}:
+            raise ValueError("unsupported attribute_attack_method")
+        cfg["attribute_attack_method"] = attack_method
+        for key, default in (("attribute_attack_target_fpr", 0.01),
+                             ("attribute_attack_confidence", 0.95),
+                             ("attribute_attack_calibration_fraction", 0.5)):
+            value = float(cfg.get(key, default))
+            if not 0 < value < 1:
+                raise ValueError(f"{key} must be in (0, 1)")
+            cfg[key] = value
+        smoothing = float(cfg.get("attribute_attack_smoothing", 1.0))
+        if not math.isfinite(smoothing) or smoothing <= 0:
+            raise ValueError("attribute_attack_smoothing must be finite and positive")
+        cfg["attribute_attack_smoothing"] = smoothing
+        attack_seed = int(cfg.get("attribute_attack_seed", 0))
+        if attack_seed < 0:
+            raise ValueError("attribute_attack_seed must be nonnegative")
+        cfg["attribute_attack_seed"] = attack_seed
         if cfg.get("mass_output_mode", "neural_token") != "neural_token":
             raise ValueError("MaSS comparison requires mass_output_mode: neural_token; CAPT decoders are not used")
         cfg["mass_output_mode"] = "neural_token"

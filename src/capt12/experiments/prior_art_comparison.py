@@ -4,8 +4,9 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from functools import partial
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,12 @@ class PreparedComparisonData:
     test_user_days: np.ndarray
     service_probabilities: dict[str, np.ndarray]
     representation_token_cost: np.ndarray
+    attack_frame: pd.DataFrame
+    attack_tokens: np.ndarray
+    attack_context: np.ndarray
+    attack_user_days: np.ndarray
+    attack_test_positions: np.ndarray
+    expected_attack_groups: tuple[Group, ...]
 
 
 class FactorizedChannels(Mapping[str, np.ndarray]):
@@ -130,7 +137,7 @@ def _native_config(
     result = {
         key: value
         for key, value in config.items()
-        if key not in _ORCHESTRATOR_KEYS and not key.startswith("mass_")
+        if key not in _ORCHESTRATOR_KEYS and not key.startswith(("mass_", "attribute_attack_"))
     }
     result.update(
         {
@@ -263,6 +270,22 @@ def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparis
     test_user_days = (
         test_frame["day_int"].astype(str) + "|" + test_frame[user_col].astype(str)
     ).to_numpy()
+    attack_frame = mapper.transform(select_one_display_per_user_day(
+        load_parquet_sample(data_root=config["data_root"], columns=columns,
+                            days=config["splits"]["D_attack_train"]),
+        user_col=user_col, day_col="day_int", id_col=id_col,
+    )) if config["attribute_attack_method"] != "none" else test_frame.iloc[:0].copy()
+    attack_tokens = np.asarray(encoder.transform(attack_frame), dtype=int) if len(attack_frame) else np.array([], dtype=int)
+    attack_context = _context_values(attack_frame, contexts).astype(str).to_numpy()
+    test_positions = select_one_display_per_user_day(
+        test_frame.assign(__attack_position=np.arange(len(test_frame))),
+        user_col=user_col, day_col="day_int", id_col=id_col,
+    )["__attack_position"].to_numpy(dtype=int)
+    support = json.loads((native_path / "frozen_support.json").read_text(encoding="utf-8"))
+    expected_attack_groups = tuple(
+        Group(config["profiles"][0], tuple(map(str, group[:-1])), str(group[-1]))
+        for group in support["G_cart"]
+    )
     with np.load(native_path / "mechanism" / "frozen_design.npz") as frozen:
         context_values = sorted(
             set(map(str, frozen["context_levels"].tolist())).union(np.unique(test_context))
@@ -283,7 +306,104 @@ def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparis
         test_user_days=test_user_days,
         service_probabilities=_probability_grid(reference, context_values, context_column, int(config["K"])),
         representation_token_cost=representation_token_cost,
+        attack_frame=attack_frame, attack_tokens=attack_tokens, attack_context=attack_context,
+        attack_user_days=(attack_frame["day_int"].astype(str) + "|" + attack_frame[user_col].astype(str)).to_numpy(),
+        attack_test_positions=test_positions, expected_attack_groups=expected_attack_groups,
     )
+
+
+def _sample_factorized(
+    channels: FactorizedChannels, tokens: np.ndarray, contexts: np.ndarray, seed: int,
+) -> np.ndarray:
+    """Sample the deployed two-stage mechanism without allocating N-by-K probabilities."""
+    rng = np.random.default_rng(seed)
+    result = np.empty(len(tokens), dtype=int)
+    for context in np.unique(contexts):
+        positions = np.flatnonzero(contexts == context)
+        factors = channels.input_to_block[str(context)]
+        if channels.mixing[str(context)] != 0:
+            raise ValueError("attribute comparison expects unwrapped native channels")
+        blocks = np.empty(len(positions), dtype=int)
+        selected_tokens = tokens[positions]
+        for token, selected in pd.Series(selected_tokens).groupby(selected_tokens, sort=True).indices.items():
+            blocks[selected] = rng.choice(factors.shape[1], len(selected), p=factors[token])
+        for block in np.unique(blocks):
+            selected = positions[blocks == block]
+            result[selected] = rng.choice(channels.decoder.shape[1], len(selected), p=channels.decoder[block])
+    return result
+
+
+def _sample_mass(model: Any, tokens: np.ndarray, contexts: np.ndarray, seed: int) -> np.ndarray:
+    # Runtime samples, streamed to bound the K-logit memory on full Criteo splits.
+    batch = max(1, min(4096, 4_000_000 // int(model.config["K"])))
+    result = np.empty(len(tokens), dtype=int)
+    for index, start in enumerate(range(0, len(tokens), batch)):
+        draw_seed = int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
+        result[start:start + batch] = model.sample(tokens[start:start + batch], contexts[start:start + batch], seed=draw_seed)
+    return result
+
+
+def _attach_attribute_attack(
+    row: dict[str, Any], config: dict[str, Any], comparison_path: Path,
+    data: PreparedComparisonData, sample: Callable[[np.ndarray, np.ndarray, int], np.ndarray],
+) -> None:
+    from capt12.comparison.attribute_inference import evaluate_attribute_inference
+
+    for name in RESULT_COLUMNS:
+        if name.startswith("attribute_attack_"):
+            row[name] = math.nan
+    method = config["attribute_attack_method"]
+    row["attribute_attack_method"] = method
+    if method == "none":
+        row["attribute_attack_status"] = "disabled"
+        return
+    controls = {key: value for key, value in config.items() if key.startswith("attribute_attack_")}
+    identity = {"schema_version": 1, "mechanism": row.get("model_sha256") if row["method"] == "mass12_raw" else row["channel_sha256"],
+                "cost": row["cost"], "frozen_seed": int(row["seed"]), "controls": controls,
+                "source_git_sha": config.get("source_git_sha"), "splits": config["splits"],
+                "profile": config["profiles"][0], "adjacency": config.get("adjacency", config.get("privacy_scope", "tuple_adjacent"))}
+    attack_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
+    path = comparison_path / "attribute_attacks" / attack_id
+    summary_path = path / "summary.json"
+    if all((path / name).is_file() for name in ("summary.json", "pairs.csv", "roc.csv", "attacker_scores.npz", "roc.png", "roc.pdf")):
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    else:
+        seed = int(np.random.SeedSequence([int(config["attribute_attack_seed"]), int(row["seed"])]).generate_state(1)[0])
+        indices = data.attack_test_positions
+        attack_outputs = sample(data.attack_tokens, data.attack_context, seed)
+        test_outputs = sample(data.test_tokens[indices], data.test_context[indices], seed ^ 0xFFFFFFFF)
+        registry = {(str(group.context), *group.values): group for group in data.expected_attack_groups}
+
+        def groups(frame: pd.DataFrame, contexts: np.ndarray) -> list[Group]:
+            values = frame[config["profiles"][0].split("+")].astype(str).to_numpy()
+            return [registry[(str(context), *map(str, value))] for context, value in zip(contexts, values, strict=True)]
+
+        result = evaluate_attribute_inference(
+            attack_outputs, groups(data.attack_frame, data.attack_context), data.attack_user_days,
+            test_outputs, groups(data.test_frame.iloc[indices], data.test_context[indices]), data.test_user_days[indices],
+            expected_groups=data.expected_attack_groups, k=int(config["K"]), method=method,
+            smoothing=float(config["attribute_attack_smoothing"]),
+            target_fpr=float(config["attribute_attack_target_fpr"]),
+            confidence=float(config["attribute_attack_confidence"]),
+            calibration_fraction=float(config["attribute_attack_calibration_fraction"]), seed=seed,
+            adjacency_mode=identity["adjacency"],
+        )
+        summary = result.summary
+        summary["mechanism_identity"] = identity
+        summary["attack_id"] = attack_id
+        summary["release_sampling"] = "one actual mechanism draw per selected user-day; MaSS uses fresh Gaussian and categorical draws, not the utility MC channel"
+        summary["release_sha256"] = hashlib.sha256(attack_outputs.tobytes() + test_outputs.tobytes()).hexdigest()
+        summary["references"] = {
+            "hypothesis_testing": "https://petsymposium.org/popets/2019/popets-2019-0045.pdf",
+            "sections": ["2.2 Definition 3 / Equation 1", "3 Theorem 2", "5.3.1", "6"],
+            "adaptation": "estimated conditional token distributions and held-out attribute-pair ROC; not a reproduction of the paper's analytic DP comparisons",
+        }
+        result.save(path)
+    row.update(attribute_attack_id=attack_id, attribute_attack_path=str(path),
+               attribute_attack_method=method, attribute_attack_status=summary["status"])
+    for key in ("scope_sha256", "target_fpr", "expected_pairs", "eligible_pairs", "evaluated_pairs",
+                "mean_roc_auc", "worst_roc_auc", "mean_tpr", "worst_tpr", "mean_fpr", "worst_fpr"):
+        row[f"attribute_attack_{key}"] = summary[key]
 
 
 def _boxes_by_context(
@@ -570,6 +690,8 @@ def _native_rows(
             }
         )
         _utility_row(row, utility)
+        _attach_attribute_attack(row, config, comparison_path, data,
+                                 partial(_sample_factorized, token_channels))
         rows.append(row)
     rows[1]["paired_excess_log_loss_difference_vs_capt"] = (
         rows[1]["excess_ctr_log_loss"] - rows[0]["excess_ctr_log_loss"]
@@ -726,6 +848,8 @@ def _mass_rows(
         "exclusion_reason": "Own CE-based MI objective; no CAPT certificate or post-training randomization",
     })
     _utility_row(row, utility)
+    _attach_attribute_attack(row, config, comparison_path, data,
+                             partial(_sample_mass, model))
     return [row]
 
 
@@ -986,3 +1110,70 @@ def run_prior_art_comparison(
         **process_memory_bytes(),
     )
     return path
+
+
+def reevaluate_attribute_attacks(
+    run_dir: Path, overrides: dict[str, Any], output_dir: Path | None = None,
+) -> Path:
+    """Evaluate saved mechanisms under new attack controls, without retraining.
+
+    Original comparison tables, model files, and certificates are never rewritten.
+    """
+    import yaml
+
+    from capt12.comparison.artifacts import render_attribute_inference_figures
+    from capt12.comparison.mass_nn import MassNN
+    from capt12.utils.artifacts import sha256_file
+
+    source_config = yaml.safe_load((run_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
+    config = record_source_provenance(validate_config({**source_config, **overrides}))
+    controls = {key: value for key, value in config.items() if key.startswith("attribute_attack_")}
+    signature = hashlib.sha256(json.dumps({"controls": controls, "evaluation_source": config["source_git_sha"]}, sort_keys=True).encode()).hexdigest()[:16]
+    output = output_dir or run_dir / "attack_evaluations" / signature
+    if output.resolve() == run_dir.resolve():
+        raise ValueError("attack reevaluation requires a separate output directory")
+    if (output / "results.csv").exists() and not (output / "evaluation.json").is_file():
+        raise ValueError("attack output directory would overwrite an original comparison table")
+    output.mkdir(parents=True, exist_ok=True)
+    frame = pd.read_csv(run_dir / "tables" / "results.csv")
+    references = frame.loc[frame["method"] == "capt"]
+    rows = []
+    previous_native, data = None, None
+    for row in frame.to_dict(orient="records"):
+        matching = references
+        for key in ("cost", "seed", "K", "L", "target_epsilon"):
+            matching = matching.loc[matching[key] == row[key]]
+        if len(matching) != 1:
+            raise ValueError("each attack row requires exactly one matching saved CAPT reference")
+        native = Path(matching.iloc[0]["certificate_path"])
+        if previous_native != native:
+            data = _prepare_data(config, native)
+            previous_native = native
+        if data is None:
+            raise RuntimeError("attack data were not loaded")
+        if row["method"] == "mass12_raw" and row["mass_backend"] == "neural_token":
+            if sha256_file(Path(row["model_path"])) != row["model_sha256"]:
+                raise ValueError("saved MaSS model differs from the recorded model SHA")
+            model = MassNN.load(Path(row["model_path"]))
+            sampler = partial(_sample_mass, model)
+        elif row["method"] in {"capt", "optimal_ldp"}:
+            design = comparison_design_name(int(row["K"]), int(row["L"]))
+            with np.load(native / "mechanism" / f"context_channels-{design}.npz") as payload:
+                channels = _token_channels(payload["channels" if row["method"] == "capt" else "ldp_channels"],
+                                           payload["contexts"], payload["assignment"], payload["decoder"])
+            if _channel_sha256(channels) != row["channel_sha256"]:
+                raise ValueError("saved native channel differs from the recorded channel SHA")
+            sampler = partial(_sample_factorized, channels)
+        else:
+            raise ValueError(f"unsupported saved mechanism for attribute reevaluation: {row['method']}")
+        _attach_attribute_attack(row, config, output, data, sampler)
+        rows.append(row)
+    result = pd.DataFrame(rows, columns=RESULT_COLUMNS)
+    result.to_csv(output / "results.csv", index=False)
+    render_attribute_inference_figures(result, output / "figures")
+    (output / "evaluation.json").write_text(json.dumps({
+        "comparison_run": str(run_dir), "training_source_git_sha": source_config.get("source_git_sha"),
+        "evaluation_source_git_sha": config["source_git_sha"], "controls": controls,
+        "mechanisms_retrained": False,
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return output

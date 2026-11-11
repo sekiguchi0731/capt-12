@@ -540,6 +540,73 @@ cannot select the old `finite_block` backend. Historical result files remain
 renderable with their original metadata; rerunning the neural comparison
 requires new training.
 
+### Shared empirical attribute-inference evaluation
+
+`prior-art-comparison` also evaluates CAPT, LDP, and MaSS with the same
+`likelihood_ratio` attack. It estimates categorical output frequencies from
+`D_attack_train` within each fixed public context and selected profile, and
+compares ordered attribute tuples differing in one coordinate (or all pairs
+when `joint_all_pairs` is configured). It does not try to recover the original
+input token. MaSS attacks use actual Gaussian-plus-categorical runtime draws,
+not its Monte Carlo utility channel. Generation is streamed to bound memory.
+
+Both attack and test data retain one display per user-day. A stable user-day
+hash divides `D_attack_train` into frequency-fit and threshold-calibration
+parts. The default add-one smoothing is fixed before evaluation. A calibrated
+likelihood-ratio threshold targets FPR=0.01; randomized decisions at tied
+scores permit a categorical attacker to reach that target on calibration data.
+This randomization changes only the attacker's decision, never the released
+token. The test FPR is measured and can differ from the target. Test labels
+do not choose the attack, thresholds, smoothing, or eligible comparison family.
+
+Controls are `--attack-method likelihood_ratio|none`, `--attack-smoothing`,
+`--attack-target-fpr`, `--attack-confidence`, `--attack-calibration-fraction`,
+and `--attack-seed`. The matching config names have the `attribute_attack_`
+prefix. `ATTACK_FACTORIES` in `comparison/attribute_inference.py` separates
+the score-fitting backend from sampling, calibration, and evaluation, so a
+different token-scoring attack can replace it later.
+
+Each `attribute_attacks/<id>/` saves `pairs.csv` (per-context ordered-pair
+counts, calibrated thresholds, tie probabilities, AUC, actual TPR/FPR and
+intervals), `roc.csv` (all frozen score thresholds), `attacker_scores.npz`,
+`roc.png/pdf`, and `summary.json`. Clopper-Pearson operating-point rate
+intervals use Bonferroni correction across both rates and all frozen pairs
+within that mechanism cell, under the declared `user_day_iid` assumption;
+they are not simultaneous across the whole experiment grid. AUC and ROC
+interpolation do not carry a worst-case or finite-sample optimality guarantee.
+
+Missing fit/calibration groups are explicitly ineligible. Missing test groups
+are reported as incomplete coverage; they are never assigned zero leakage.
+Mean and largest observed pair AUC/TPR/FPR appear in results.csv only when
+all eligible pairs are evaluated. The eligible-family hash and counts are
+recorded for comparison. `attribute_inference_privacy_utility.png/pdf` uses
+common empirical axes for all methods; TPR points use calibrated thresholds
+and must be read together with the realized FPR in pairs.csv. These are attack
+measurements, not MI estimates or epsilon certificates. The existing CAPT
+certificate and MaSS training objectives are unaffected.
+
+Saved mechanisms can be evaluated again with new attack settings:
+
+```bash
+capt12 evaluate-prior-art-attacks \
+  --run-dir outputs/prior_art_comparison/runs/<run-id> \
+  --attack-smoothing 0.5 --attack-target-fpr 0.05
+```
+
+This writes a separate `attack_evaluations/<id>/` directory and does not
+retrain or overwrite the original models, certificates, or comparison table.
+The original training and current evaluation source revisions are recorded.
+
+The evaluation applies the Neyman-Pearson viewpoint in
+[Liu et al., PoPETs 2019](https://petsymposium.org/popets/2019/popets-2019-0045.pdf):
+Section 2.2, Definition 3 / Equation (1); Section 3, Theorem 2 and the PR/ROC
+correspondence; Section 5.3.1 on optimal versus realistic attackers; and
+Section 6 on comparing privacy notions. Here the distributions are estimated
+from finite data and the hypotheses concern conditional attribute values,
+rather than reproducing that paper's analytic comparisons of DP frameworks.
+No epsilon conversion or hypothesis test of a claimed privacy budget is
+performed by this empirical evaluation.
+
 ## Deployment requirements
 
 Distribute all profile tables as one authenticated bundle with the same URL,

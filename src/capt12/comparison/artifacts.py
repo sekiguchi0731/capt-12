@@ -92,6 +92,21 @@ RESULT_COLUMNS = (
     "channel_sha256",
     "certificate_path",
     "lower_audit_path",
+    "attribute_attack_method",
+    "attribute_attack_status",
+    "attribute_attack_id",
+    "attribute_attack_path",
+    "attribute_attack_scope_sha256",
+    "attribute_attack_target_fpr",
+    "attribute_attack_expected_pairs",
+    "attribute_attack_eligible_pairs",
+    "attribute_attack_evaluated_pairs",
+    "attribute_attack_mean_roc_auc",
+    "attribute_attack_worst_roc_auc",
+    "attribute_attack_mean_tpr",
+    "attribute_attack_worst_tpr",
+    "attribute_attack_mean_fpr",
+    "attribute_attack_worst_fpr",
 )
 
 _METHOD_COLORS = {
@@ -272,6 +287,7 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
         # Legacy runs always scaled CTR cost with the useful-MI weight.
         frame = frame.assign(mass_ctr_weight=frame["mass_utility_weight"])
     legacy_defaults = {
+        **{name: math.nan for name in RESULT_COLUMNS if name.startswith("attribute_attack_")},
         "mass_backend": "finite_table",
         **{name: math.nan for name in (
             "mass_control_sha256", "mass_output_count", "mass_mi_conditioning",
@@ -674,7 +690,34 @@ def render_prior_art_figures(
     for renderer in ((_neural_mi_figure,) if neural else (_figure_a, _figure_b, _figure_c, _figure_d)):
         paths.extend(renderer(frame, supplementary))
     paths.extend(_figure_e(frame, contracts, supplementary))
+    paths.extend(render_attribute_inference_figures(frame, output))
     return paths
+
+
+def render_attribute_inference_figures(frame: pd.DataFrame, output: Path) -> list[Path]:
+    """Common empirical axes; formal certificates and training MI stay separate."""
+    if "attribute_attack_status" not in frame:
+        return []
+    measured = frame.loc[frame["attribute_attack_status"] == "complete"].drop_duplicates(["method", "attribute_attack_id"])
+    if measured.empty:
+        return []
+    Path(output).mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(11.8, 4.5), sharey=True)
+    for (method, cost, target), rows in measured.groupby(["method", "cost", "attribute_attack_target_fpr"], sort=True):
+        label = f"{rows['display_name'].iloc[0]} / {cost} / FPR target {target:g}"
+        for axis, column in zip(axes, ("attribute_attack_worst_roc_auc", "attribute_attack_worst_tpr"), strict=True):
+            axis.scatter(rows[column], rows["empirical_log_loss"], label=label, s=28,
+                         alpha=0.7, color=_METHOD_COLORS.get(method))
+    for axis in axes:
+        axis.set_xlim(-0.02, 1.02)
+        axis.set_ylabel("Held-out CTR log loss (lower is better)")
+        axis.grid(alpha=0.2)
+        axis.legend(frameon=False, fontsize=6)
+    axes[0].set_xlabel("Largest observed attribute attack ROC AUC")
+    axes[1].set_xlabel("Largest observed TPR at calibrated threshold")
+    fig.text(0.5, 0.02, "Empirical attacks, not privacy certificates. Realized test FPR and pair coverage are reported in pairs.csv.", ha="center", fontsize=8)
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.20, top=0.95, wspace=0.28)
+    return list(_save_figure(fig, Path(output) / "attribute_inference_privacy_utility"))
 
 
 def write_method_contracts(contracts: list[MethodContract], path: Path) -> None:
