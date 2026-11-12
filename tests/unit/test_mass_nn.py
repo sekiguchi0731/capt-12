@@ -4,6 +4,7 @@ import inspect
 import itertools
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from capt12.comparison.mass_nn import (
     MassNN,
     ce_mi_penalties,
     fit_mass_nn,
+    resolve_mass_device,
     score_function_loss,
     symmetric_infonce,
 )
@@ -136,6 +138,7 @@ def test_neural_training_pretrains_both_networks_updates_and_roundtrips(tmp_path
     {"mass_token_dim": 1}, {"mass_batch_size": 1}, {"mass_hidden_dim": 0},
     {"mass_weight_decay": float("nan")}, {"mass_attribute_pretrain_epochs": -1},
     {"mass_output_mode": "finite_block"},
+    {"mass_device": "cuda:-1"}, {"mass_device": "mps"},
 ])
 def test_neural_controls_reject_invalid_values(overrides) -> None:
     with pytest.raises(ValueError):
@@ -174,3 +177,71 @@ def test_full_grid_rejects_different_neural_training_controls(tmp_path: Path, mo
     }))
     with pytest.raises(ValueError, match="same neural training controls"):
         run_prior_art_comparison(config, phase="full")
+
+
+def test_cpu_training_and_portable_load_do_not_fork_cuda(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "get_rng_state", lambda *args, **kwargs: pytest.fail("CPU path initialized CUDA RNG"))
+    tokens = np.tile(np.arange(4), 4)
+    contexts = np.repeat("public", len(tokens))
+    events = []
+    model = fit_mass_nn(tokens, contexts, {"a": tokens // 2}, {"click": tokens % 2},
+                        config=_config(), loss_m=0.1, loss_n=0,
+                        privacy_weight=1, utility_weight=1, seed=0, temperature=1,
+                        progress=events.append)
+    assert model.device.type == "cpu"
+    assert model.training_runtime["device"] == "cpu"
+    assert [event["epoch"] for event in events if event["stage"] == "joint_training"] == [1, 2]
+    # Simulate a GPU-trained checkpoint's metadata on this CPU-only host.
+    model.config["mass_device"] = "cuda:1"
+    model.training_runtime["device"] = "cuda:1"
+    path = tmp_path / "portable.pt"
+    model.save(path)
+    loaded = MassNN.load(path)
+    assert loaded.device.type == "cpu"
+    assert loaded.training_runtime["device"] == "cuda:1"
+    np.testing.assert_array_equal(model.sample(tokens, contexts, seed=3), loaded.sample(tokens, contexts, seed=3))
+
+
+def test_requested_cuda_fails_explicitly_without_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="CUDA is unavailable"):
+        resolve_mass_device("cuda:0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    with pytest.raises(ValueError, match="visible GPU set"):
+        resolve_mass_device("cuda:1")
+
+
+def test_cuda_preflight_precedes_native_experiments(monkeypatch) -> None:
+    from capt12.experiments.prior_art_comparison import run_prior_art_comparison
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr("capt12.experiments.prior_art_comparison.record_source_provenance",
+                        lambda cfg: {**cfg, "source_git_sha": "test-source"})
+    monkeypatch.setattr("capt12.experiments.prior_art_comparison._native_run",
+                        lambda *args, **kwargs: pytest.fail("CAPT ran before failed CUDA preflight"))
+    with pytest.raises(RuntimeError, match="CUDA is unavailable"):
+        run_prior_art_comparison(_config(mass_device="cuda:0"))
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_cuda_training_sampling_and_checkpoint_on_explicitly_visible_gpus(index, tmp_path: Path) -> None:
+    # Never initialize unallocated devices on a shared machine's default namespace.
+    if not os.environ.get("CUDA_VISIBLE_DEVICES") or not torch.cuda.is_available():
+        pytest.skip("requires an explicitly allocated CUDA_VISIBLE_DEVICES mask")
+    if index >= torch.cuda.device_count():
+        pytest.skip("second visible device not allocated")
+    tokens = np.tile(np.arange(4), 4)
+    contexts = np.repeat("public", len(tokens))
+    model = fit_mass_nn(tokens, contexts, {"a": tokens // 2}, {"click": tokens % 2},
+                        config=_config(mass_device=f"cuda:{index}"), loss_m=0.1, loss_n=0,
+                        privacy_weight=1, utility_weight=1, seed=0, temperature=1)
+    assert next(model.generator.parameters()).device == torch.device("cuda", index)
+    assert np.isfinite([row["post_update_loss"] for row in model.history]).all()
+    outputs = model.sample(tokens, contexts, seed=17)
+    np.testing.assert_allclose(model.channel("public").sum(1), 1, atol=1e-10)
+    path = tmp_path / "cuda.pt"
+    model.save(path)
+    loaded = MassNN.load(path, device=f"cuda:{index}")
+    np.testing.assert_array_equal(outputs, loaded.sample(tokens, contexts, seed=17))
+    assert MassNN.load(path).device.type == "cpu"

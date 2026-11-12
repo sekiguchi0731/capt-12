@@ -362,6 +362,7 @@ def _attach_attribute_attack(
                 "cost": row["cost"], "frozen_seed": int(row["seed"]), "controls": controls,
                 "source_git_sha": config.get("source_git_sha"), "splits": config["splits"],
                 "profile": config["profiles"][0], "adjacency": config.get("adjacency", config.get("privacy_scope", "tuple_adjacent"))}
+    identity["mass_execution_device"] = config.get("mass_device", "cpu") if row["method"] == "mass12_raw" else "cpu"
     attack_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     path = comparison_path / "attribute_attacks" / attack_id
     summary_path = path / "summary.json"
@@ -775,6 +776,7 @@ def _mass_rows(
     *, cost: str, block_count: int, frozen_seed: int, mass_seed: int,
     loss_m: float, loss_n: float, privacy_weight: float, utility_weight: float,
     temperature: float,
+    progress: ProgressLogger | None = None,
 ) -> list[dict[str, Any]]:
     from capt12.comparison.mass_nn import MassNN, NeuralChannels, fit_mass_nn
     from capt12.utils.artifacts import sha256_file
@@ -795,7 +797,7 @@ def _mass_rows(
     stem = f"mass-nn-{cost}-fseed{frozen_seed}-mseed{mass_seed}-{control_sha[:12]}"
     model_path = comparison_path / "models" / f"{stem}.pt"
     if model_path.is_file():
-        model = MassNN.load(model_path)
+        model = MassNN.load(model_path, device=config.get("mass_device", "cpu"))
     else:
         model = fit_mass_nn(
             data.design_tokens, data.design_context, sensitive, useful, config=config,
@@ -803,6 +805,7 @@ def _mass_rows(
             utility_weight=utility_weight, seed=mass_seed, temperature=temperature,
             cost=data.representation_token_cost if config["mass_ctr_weight"] else None,
             frozen_context_values=contexts,
+            progress=(lambda event: progress.emit("mass_training_progress", **event)) if progress else None,
         )
         model.save(model_path)
         pd.DataFrame(model.history).to_csv(comparison_path / "tables" / f"{stem}-history.csv", index=False)
@@ -821,6 +824,9 @@ def _mass_rows(
     row.update({
         "method": "mass12_raw", "display_name": "MaSS neural (token interface)",
         "mass_backend": "neural_token", "mass_control_sha256": control_sha,
+        "mass_device": str(model.device),
+        "mass_torch_version": model.training_runtime.get("torch_version", "unknown"),
+        "mass_cuda_version": model.training_runtime.get("cuda_runtime"),
         "cost": cost, "seed": frozen_seed, "mass_seed": mass_seed,
         "K": int(config["K"]), "mass_output_count": int(config["K"]),
         # L labels only the CAPT reference for pairing; it does not constrain MaSS.
@@ -891,6 +897,10 @@ def run_prior_art_comparison(
     """
     config = record_source_provenance(validate_config(config))
     config = dict(config)
+    from capt12.comparison.mass_nn import resolve_mass_device
+
+    # Check the chosen CUDA build/kernel before spending time on CAPT/data loading.
+    selected_device = resolve_mass_device(config["mass_device"])
     publication = Path(config.get("comparison_output_dir", "outputs/prior_art_comparison"))
     if phase == "full" and bool(config.get("require_mass_pilot_for_full", True)):
         pilot_summary_path = publication / "pilot_summary.json"
@@ -924,6 +934,7 @@ def run_prior_art_comparison(
     path = prepare_run(config)
     progress = ProgressLogger(path, name=path.name)
     progress.emit_environment()
+    progress.emit("mass_device_selected", device=str(selected_device))
     started = time.perf_counter()
     costs, block_counts, seeds, epsilons = _phase_values(config, phase)
     progress.emit(
@@ -965,8 +976,12 @@ def run_prior_art_comparison(
         native_paths[(cost, block_count, seed, epsilon)] = native
         data_key = (cost, block_count, seed)
         if data_key != current_data_key:
+            progress.emit("comparison_data_prepare_started", native_run=str(native))
             current_data = _prepare_data(config, native)
             current_data_key = data_key
+            progress.emit("comparison_data_prepare_finished", design_rows=len(current_data.design_frame),
+                          cert_rows=len(current_data.cert_frame), test_rows=len(current_data.test_frame),
+                          attack_rows=len(current_data.attack_frame), **process_memory_bytes())
         if current_data is None:
             raise RuntimeError("comparison data cache was not initialized")
         data = current_data
@@ -1008,7 +1023,9 @@ def run_prior_art_comparison(
     mass_controls = list(mass_grid)
     for cost, block_count, frozen_seed in product(costs, block_counts, seeds):
         native = native_paths[(cost, block_count, frozen_seed, formal)]
+        progress.emit("mass_data_prepare_started", native_run=str(native))
         data = _prepare_data(config, native)
+        progress.emit("mass_data_prepare_finished", design_rows=len(data.design_frame), **process_memory_bytes())
         for mass_seed, loss_m, loss_n, privacy_weight, utility_weight, temperature in mass_controls:
             progress.emit(
                 "mass_fit_started",
@@ -1036,6 +1053,7 @@ def run_prior_art_comparison(
                 privacy_weight=float(privacy_weight),
                 utility_weight=float(utility_weight),
                 temperature=float(temperature),
+                progress=progress,
             )
             for row in rows:
                 records[_result_key(row)] = row
@@ -1128,7 +1146,7 @@ def reevaluate_attribute_attacks(
     source_config = yaml.safe_load((run_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
     config = record_source_provenance(validate_config({**source_config, **overrides}))
     controls = {key: value for key, value in config.items() if key.startswith("attribute_attack_")}
-    signature = hashlib.sha256(json.dumps({"controls": controls, "evaluation_source": config["source_git_sha"]}, sort_keys=True).encode()).hexdigest()[:16]
+    signature = hashlib.sha256(json.dumps({"controls": controls, "mass_device": config["mass_device"], "evaluation_source": config["source_git_sha"]}, sort_keys=True).encode()).hexdigest()[:16]
     output = output_dir or run_dir / "attack_evaluations" / signature
     if output.resolve() == run_dir.resolve():
         raise ValueError("attack reevaluation requires a separate output directory")
@@ -1154,7 +1172,7 @@ def reevaluate_attribute_attacks(
         if row["method"] == "mass12_raw" and row["mass_backend"] == "neural_token":
             if sha256_file(Path(row["model_path"])) != row["model_sha256"]:
                 raise ValueError("saved MaSS model differs from the recorded model SHA")
-            model = MassNN.load(Path(row["model_path"]))
+            model = MassNN.load(Path(row["model_path"]), device=config["mass_device"])
             sampler = partial(_sample_mass, model)
         elif row["method"] in {"capt", "optimal_ldp"}:
             design = comparison_design_name(int(row["K"]), int(row["L"]))
@@ -1174,6 +1192,7 @@ def reevaluate_attribute_attacks(
     (output / "evaluation.json").write_text(json.dumps({
         "comparison_run": str(run_dir), "training_source_git_sha": source_config.get("source_git_sha"),
         "evaluation_source_git_sha": config["source_git_sha"], "controls": controls,
+        "mass_execution_device": config["mass_device"],
         "mechanisms_retrained": False,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return output

@@ -524,6 +524,75 @@ Bootstrap intervals are conditional on that evaluation noise sample; they do
 not quantify its Monte Carlo error. Model SHA and evaluation controls are
 saved with each result.
 
+### GPU execution on the remote GTX 1080 Ti host
+
+`--mass-device cpu|cuda[:visible-index]` selects the MaSS training, runtime
+sampling, and utility-evaluation device. CPU remains the default. CUDA is
+probed before Criteo loading/CAPT optimization and an unusable build fails
+explicitly. CAPT optimization and categorical attack statistics stay on CPU.
+Only minibatches move to CUDA; full reference datasets stay in host memory.
+Training epochs are reported in the progress log. Checkpoints retain CPU
+tensors and their training-runtime metadata; loading defaults to CPU, even
+for GPU-trained models. CPU and GPU RNG streams/numerics need not coincide.
+
+On hpc5000-xsl only physical GPUs **2 and 3** are allocated to this experiment.
+Set `CUDA_VISIBLE_DEVICES` before Python starts. With `CUDA_VISIBLE_DEVICES=2`,
+`cuda:0` means physical GPU 2. With `CUDA_VISIBLE_DEVICES=3`, the same `cuda:0`
+means physical GPU 3. With the mask `2,3`, they become visible indices 0 and 1.
+One process uses one selected GPU; this is not distributed multi-GPU training.
+The implementation does not fork/seed CUDA RNG state on every installed GPU.
+
+The reported torch 2.15.0+cu132 build does not work with this host's driver
+555.42.06/Pascal cards. Use the official torch 2.6.0 CUDA 12.4 wheel in a
+separate `.venv-pascal` environment. The setup script locks base dependencies
+from uv.lock and installs that optional wheel from PyTorch's CUDA 12.4 index;
+the ordinary `.venv` is preserved. Invoke `.venv-pascal/bin/python` or
+`.venv-pascal/bin/capt12` directly, because a later `uv run/sync --extra mass`
+would reselect the generic torch version. Driver changes are not needed for
+this configuration, subject to the actual kernel/training probe below.
+
+Run long remote commands with **nohup**. From the repository root:
+
+```bash
+mkdir -p logs
+nohup bash tools/setup_mass_pascal.sh \
+  > logs/mass-pascal-setup.log 2>&1 < /dev/null &
+```
+
+After setup reports `Ready`, probe a small neural fit, Gaussian/categorical
+sampling, MC utility channel, and GPU/CPU checkpoint round trip:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=2 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 \
+  .venv-pascal/bin/python -u tools/check_mass_cuda.py --device cuda:0 \
+  > logs/mass-gpu2-check.log 2>&1 < /dev/null &
+
+nohup env CUDA_VISIBLE_DEVICES=3 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 \
+  .venv-pascal/bin/python -u tools/check_mass_cuda.py --device cuda:0 \
+  > logs/mass-gpu3-check.log 2>&1 < /dev/null &
+```
+
+These probes need no Criteo data. After `status: ok`, the focused full-alphabet
+pilot uses K=4096, CAPT L=16, empirical logloss, seed 0, 50 MaSS epochs, and
+m in {0, 0.1, 0.5}, with the configured data path
+`data/CriteoPrivateAd_release/data`:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=2 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 \
+  .venv-pascal/bin/capt12 prior-art-comparison \
+  --config configs/criteo_prior_art_gpu_pilot.yaml --phase pilot \
+  > logs/mass-gpu-pilot.log 2>&1 < /dev/null &
+```
+
+The pilot is a real-data experiment, not a small-data smoke test. For saved
+models, `evaluate-prior-art-attacks --mass-device cuda:0` selects CUDA inference
+without retraining and writes a separate evaluation directory. Its device is
+part of the attack cache identity, since sampled CPU/GPU outputs may differ.
+
+Compatibility sources: [PyTorch 2.6 official wheel commands](https://docs.pytorch.org/get-started/previous-versions/),
+[NVIDIA CUDA 12.4 driver requirements](https://docs.nvidia.com/cuda/archive/12.4.0/cuda-toolkit-release-notes/),
+and [CUDA 13 removal of Pascal support](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-toolkit-release-notes/index.html).
+
 MaSS has no CAPT upper certificate and undergoes no common-cover calibration.
 Its configured m/n values and learned classifier MI estimates are not achieved
 privacy guarantees. Results always mark neural MaSS as `certificate_valid=false`

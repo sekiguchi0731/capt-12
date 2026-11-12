@@ -20,6 +20,7 @@ mass_privacy_weight_list: [0.1, 1.0, 10.0, 100.0]
 mass_utility_weight_list: [0.1, 1.0, 10.0]
 mass_seed_list: [0, 1, 2, 3, 4]
 mass_epochs: 50
+mass_device: cpu
 mass_learning_rate: 0.0005
 mass_batch_size: 128
 mass_token_dim: 32

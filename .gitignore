@@ -19,6 +19,7 @@ artifacts/
 *.parquet
 *.egg-info/
 .venv/
+.venv-pascal/
 __pycache__/
 *.py[cod]
 .pytest_cache/

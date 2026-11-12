@@ -549,6 +549,7 @@ def prior_art_comparison(
                                          help="CAPT L=2^bits only; MaSS output count stays K."),
     l_list: str | None = typer.Option(None, "--L-list", help="Full-phase CAPT block counts; MaSS always has K outputs."),
     mass_epochs: int | None = typer.Option(None, "--mass-epochs", min=1),
+    mass_device: str | None = typer.Option(None, "--mass-device", help="cpu or cuda:<visible index>; use CUDA_VISIBLE_DEVICES to restrict physical GPUs."),
     mass_batch_size: int | None = typer.Option(None, "--mass-batch-size", min=2),
     mass_learning_rate: float | None = typer.Option(None, "--mass-learning-rate"),
     mass_token_dim: int | None = typer.Option(None, "--mass-token-dim", min=2),
@@ -607,6 +608,7 @@ def prior_art_comparison(
             "attribute_attack_seed": attack_seed,
             "mass_ctr_weight": mass_ctr_weight,
             "mass_epochs": mass_epochs,
+            "mass_device": mass_device,
             "mass_batch_size": mass_batch_size,
             "mass_learning_rate": mass_learning_rate,
             "mass_token_dim": mass_token_dim,
@@ -696,6 +698,7 @@ def evaluate_prior_art_attacks(
     attack_confidence: float | None = typer.Option(None, "--attack-confidence"),
     attack_calibration_fraction: float | None = typer.Option(None, "--attack-calibration-fraction"),
     attack_seed: int | None = typer.Option(None, "--attack-seed", min=0),
+    mass_device: str | None = typer.Option(None, "--mass-device", help="Device for frozen MaSS inference; no retraining."),
 ) -> None:
     """Change the attribute attack evaluation of saved CAPT/LDP/MaSS models; no retraining."""
     from capt12.experiments.prior_art_comparison import reevaluate_attribute_attacks
@@ -705,6 +708,8 @@ def evaluate_prior_art_attacks(
         "confidence": attack_confidence, "calibration_fraction": attack_calibration_fraction,
         "seed": attack_seed,
     }.items() if value is not None}
+    if mass_device is not None:
+        overrides["mass_device"] = mass_device
     try:
         output = reevaluate_attribute_attacks(run_dir.resolve(), overrides, output_dir)
     except ValueError as error:

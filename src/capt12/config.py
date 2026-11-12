@@ -290,6 +290,10 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("MaSS comparison requires mass_output_mode: neural_token; CAPT decoders are not used")
         cfg["mass_output_mode"] = "neural_token"
         cfg["mass_backend"] = "neural_token"
+        mass_device = str(cfg.get("mass_device", "cpu"))
+        if re.fullmatch(r"cpu|cuda(?::[0-9]+)?", mass_device) is None:
+            raise ValueError("mass_device must be cpu, cuda, or cuda:<visible index>")
+        cfg["mass_device"] = mass_device
         conditioning = str(cfg.get("mass_mi_conditioning", "conditional"))
         if conditioning not in {"conditional", "unconditional"}:
             raise ValueError("mass_mi_conditioning must be conditional or unconditional")

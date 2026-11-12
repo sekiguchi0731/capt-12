@@ -1,0 +1,11 @@
+base_config: criteo_prior_art_privacy_matched.yaml
+# Focused full-alphabet pilot on a single allocated GPU (visible index 0).
+mass_device: cuda:0
+cost_list: [empirical_logloss]
+mass_pilot_m_list: [0.0, 0.1, 0.5]
+mass_pilot_n_list: [0.0]
+mass_pilot_privacy_weight_list: [1.0]
+mass_pilot_utility_weight_list: [1.0]
+mass_pilot_temperature_list: [1.0]
+mass_pilot_seed_list: [0]
+comparison_output_dir: outputs/mass_gpu_pilot

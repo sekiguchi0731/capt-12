@@ -24,6 +24,9 @@ RESULT_COLUMNS = (
     "seed",
     "mass_seed",
     "mass_backend",
+    "mass_device",
+    "mass_torch_version",
+    "mass_cuda_version",
     "mass_control_sha256",
     "mass_output_count",
     "mass_mi_conditioning",
@@ -291,6 +294,7 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
         "mass_backend": "finite_table",
         **{name: math.nan for name in (
             "mass_control_sha256", "mass_output_count", "mass_mi_conditioning",
+            "mass_device", "mass_torch_version", "mass_cuda_version",
             "mass_batch_size", "mass_learning_rate", "mass_weight_decay", "mass_token_dim", "mass_hidden_dim",
             "mass_attribute_pretrain_epochs", "mass_eval_noise_samples", "mass_sensitive_mi_estimate_nats",
             "mass_useful_mi_estimate_nats", "mass_sensitive_mi_by_attribute_nats", "mass_useful_mi_by_attribute_nats",

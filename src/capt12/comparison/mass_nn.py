@@ -11,7 +11,8 @@ No CAPT partition, decoder, confidence set or post-training cover is used.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+import os
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,36 @@ except ImportError as error:
 from capt12.comparison.mass12 import check_mass_operational_bounds
 
 UPSTREAM_SHA = "6fbe9be1ff155b3fdd2677de7977d801d10000b5"
+
+
+def resolve_mass_device(value: str = "cpu") -> torch.device:
+    """Fail explicitly on unusable CUDA; only initialize the selected device.
+
+    CUDA indices refer to the process-visible namespace. Restrict physical GPUs
+    with CUDA_VISIBLE_DEVICES before starting Python (e.g. 2 or 2,3).
+    """
+    device = torch.device(value)
+    if device.type == "cpu":
+        return device
+    if device.type != "cuda":
+        raise ValueError("MaSS supports cpu or cuda[:index]")
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"MaSS requested {value}, but CUDA is unavailable (torch={torch.__version__}, "
+            f"wheel CUDA={torch.version.cuda}). Check driver/wheel/GPU architecture compatibility; "
+            "GTX 1080 Ti requires a Pascal-compatible build, e.g. torch 2.6.0+cu124."
+        )
+    index = 0 if device.index is None else device.index
+    if not 0 <= index < torch.cuda.device_count():
+        raise ValueError(f"MaSS CUDA index {index} is outside the visible GPU set")
+    device = torch.device("cuda", index)
+    # A successful device enumeration alone does not establish kernel support.
+    try:
+        torch.ones(1, device=device).add_(1)
+        torch.cuda.synchronize(device)
+    except RuntimeError as error:
+        raise RuntimeError(f"MaSS CUDA kernel probe failed on {device}: {error}") from error
+    return device
 
 
 class TokenGenerator(nn.Module):
@@ -176,15 +207,32 @@ class MassNN:
         self.m: dict[str, float] = {}
         self.n: dict[str, float] = {}
         self.evaluation_indices: list[int] = []
+        self.device = torch.device("cpu")
+        self.training_runtime: dict[str, Any] = {}
         self.eval()
+
+    def to(self, device: str | torch.device) -> MassNN:
+        selected = resolve_mass_device(str(device))
+        for module in (self.generator, self.features, self.attributes):
+            module.to(selected)
+        self.device = selected
+        return self
+
+    def runtime(self) -> dict[str, Any]:
+        return {
+            "device": str(self.device), "torch_version": str(torch.__version__),
+            "cuda_runtime": torch.version.cuda,
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "gpu_name": torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else None,
+        }
 
     def eval(self) -> None:
         for module in (self.generator, self.features, self.attributes):
             module.eval()
 
     def _draw(self, tokens: torch.Tensor, contexts: torch.Tensor, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
-        rng = torch.Generator().manual_seed(int(seed))
-        noise = torch.randn((len(tokens), self.generator.noise_dim), generator=rng)
+        rng = torch.Generator(device=self.device).manual_seed(int(seed))
+        noise = torch.randn((len(tokens), self.generator.noise_dim), generator=rng, device=self.device)
         logits = self.generator(tokens, contexts, noise) / self.config["mass_temperature"]
         log_probabilities = F.log_softmax(logits, dim=1)
         outputs = torch.multinomial(log_probabilities.exp(), 1, generator=rng).squeeze(1)
@@ -199,7 +247,7 @@ class MassNN:
         contexts = np.array([self.context_values.index(str(value)) for value in public_context])
         if contexts.shape != values.shape:
             raise ValueError("public_context must align with tokens")
-        return self._draw(torch.tensor(values), torch.tensor(contexts), seed)[0].numpy()
+        return self._draw(torch.tensor(values, device=self.device), torch.tensor(contexts, device=self.device), seed)[0].cpu().numpy()
 
     @torch.no_grad()
     def channel(self, public_context: str, *, noise_samples: int | None = None) -> np.ndarray:
@@ -214,18 +262,18 @@ class MassNN:
         if count < 1:
             raise ValueError("noise_samples must be positive")
         context = self.context_values.index(str(public_context))
-        rng = torch.Generator().manual_seed(int(np.random.SeedSequence([
+        rng = torch.Generator(device=self.device).manual_seed(int(np.random.SeedSequence([
             self.config["mass_seed"], context, 901,
         ]).generate_state(1)[0]))
         result = np.empty((k, k), dtype=float)
         # Bound temporary logits to roughly 4 million entries, also at K=4096.
         chunk = max(1, min(128, 4_000_000 // (k * count)))
         for start in range(0, k, chunk):
-            tokens = torch.arange(start, min(start + chunk, k)).repeat_interleave(count)
+            tokens = torch.arange(start, min(start + chunk, k), device=self.device).repeat_interleave(count)
             contexts = torch.full_like(tokens, context)
-            noise = torch.randn((len(tokens), self.generator.noise_dim), generator=rng)
+            noise = torch.randn((len(tokens), self.generator.noise_dim), generator=rng, device=self.device)
             probabilities = F.softmax(self.generator(tokens, contexts, noise) / self.config["mass_temperature"], dim=1)
-            result[start:start + len(tokens) // count] = probabilities.reshape(-1, count, k).mean(1).double().numpy()
+            result[start:start + len(tokens) // count] = probabilities.reshape(-1, count, k).mean(1).double().cpu().numpy()
         result /= result.sum(axis=1, keepdims=True)
         return result
 
@@ -243,6 +291,7 @@ class MassNN:
             "config": self.config, "context_values": list(self.context_values),
             "label_values": self.label_values, "entropies": self.entropies,
             "loss_m": self.m, "loss_n": self.n,
+            "training_runtime": self.training_runtime, "runtime": self.runtime(),
         }
 
     def save(self, path: Path) -> None:
@@ -255,20 +304,24 @@ class MassNN:
             "loss_m": self.m, "loss_n": self.n,
             "history": self.history, "pretrain_history": self.pretrain_history,
             "evaluation_indices": self.evaluation_indices,
+            "training_runtime": self.training_runtime,
         }, path)
 
     @classmethod
-    def load(cls, path: Path) -> MassNN:
+    def load(cls, path: Path, *, device: str = "cpu") -> MassNN:
         payload = torch.load(path, map_location="cpu", weights_only=True)
         if payload["format_version"] != 1:
             raise ValueError("unsupported neural MaSS checkpoint")
-        with torch.random.fork_rng():
+        # CPU loading remains possible even with a broken/unavailable CUDA wheel.
+        with torch.random.fork_rng(devices=[]):
             model = cls(payload["config"], tuple(payload["contexts"]), payload["classes"])
         for name in ("generator", "features", "attributes"):
             getattr(model, name).load_state_dict(payload[name])
         for name in ("initial_state", "entropies", "history", "pretrain_history", "evaluation_indices"):
             setattr(model, name, payload[name])
         model.m, model.n = payload["loss_m"], payload["loss_n"]
+        model.training_runtime = payload.get("training_runtime", {})
+        model.to(device)
         model.eval()
         return model
 
@@ -295,6 +348,7 @@ def fit_mass_nn(
     loss_m: float, loss_n: float, privacy_weight: float, utility_weight: float,
     seed: int, temperature: float, cost: np.ndarray | None = None,
     source_split: str = "D_design", frozen_context_values: tuple[str, ...] | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> MassNN:
     if source_split != "D_design":
         raise ValueError("neural MaSS training/pretraining requires D_design")
@@ -322,11 +376,17 @@ def fit_mass_nn(
         if cost is None or np.asarray(cost).shape != (cfg["K"], cfg["K"]):
             raise ValueError("active CTR cost requires a K-by-K matrix")
         cost_tensor = torch.tensor(np.asarray(cost), dtype=torch.float32)
-    with torch.random.fork_rng():
-        torch.manual_seed(seed)
+    with torch.random.fork_rng(devices=[]):
+        # Networks initialize on CPU. CUDA noise uses private generators; do
+        # not seed/fork all GPUs and accidentally initialize unselected devices.
+        torch.random.default_generator.manual_seed(seed)
         # Keep checkpoint configs primitive and independent of paths/data rows.
         keys = [key for key in cfg if key.startswith("mass_") and not key.endswith("_list")]
         model = MassNN({"K": int(cfg["K"]), **{key: cfg[key] for key in keys}}, contexts, classes)
+        model.to(cfg.get("mass_device", "cpu"))
+        model.training_runtime = model.runtime()
+        if cost_tensor is not None:
+            cost_tensor = cost_tensor.to(model.device)
         model.m, model.n = m, n
         conditional = cfg["mass_mi_conditioning"] == "conditional"
         model.entropies = {name: _entropy(array, context_array, conditional) for name, array in labels.items()}
@@ -341,34 +401,38 @@ def fit_mass_nn(
             return torch.tensor(random.choice(len(values), size=min(batch_size, len(values)), replace=False))
 
         def cross_entropies(outputs: torch.Tensor, selected: torch.Tensor) -> dict[str, torch.Tensor]:
-            return {name: F.cross_entropy(model.attributes[model.head_keys[name]](outputs, c[selected]), target[selected])
+            batch_context = c[selected].to(model.device)
+            return {name: F.cross_entropy(model.attributes[model.head_keys[name]](outputs, batch_context), target[selected].to(model.device))
                     for name, target in y.items()}
 
         def contrastive(outputs: torch.Tensor, selected: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             selected = selected[:cfg["mass_infonce_batch_size"]]
             outputs = outputs[:len(selected)]
-            groups = c[selected] if conditional else torch.zeros_like(c[selected])
-            return symmetric_infonce(model.features(x[selected]), model.features(outputs), groups,
+            groups = c[selected].to(model.device) if conditional else torch.zeros_like(c[selected], device=model.device)
+            return symmetric_infonce(model.features(x[selected].to(model.device)), model.features(outputs), groups,
                                      cfg["mass_infonce_temperature"], cfg["mass_infonce_direction"])
 
         for stage, steps in (("attributes", cfg["mass_attribute_pretrain_epochs"]),
                              ("infonce", cfg["mass_infonce_pretrain_epochs"] if cfg["mass_infonce_weight"] else 0)):
             for step in range(1, steps + 1):
                 selected = indices()
+                original = x[selected].to(model.device)
                 model.eval()
                 with torch.no_grad():
-                    before = sum(cross_entropies(x[selected], selected).values()) if stage == "attributes" else contrastive(x[selected], selected)[0]
+                    before = sum(cross_entropies(original, selected).values()) if stage == "attributes" else contrastive(original, selected)[0]
                 module, optimizer = (model.attributes, attr_opt) if stage == "attributes" else (model.features, feature_opt)
                 module.train()
-                loss = sum(cross_entropies(x[selected], selected).values()) if stage == "attributes" else contrastive(x[selected], selected)[0]
+                loss = sum(cross_entropies(original, selected).values()) if stage == "attributes" else contrastive(original, selected)[0]
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 model.eval()
                 with torch.no_grad():
-                    after = sum(cross_entropies(x[selected], selected).values()) if stage == "attributes" else contrastive(x[selected], selected)[0]
+                    after = sum(cross_entropies(original, selected).values()) if stage == "attributes" else contrastive(original, selected)[0]
                 model.pretrain_history.append({"stage": stage, "update": step,
                                               "pre_update_loss": float(before), "post_update_loss": float(after)})
+            if progress is not None:
+                progress({"stage": f"pretrain_{stage}", "updates": steps, "device": str(model.device)})
         model.initial_state = {name: _state(getattr(model, name)) for name in ("generator", "features", "attributes")}
         # Match upstream's batch-size-scaled generator LR and separate attribute optimizer.
         lr = cfg["mass_learning_rate"] * batch_size / 256
@@ -383,13 +447,14 @@ def fit_mass_nn(
             "privacy_quadratic_weight", "privacy_linear_weight", "useful_quadratic_weight", "useful_linear_weight")}
 
         def objective(selected: torch.Tensor, draw_seed: int) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
-            outputs, log_probabilities = model._draw(x[selected], c[selected], draw_seed)
+            batch_tokens = x[selected].to(model.device)
+            outputs, log_probabilities = model._draw(batch_tokens, c[selected].to(model.device), draw_seed)
             ce = cross_entropies(outputs, selected)
             penalty = ce_mi_penalties({name: ce[name] for name in m}, {name: ce[name] for name in n},
                                       model.entropies, m, n, privacy_weight=privacy_weight,
                                       utility_weight=utility_weight, **penalty_controls)
             info = contrastive(outputs, selected) if cfg["mass_infonce_weight"] else (penalty * 0,) * 3
-            distortion = cost_tensor[x[selected], outputs].mean() if cost_tensor is not None else penalty * 0
+            distortion = cost_tensor[batch_tokens, outputs].mean() if cost_tensor is not None else penalty * 0
             loss = penalty + cfg["mass_infonce_weight"] * info[0] + cfg["mass_ctr_weight"] * distortion
             return loss, ce, distortion, info, log_probabilities, outputs
 
@@ -445,6 +510,9 @@ def fit_mass_nn(
                                   "learning_rate": generator_opt.param_groups[0]["lr"],
                                   "mi_estimator": "classifier_cross_entropy"}
             model.history.append(row)
+            if progress is not None:
+                progress({"stage": "joint_training", "epoch": epoch, "epochs": cfg["mass_epochs"],
+                          "post_update_loss": after["loss"], "device": str(model.device)})
             scheduler.step()
             attr_scheduler.step()
         model.eval()
