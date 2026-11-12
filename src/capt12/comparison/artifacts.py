@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from capt12.comparison.contracts import MethodContract
+from capt12.evaluation.released_ranking import RANKING_RESULT_COLUMNS
 from capt12.utils.artifacts import sha256_file
 
 RESULT_COLUMNS = (
@@ -110,6 +111,7 @@ RESULT_COLUMNS = (
     "attribute_attack_worst_tpr",
     "attribute_attack_mean_fpr",
     "attribute_attack_worst_fpr",
+    *RANKING_RESULT_COLUMNS,
 )
 
 _METHOD_COLORS = {
@@ -286,6 +288,13 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
 
 
 def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
+    if "ctr_ranking_definition" not in frame:
+        frame = frame.assign(ctr_ranking_definition="legacy_mean_score")
+    else:
+        frame = frame.assign(ctr_ranking_definition=frame["ctr_ranking_definition"].fillna("legacy_mean_score"))
+    for name in RANKING_RESULT_COLUMNS:
+        if name not in frame:
+            frame = frame.assign(**{name: math.nan})
     if "mass_ctr_weight" not in frame and "mass_utility_weight" in frame:
         # Legacy runs always scaled CTR cost with the useful-MI weight.
         frame = frame.assign(mass_ctr_weight=frame["mass_utility_weight"])
@@ -318,6 +327,9 @@ def validate_results(frame: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"prior-art results are missing columns: {missing}")
     result = frame.loc[:, RESULT_COLUMNS].copy()
+    legacy = result["ctr_ranking_definition"].eq("legacy_mean_score")
+    result.loc[legacy, "mean_score_roc_auc"] = result.loc[legacy, "roc_auc"]
+    result.loc[legacy, "mean_score_average_precision"] = result.loc[legacy, "pr_auc"]
     if len(result) == 0:
         raise ValueError("results.csv has no completed comparison rows")
     booleans = (
@@ -414,7 +426,7 @@ def summarize_seed_metrics(frame: pd.DataFrame) -> pd.DataFrame:
         "certified_upper_epsilon",
     )
     rows = []
-    keys = ["method", "display_name", "cost", "target_epsilon"]
+    keys = ["method", "display_name", "cost", "target_epsilon", "ctr_ranking_definition"]
     for group_key, group in results.groupby(keys, dropna=False, sort=True):
         base = dict(zip(keys, group_key, strict=True))
         for metric in metrics:

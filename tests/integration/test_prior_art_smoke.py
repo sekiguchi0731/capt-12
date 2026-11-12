@@ -84,6 +84,11 @@ def test_comparison_cli_smoke_with_shared_alphabet(
     results = pd.read_csv(publication / "results.csv")
     assert set(results["method"]) == {"capt", "optimal_ldp", "mass12_raw"}
     assert set(results["K"]) == {k}
+    assert results["ctr_ranking_definition"].eq("independent_released_scores_v1").all()
+    assert results["released_roc_auc"].between(0, 1).all()
+    assert results["released_average_precision"].between(0, 1).all()
+    np.testing.assert_allclose(results["roc_auc"], results["released_roc_auc"])
+    np.testing.assert_allclose(results["pr_auc"], results["released_average_precision"])
     levels = {l_count} if isinstance(l_count, int) else set(l_count)
     assert set(results["L"]) == levels
     mass = results.loc[results["method"] == "mass12_raw"]
@@ -188,3 +193,28 @@ def test_comparison_cli_smoke_with_shared_alphabet(
         assert sha256_file(run / "tables/results.csv") == original_results
         assert sha256_file(model_paths[0]) == original_model
         assert (output / "figures/attribute_inference_privacy_utility.png").is_file()
+        # Utility reevaluation may read D_test, but must not reload fitting or
+        # certificate samples, retrain a model, or rewrite original artifacts.
+        from capt12.experiments import prior_art_comparison as runner
+        loader = runner.load_parquet_sample
+        def test_only_loader(*args, **kwargs):
+            assert kwargs["days"] == [5]
+            return loader(*args, **kwargs)
+        monkeypatch.setattr(runner, "load_parquet_sample", test_only_loader)
+        native_run = Path(results.loc[results["method"] == "capt", "certificate_path"].iloc[0])
+        for name, source in (("comparison", run), ("native", native_run)):
+            utility_output = tmp_path / f"new-utility-{name}"
+            checked = CliRunner().invoke(app, ["evaluate-prior-art-utility", "--run-dir", str(source),
+                "--output-dir", str(utility_output), "--ctr-ranking-mc-replicates", "16", "--ctr-ranking-mc-seed", "7"])
+            assert checked.exit_code == 0, f"{checked.output}\n{checked.exception!r}"
+            values = pd.read_csv(utility_output / "results.csv")
+            assert values["ctr_ap_mc_replicates"].eq(16).all()
+            assert values["ctr_ranking_definition"].eq("independent_released_scores_v1").all()
+            assert values["released_roc_auc"].between(0, 1).all()
+            assert values["ctr_ap_mc_values"].map(lambda value: len(json.loads(value))).eq(16).all()
+            np.testing.assert_allclose(values["ctr_ap_mc_se"], values["ctr_ap_mc_std"] / 4)
+            if name == "comparison":
+                expected = results.set_index("method").loc[values["method"], "empirical_log_loss"].to_numpy()
+                np.testing.assert_allclose(values["empirical_log_loss"], expected, atol=1e-12)
+            assert sha256_file(run / "tables/results.csv") == original_results
+            assert sha256_file(model_paths[0]) == original_model

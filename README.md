@@ -603,6 +603,61 @@ the classifier MI estimate, not variation in certified epsilon. A full grid
 requires a completed pilot from the same source/config controls unless the
 explicit pilot gate is disabled in config.
 
+### CTR ranking metrics of released tokens
+
+CTR `roc_auc` now means the expected ROC AUC of the score `f_ref(O,B)` after
+independent sanitization of each fixed test display. It integrates positive/
+negative pairwise ranks, including half-credit for ties, using expected score
+masses aggregated across **all** contexts. It does not average the score
+before comparing ranks. Native CAPT `ROC_AUC` and global-token-LDP `ROC_AUC`
+use the same definition. Exactness is conditional on the supplied channel;
+MaSS's Gaussian-noise channel estimate still has its separate Monte Carlo error.
+
+`released_average_precision` is the Monte Carlo mean of finite-test-set AP,
+also available under the historical `pr_auc`/`PR_AUC` aliases. Each replicate
+draws integer release counts, which is equivalent in distribution to drawing
+one O per display independently; AP of fractional expected counts is a
+different estimand and is not substituted. Counts are compressed only for
+identical channel rows. Sparse groups use categorical draws and large groups
+use multinomial draws, so evaluation avoids a per-display-by-K allocation.
+This describes independent releases, not a memoized/shared output across
+multiple displays. The primary expected logloss and privacy mechanism are
+unchanged. Cluster-bootstrap means use group sums/counts, preserving the same
+resampling statistic without repeatedly scanning D_test for every user-day.
+
+Result columns include `released_roc_auc`, `released_average_precision`,
+`ctr_ranking_definition=independent_released_scores_v1`,
+`ctr_channel_estimator=exact|gaussian_mc`, `ctr_ap_mc_replicates`,
+`ctr_ap_mc_seed`, `ctr_ap_mc_std`, `ctr_ap_mc_se`, and the JSON replicate array
+`ctr_ap_mc_values`. AP standard error measures release-simulation error
+conditional on this test set/channel; it is not a population confidence
+interval or a bound on MaSS's Gaussian channel-estimation error. The old
+quantities remain explicitly named `mean_score_roc_auc` and
+`mean_score_average_precision`. Historical result files are tagged
+`legacy_mean_score` when read, rather than reinterpreted as released-score
+metrics; seed summaries keep the definitions separate.
+
+`--ctr-ranking-mc-replicates` (default 8, minimum 2) and
+`--ctr-ranking-mc-seed` control the comparison runner's AP evaluation.
+The matching config keys use underscores. Saved comparison runs **or standalone
+native CAPT runs** can be reevaluated without training, optimization, or
+recertification. Only D_test and the frozen artifacts are loaded, and original
+model/certificate/result files are preserved:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=2 PYTHONUNBUFFERED=1 \
+  .venv-pascal/bin/capt12 evaluate-prior-art-utility \
+  --run-dir outputs/attribute_attack_check/runs/1efab2f9e654f117/native_runs/f371c3f0f60fc7b4 \
+  --ctr-ranking-mc-replicates 32 --ctr-ranking-mc-seed 0 \
+  > logs/ctr-utility-reevaluation.log 2>&1 < /dev/null &
+```
+
+The output defaults to `<run-dir>/utility_evaluations/<evaluation-id>/`.
+For a comparison containing MaSS, `--mass-device cuda:0` and
+`--mass-eval-noise-samples` control frozen neural inference/utility-channel
+estimation. This reevaluation updates CTR metrics only; attribute-attack
+metrics and CAPT certificates are not recomputed.
+
 The finite-table utilities in `comparison/mass12.py` and their tests are
 retained only for historical diagnostics. The dedicated comparison runner
 cannot select the old `finite_block` backend. Historical result files remain

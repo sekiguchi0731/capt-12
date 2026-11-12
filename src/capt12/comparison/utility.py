@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score
 
+from capt12.evaluation.released_ranking import ReleasedRanking, ReleasedRankingAccumulator
+
 
 def _context_array(
     values: Mapping[str, np.ndarray] | np.ndarray, context: str
@@ -34,6 +36,9 @@ class FrozenCTRUtility:
     excess_log_loss_ci95_high: float
     row_log_loss: np.ndarray
     row_unsanitized_log_loss: np.ndarray
+    mean_score_roc_auc: float
+    mean_score_average_precision: float
+    released_ranking: ReleasedRanking
 
 
 @dataclass(frozen=True)
@@ -54,16 +59,16 @@ def _cluster_bootstrap_mean(
     groups = np.asarray(user_day_ids).astype(str)
     if values.shape != groups.shape:
         raise ValueError("bootstrap values and user-day IDs must align")
-    unique = np.unique(groups)
+    unique, inverse = np.unique(groups, return_inverse=True)
     if len(unique) == 0 or replicates < 1:
         raise ValueError("cluster bootstrap requires groups and positive replicates")
-    rows = {group: np.flatnonzero(groups == group) for group in unique}
+    totals = np.bincount(inverse, weights=values)
+    counts = np.bincount(inverse)
     rng = np.random.default_rng(seed)
     estimates = np.empty(replicates, dtype=float)
     for replicate in range(replicates):
-        sampled = rng.choice(unique, size=len(unique), replace=True)
-        indices = np.concatenate([rows[group] for group in sampled])
-        estimates[replicate] = float(values[indices].mean())
+        sampled = rng.integers(0, len(unique), size=len(unique))
+        estimates[replicate] = float(totals[sampled].sum() / counts[sampled].sum())
     low, high = np.quantile(estimates, [0.025, 0.975])
     return float(low), float(high)
 
@@ -80,9 +85,16 @@ def evaluate_frozen_ctr_utility(
     hybrid_empirical_weight: float = 0.5,
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 0,
+    ranking_mc_replicates: int = 8,
+    ranking_mc_seed: int = 0,
+    source_groups: Mapping[str, np.ndarray] | np.ndarray | None = None,
     split_name: str = "D_test",
 ) -> FrozenCTRUtility:
-    """Evaluate an exact channel against one frozen downstream CTR service."""
+    """Evaluate released-score CTR utility for the supplied finite channel.
+
+    ROC integrates ranks; AP uses finite independent release histograms. A
+    neural caller's Gaussian-channel approximation remains a separate error.
+    """
     if split_name != "D_test":
         raise ValueError("privacy-comparison utility is evaluated on D_test only")
     if not 0 <= hybrid_empirical_weight <= 1:
@@ -109,6 +121,7 @@ def evaluate_frozen_ctr_utility(
     row_teacher_kl = np.empty(len(token_array), dtype=float)
     row_distortion = np.empty(len(token_array), dtype=float)
     expected_scores = np.empty(len(token_array), dtype=float)
+    ranking = ReleasedRankingAccumulator(replicates=ranking_mc_replicates, seed=ranking_mc_seed)
     for context in sorted(np.unique(contexts)):
         mask = contexts == context
         channel = _channel_array(channels, context)
@@ -118,35 +131,32 @@ def evaluate_frozen_ctr_utility(
         context_tokens = token_array[mask]
         if context_tokens.min() < 0 or context_tokens.max() >= len(probabilities):
             raise ValueError("D_test token is outside the frozen service alphabet")
-        q = channel[context_tokens]
         labels_here = label_array[mask]
-        loss_by_output = np.where(
-            labels_here[:, None] == 1,
-            -np.log(probabilities)[None, :],
-            -np.log1p(-probabilities)[None, :],
-        )
-        row_loss[mask] = np.sum(q * loss_by_output, axis=1)
+        loss_one = channel @ -np.log(probabilities)
+        loss_zero = channel @ -np.log1p(-probabilities)
+        row_loss[mask] = np.where(labels_here == 1, loss_one[context_tokens], loss_zero[context_tokens])
         original = probabilities[context_tokens]
         row_unsanitized[mask] = np.where(
             labels_here == 1, -np.log(original), -np.log1p(-original)
         )
-        source = original[:, None]
-        bernoulli_kl = source * np.log(source / probabilities[None, :]) + (
-            1 - source
-        ) * np.log((1 - source) / (1 - probabilities[None, :]))
-        row_teacher_kl[mask] = np.sum(q * bernoulli_kl, axis=1)
-        expected_scores[mask] = q @ probabilities
+        teacher_by_token = probabilities * (np.log(probabilities) + loss_one) + (
+            1 - probabilities) * (np.log1p(-probabilities) + loss_zero)
+        row_teacher_kl[mask] = np.maximum(teacher_by_token[context_tokens], 0)
+        expected_scores[mask] = (channel @ probabilities)[context_tokens]
+        ranking.add_context(channel, probabilities, context_tokens, labels_here,
+                            source_groups=None if source_groups is None else np.asarray(
+                                source_groups[context] if isinstance(source_groups, Mapping) else source_groups))
         if distortion_cost is None:
             row_distortion[mask] = row_teacher_kl[mask]
         else:
             cost = _context_array(distortion_cost, context)
             if cost.shape != channel.shape:
                 raise ValueError("distortion cost does not match channel")
-            row_distortion[mask] = np.sum(q * cost[context_tokens], axis=1)
+            row_distortion[mask] = np.einsum("ij,ij->i", channel, cost)[context_tokens]
 
     try:
-        roc = float(roc_auc_score(label_array, expected_scores))
-        pr = float(average_precision_score(label_array, expected_scores))
+        roc = float(roc_auc_score(label_array, expected_scores)) if len(np.unique(label_array)) == 2 else float("nan")
+        pr = float(average_precision_score(label_array, expected_scores)) if label_array.any() else 0.0
     except ValueError:
         roc = float("nan")
         pr = float("nan")
@@ -161,6 +171,7 @@ def evaluate_frozen_ctr_utility(
     )
     empirical = float(row_loss.mean())
     teacher = float(row_teacher_kl.mean())
+    released = ranking.finish()
     return FrozenCTRUtility(
         empirical_log_loss=empirical,
         excess_log_loss=float((row_loss - row_unsanitized).mean()),
@@ -169,8 +180,8 @@ def evaluate_frozen_ctr_utility(
             hybrid_empirical_weight * empirical
             + (1 - hybrid_empirical_weight) * teacher
         ),
-        roc_auc=roc,
-        pr_auc=pr,
+        roc_auc=released.roc_auc,
+        pr_auc=released.average_precision,
         distortion_objective=float(row_distortion.mean()),
         log_loss_ci95_low=low,
         log_loss_ci95_high=high,
@@ -178,6 +189,9 @@ def evaluate_frozen_ctr_utility(
         excess_log_loss_ci95_high=excess_high,
         row_log_loss=row_loss,
         row_unsanitized_log_loss=row_unsanitized,
+        mean_score_roc_auc=roc,
+        mean_score_average_precision=pr,
+        released_ranking=released,
     )
 
 

@@ -55,6 +55,8 @@ cover_probability_floor: 1.0e-12
 cover_bisection_tolerance: 1.0e-8
 formal_comparison_epsilon: 1.0
 utility_cluster_bootstrap_replicates: 2000
+ctr_ranking_mc_replicates: 8
+ctr_ranking_mc_seed: 0
 attack_crossfit_folds: 5
 attack_cluster_bootstrap_replicates: 2000
 attack_regularization_grid: [0.01, 0.1, 1.0, 10.0]

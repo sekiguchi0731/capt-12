@@ -29,6 +29,7 @@ from capt12.comparison.utility import FrozenCTRUtility, evaluate_frozen_ctr_util
 from capt12.config import comparison_design_name, run_id, validate_config
 from capt12.data.loader import load_parquet_sample
 from capt12.data.preprocessing import build_group_histograms
+from capt12.evaluation.released_ranking import ranking_metadata
 from capt12.experiments.context_stratified import (
     _split_histogram_by_context,
     run_context_stratified_diagnostic,
@@ -223,7 +224,7 @@ def _probability_grid(
     return result
 
 
-def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparisonData:
+def _prepare_data(config: dict[str, Any], native_path: Path, *, evaluation_only: bool = False) -> PreparedComparisonData:
     mapper = joblib.load(native_path / "models" / "category_mapper.joblib")
     encoder = joblib.load(native_path / "models" / "encoder.joblib")
     reference = joblib.load(native_path / "models" / "reference.joblib")
@@ -234,29 +235,21 @@ def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparis
     user_col = config.get("user_col", "user_id")
     label_col = config.get("label_col", "is_clicked")
 
-    design_frame = mapper.transform(
-        load_parquet_sample(
-            data_root=config["data_root"],
-            columns=columns,
-            days=config["splits"]["D_design"],
-        )
-    )
-    design_tokens = encoder.transform(design_frame)
-    design_context = _context_values(design_frame, contexts).astype(str).to_numpy()
-
-    cert_source = load_parquet_sample(
-        data_root=config["data_root"],
-        columns=columns,
-        days=config["splits"]["D_cert"],
-    )
-    cert_source = select_one_display_per_user_day(
-        cert_source,
-        user_col=user_col,
-        day_col="day_int",
-        id_col=id_col,
-    )
-    cert_frame = mapper.transform(cert_source)
-    cert_tokens = encoder.transform(cert_frame)
+    if evaluation_only:
+        design_frame = cert_frame = pd.DataFrame(columns=[*columns, "day_int"])
+        design_tokens = cert_tokens = np.array([], dtype=int)
+        design_context = np.array([], dtype=str)
+    else:
+        design_frame = mapper.transform(load_parquet_sample(
+            data_root=config["data_root"], columns=columns, days=config["splits"]["D_design"],
+        ))
+        design_tokens = encoder.transform(design_frame)
+        design_context = _context_values(design_frame, contexts).astype(str).to_numpy()
+        cert_source = select_one_display_per_user_day(load_parquet_sample(
+            data_root=config["data_root"], columns=columns, days=config["splits"]["D_cert"],
+        ), user_col=user_col, day_col="day_int", id_col=id_col)
+        cert_frame = mapper.transform(cert_source)
+        cert_tokens = encoder.transform(cert_frame)
 
     test_frame = mapper.transform(
         load_parquet_sample(
@@ -274,7 +267,7 @@ def _prepare_data(config: dict[str, Any], native_path: Path) -> PreparedComparis
         load_parquet_sample(data_root=config["data_root"], columns=columns,
                             days=config["splits"]["D_attack_train"]),
         user_col=user_col, day_col="day_int", id_col=id_col,
-    )) if config["attribute_attack_method"] != "none" else test_frame.iloc[:0].copy()
+    )) if not evaluation_only and config["attribute_attack_method"] != "none" else test_frame.iloc[:0].copy()
     attack_tokens = np.asarray(encoder.transform(attack_frame), dtype=int) if len(attack_frame) else np.array([], dtype=int)
     attack_context = _context_values(attack_frame, contexts).astype(str).to_numpy()
     test_positions = select_one_display_per_user_day(
@@ -489,6 +482,10 @@ def _evaluate(
     *,
     seed: int,
 ) -> FrozenCTRUtility:
+    source_groups = None
+    if isinstance(channels, FactorizedChannels):
+        source_groups = {context: np.unique(factors, axis=0, return_inverse=True)[1]
+                         for context, factors in channels.input_to_block.items()}
     return evaluate_frozen_ctr_utility(
         channels,
         data.test_tokens,
@@ -500,6 +497,9 @@ def _evaluate(
         hybrid_empirical_weight=float(config.get("hybrid_empirical_weight", 0.5)),
         bootstrap_replicates=int(config.get("utility_cluster_bootstrap_replicates", 2000)),
         bootstrap_seed=int(seed),
+        ranking_mc_replicates=int(config["ctr_ranking_mc_replicates"]),
+        ranking_mc_seed=int(np.random.SeedSequence([int(config["ctr_ranking_mc_seed"]), seed]).generate_state(1)[0]),
+        source_groups=source_groups,
         split_name="D_test",
     )
 
@@ -533,6 +533,10 @@ def _utility_row(row: dict[str, Any], utility: FrozenCTRUtility) -> None:
             "hybrid_objective": utility.hybrid_objective,
             "roc_auc": utility.roc_auc,
             "pr_auc": utility.pr_auc,
+            "mean_score_roc_auc": utility.mean_score_roc_auc,
+            "mean_score_average_precision": utility.mean_score_average_precision,
+            **ranking_metadata(utility.released_ranking),
+            "ctr_channel_estimator": "gaussian_mc" if row.get("mass_backend") == "neural_token" else "exact",
             "distortion_objective": utility.distortion_objective,
         }
     )
@@ -1130,30 +1134,65 @@ def run_prior_art_comparison(
     return path
 
 
-def reevaluate_attribute_attacks(
+def _saved_native_utility_rows(run_dir: Path, config: dict[str, Any]) -> pd.DataFrame:
+    """Expose an existing standalone CAPT run for utility-only reevaluation."""
+    design = config["context_designs"][0]
+    path = run_dir / "mechanism" / f"context_channels-{design}.npz"
+    if not path.is_file():
+        raise ValueError("run has neither comparison results nor saved native context channels")
+    with np.load(path) as payload:
+        rows = []
+        for method, key in (("capt", "channels"), ("optimal_ldp", "ldp_channels")):
+            channels = _token_channels(payload[key], payload["contexts"], payload["assignment"], payload["decoder"])
+            row = _empty_row()
+            row.update(method=method, display_name="CAPT" if method == "capt" else "LDP (native blocks)",
+                       cost=config.get("context_utility_objective", "teacher_kl"),
+                       seed=int(config.get("frozen_design_seed", config.get("seed", 0))),
+                       K=int(config["K"]), L=len(payload["decoder"]), target_epsilon=float(config["epsilon"]),
+                       channel_sha256=_channel_sha256(channels), certificate_path=str(run_dir) if method == "capt" else "",
+                       ctr_ranking_definition="legacy_mean_score")
+            certificate_table = run_dir / "tables" / "certificate_summary.csv"
+            if method == "capt" and certificate_table.is_file():
+                certificate = pd.read_csv(certificate_table)
+                valid = bool(certificate["certificate_valid"].astype(str).str.lower().eq("true").all())
+                row.update(certificate_valid=valid, formal_comparable=valid,
+                           certified_upper_epsilon=float(certificate["certificate_conservative_realized_epsilon"].max()))
+            rows.append(row)
+    return pd.DataFrame(rows, columns=RESULT_COLUMNS)
+
+
+def _reevaluate_saved_comparison(
     run_dir: Path, overrides: dict[str, Any], output_dir: Path | None = None,
+    *, utility: bool = False,
 ) -> Path:
-    """Evaluate saved mechanisms under new attack controls, without retraining.
+    """Evaluate saved mechanisms under new utility/attack controls, without retraining.
 
     Original comparison tables, model files, and certificates are never rewritten.
     """
     import yaml
 
-    from capt12.comparison.artifacts import render_attribute_inference_figures
-    from capt12.comparison.mass_nn import MassNN
+    from capt12.comparison.artifacts import render_attribute_inference_figures, validate_results
     from capt12.utils.artifacts import sha256_file
 
     source_config = yaml.safe_load((run_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
-    config = record_source_provenance(validate_config({**source_config, **overrides}))
-    controls = {key: value for key, value in config.items() if key.startswith("attribute_attack_")}
+    config = record_source_provenance(validate_config({**source_config, "prior_art_comparison": True, **overrides}))
+    controls = {key: value for key, value in config.items() if key.startswith("ctr_ranking_" if utility else "attribute_attack_")}
+    if utility:
+        controls["mass_eval_noise_samples"] = config["mass_eval_noise_samples"]
     signature = hashlib.sha256(json.dumps({"controls": controls, "mass_device": config["mass_device"], "evaluation_source": config["source_git_sha"]}, sort_keys=True).encode()).hexdigest()[:16]
-    output = output_dir or run_dir / "attack_evaluations" / signature
+    output = output_dir or run_dir / ("utility_evaluations" if utility else "attack_evaluations") / signature
     if output.resolve() == run_dir.resolve():
-        raise ValueError("attack reevaluation requires a separate output directory")
+        raise ValueError("reevaluation requires a separate output directory")
     if (output / "results.csv").exists() and not (output / "evaluation.json").is_file():
-        raise ValueError("attack output directory would overwrite an original comparison table")
+        raise ValueError("reevaluation output directory would overwrite an original comparison table")
     output.mkdir(parents=True, exist_ok=True)
-    frame = pd.read_csv(run_dir / "tables" / "results.csv")
+    comparison_table = run_dir / "tables" / "results.csv"
+    if comparison_table.is_file():
+        frame = validate_results(pd.read_csv(comparison_table))
+    elif utility:
+        frame = _saved_native_utility_rows(run_dir, config)
+    else:
+        raise ValueError("attribute reevaluation requires a completed comparison results.csv")
     references = frame.loc[frame["method"] == "capt"]
     rows = []
     previous_native, data = None, None
@@ -1162,20 +1201,27 @@ def reevaluate_attribute_attacks(
         for key in ("cost", "seed", "K", "L", "target_epsilon"):
             matching = matching.loc[matching[key] == row[key]]
         if len(matching) != 1:
-            raise ValueError("each attack row requires exactly one matching saved CAPT reference")
+            raise ValueError("each reevaluation row requires exactly one matching saved CAPT reference")
         native = Path(matching.iloc[0]["certificate_path"])
         if previous_native != native:
-            data = _prepare_data(config, native)
+            data = _prepare_data(config, native, evaluation_only=utility)
             previous_native = native
         if data is None:
-            raise RuntimeError("attack data were not loaded")
+            raise RuntimeError("evaluation data were not loaded")
         if row["method"] == "mass12_raw" and row["mass_backend"] == "neural_token":
+            from capt12.comparison.mass_nn import MassNN, NeuralChannels
+
             if sha256_file(Path(row["model_path"])) != row["model_sha256"]:
                 raise ValueError("saved MaSS model differs from the recorded model SHA")
             model = MassNN.load(Path(row["model_path"]), device=config["mass_device"])
             sampler = partial(_sample_mass, model)
+            if utility:
+                model.config["mass_eval_noise_samples"] = config["mass_eval_noise_samples"]
+                row["mass_eval_noise_samples"] = config["mass_eval_noise_samples"]
+                channels = NeuralChannels(model)
         elif row["method"] in {"capt", "optimal_ldp"}:
-            design = comparison_design_name(int(row["K"]), int(row["L"]))
+            design = (comparison_design_name(int(row["K"]), int(row["L"]))
+                      if comparison_table.is_file() else source_config["context_designs"][0])
             with np.load(native / "mechanism" / f"context_channels-{design}.npz") as payload:
                 channels = _token_channels(payload["channels" if row["method"] == "capt" else "ldp_channels"],
                                            payload["contexts"], payload["assignment"], payload["decoder"])
@@ -1183,8 +1229,11 @@ def reevaluate_attribute_attacks(
                 raise ValueError("saved native channel differs from the recorded channel SHA")
             sampler = partial(_sample_factorized, channels)
         else:
-            raise ValueError(f"unsupported saved mechanism for attribute reevaluation: {row['method']}")
-        _attach_attribute_attack(row, config, output, data, sampler)
+            raise ValueError(f"unsupported saved mechanism for reevaluation: {row['method']}")
+        if utility:
+            _utility_row(row, _evaluate(channels, data, config, seed=int(row["seed"])))
+        else:
+            _attach_attribute_attack(row, config, output, data, sampler)
         rows.append(row)
     result = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     result.to_csv(output / "results.csv", index=False)
@@ -1194,5 +1243,15 @@ def reevaluate_attribute_attacks(
         "evaluation_source_git_sha": config["source_git_sha"], "controls": controls,
         "mass_execution_device": config["mass_device"],
         "mechanisms_retrained": False,
+        "evaluation_kind": "released_ctr_utility" if utility else "attribute_attack",
+        "certificates_recomputed": False,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return output
+
+
+def reevaluate_attribute_attacks(run_dir: Path, overrides: dict[str, Any], output_dir: Path | None = None) -> Path:
+    return _reevaluate_saved_comparison(run_dir, overrides, output_dir)
+
+
+def reevaluate_ctr_utility(run_dir: Path, overrides: dict[str, Any], output_dir: Path | None = None) -> Path:
+    return _reevaluate_saved_comparison(run_dir, overrides, output_dir, utility=True)

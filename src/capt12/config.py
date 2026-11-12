@@ -81,6 +81,11 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> di
 
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(config)
+    for key, default, minimum in (("ctr_ranking_mc_replicates", 8, 2), ("ctr_ranking_mc_seed", 0, 0)):
+        value = int(cfg.get(key, default))
+        if value < minimum:
+            raise ValueError(f"{key} must be at least {minimum}")
+        cfg[key] = value
     if cfg.get("require_clean_worktree") is False:
         raise ValueError("certificate-producing runs cannot disable the clean-worktree requirement")
     for key in ("K", "L"):

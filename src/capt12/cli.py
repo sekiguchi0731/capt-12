@@ -534,6 +534,8 @@ def plot(
 @app.command("prior-art-comparison")
 def prior_art_comparison(
     config: Path = typer.Option(..., "--config", exists=True),
+    ctr_ranking_mc_replicates: int | None = typer.Option(None, "--ctr-ranking-mc-replicates", min=2),
+    ctr_ranking_mc_seed: int | None = typer.Option(None, "--ctr-ranking-mc-seed", min=0),
     attack_method: str | None = typer.Option(None, "--attack-method", help="Shared attribute attack: likelihood_ratio or none."),
     attack_smoothing: float | None = typer.Option(None, "--attack-smoothing"),
     attack_target_fpr: float | None = typer.Option(None, "--attack-target-fpr"),
@@ -601,6 +603,8 @@ def prior_art_comparison(
                 str(comparison_output_dir) if comparison_output_dir is not None else None
             ),
             "attribute_attack_method": attack_method,
+            "ctr_ranking_mc_replicates": ctr_ranking_mc_replicates,
+            "ctr_ranking_mc_seed": ctr_ranking_mc_seed,
             "attribute_attack_smoothing": attack_smoothing,
             "attribute_attack_target_fpr": attack_target_fpr,
             "attribute_attack_confidence": attack_confidence,
@@ -714,6 +718,29 @@ def evaluate_prior_art_attacks(
         output = reevaluate_attribute_attacks(run_dir.resolve(), overrides, output_dir)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--attack-method/--attack-target-fpr") from error
+    typer.echo(json.dumps({"output": str(output), "mechanisms_retrained": False}, indent=2))
+
+
+@app.command("evaluate-prior-art-utility")
+def evaluate_prior_art_utility(
+    run_dir: Path = typer.Option(..., "--run-dir", exists=True, file_okay=False),
+    output_dir: Path | None = typer.Option(None, "--output-dir"),
+    ctr_ranking_mc_replicates: int | None = typer.Option(None, "--ctr-ranking-mc-replicates", min=2),
+    ctr_ranking_mc_seed: int | None = typer.Option(None, "--ctr-ranking-mc-seed", min=0),
+    mass_eval_noise_samples: int | None = typer.Option(None, "--mass-eval-noise-samples", min=1),
+    mass_device: str | None = typer.Option(None, "--mass-device"),
+) -> None:
+    """Recompute released-score CTR metrics from saved models/channels, without retraining."""
+    from capt12.experiments.prior_art_comparison import reevaluate_ctr_utility
+
+    overrides = {key: value for key, value in {
+        "ctr_ranking_mc_replicates": ctr_ranking_mc_replicates, "ctr_ranking_mc_seed": ctr_ranking_mc_seed,
+        "mass_eval_noise_samples": mass_eval_noise_samples, "mass_device": mass_device,
+    }.items() if value is not None}
+    try:
+        output = reevaluate_ctr_utility(run_dir.resolve(), overrides, output_dir)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--ctr-ranking-mc-replicates") from error
     typer.echo(json.dumps({"output": str(output), "mechanisms_retrained": False}, indent=2))
 
 

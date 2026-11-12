@@ -23,6 +23,7 @@ from capt12.certification.artifact import hash_array
 from capt12.config import run_id
 from capt12.data.loader import load_parquet_sample
 from capt12.evaluation.metrics import prediction_metrics
+from capt12.evaluation.released_ranking import ReleasedRankingAccumulator, ranking_metadata
 from capt12.experiments.context_paper_figure import (
     _load_block_sensitivity,
     _load_frontier,
@@ -291,7 +292,9 @@ def _evaluate_global_channel(
     arrays: dict[str, np.ndarray],
     *,
     context_column: str,
-) -> dict[str, float]:
+    ranking_mc_replicates: int = 8,
+    ranking_mc_seed: int = 0,
+) -> dict[str, Any]:
     levels = [str(value) for value in arrays["context_levels"].tolist()]
     level_index = {value: index for index, value in enumerate(levels)}
     probability_grid = np.asarray(arrays["representation_probability_grid"], dtype=float)
@@ -301,6 +304,7 @@ def _evaluate_global_channel(
         raise RuntimeError(f"D_test contains contexts absent from the frozen grid: {unknown}")
     scores = np.empty(len(mapped_test), dtype=float)
     expected_loss_sum = 0.0
+    ranking = ReleasedRankingAccumulator(replicates=ranking_mc_replicates, seed=ranking_mc_seed)
     for context, context_index in level_index.items():
         mask = contexts == context
         if not mask.any():
@@ -311,16 +315,22 @@ def _evaluate_global_channel(
         loss_zero = channel @ -np.log(np.clip(1 - probabilities, 1e-6, 1))
         inputs = test_tokens[mask]
         context_labels = labels[mask]
+        ranking.add_context(channel, probabilities, inputs, context_labels)
         scores[mask] = token_scores[inputs]
         expected_loss_sum += float(
             np.where(context_labels == 1, loss_one[inputs], loss_zero[inputs]).sum()
         )
     metrics = prediction_metrics(labels, scores)
+    released = ranking.finish()
     return {
         "expected_randomized_log_loss": expected_loss_sum / len(mapped_test),
         "mixture_mean_log_loss": float(metrics["unweighted_log_loss"]),
-        "ROC_AUC": float(metrics["ROC_AUC"]),
-        "PR_AUC": float(metrics["PR_AUC"]),
+        "ROC_AUC": released.roc_auc,
+        "PR_AUC": released.average_precision,
+        **ranking_metadata(released),
+        "ctr_channel_estimator": "exact",
+        "mean_score_roc_auc": float(metrics["ROC_AUC"]),
+        "mean_score_average_precision": float(metrics["PR_AUC"]),
         "ECE": float(metrics["ECE"]),
         "calibration_ratio": float(metrics["calibration_ratio"]),
     }
@@ -693,6 +703,8 @@ def run_global_token_ldp_comparison(
                 labels,
                 arrays,
                 context_column=str(config["context_cols"][0]),
+                ranking_mc_replicates=int(config.get("ctr_ranking_mc_replicates", 8)),
+                ranking_mc_seed=int(config.get("ctr_ranking_mc_seed", 0)),
             )
             objective_weights = np.asarray(arrays["objective_weights"], dtype=float)
             objective_weights /= objective_weights.sum()

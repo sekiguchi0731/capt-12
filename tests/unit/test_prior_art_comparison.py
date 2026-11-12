@@ -479,6 +479,22 @@ def test_results_claim_gate_and_deterministic_plot_bytes(tmp_path: Path) -> None
     assert first_hashes == second_hashes
 
 
+def test_legacy_ranking_results_are_not_mixed_with_released_score_results() -> None:
+    from capt12.comparison.artifacts import summarize_seed_metrics
+    from capt12.evaluation.released_ranking import RANKING_DEFINITION, RANKING_RESULT_COLUMNS
+
+    legacy = _plot_frame().drop(columns=list(RANKING_RESULT_COLUMNS))
+    restored = validate_results(legacy)
+    assert restored["ctr_ranking_definition"].eq("legacy_mean_score").all()
+    assert restored["released_roc_auc"].isna().all()
+    np.testing.assert_array_equal(restored["mean_score_roc_auc"], restored["roc_auc"])
+    updated = restored.assign(ctr_ranking_definition=RANKING_DEFINITION)
+    summary = summarize_seed_metrics(pd.concat([restored, updated], ignore_index=True))
+    assert set(summary["ctr_ranking_definition"]) == {"legacy_mean_score", RANKING_DEFINITION}
+    with pytest.raises(ValueError, match="missing columns"):
+        validate_results(pd.DataFrame())
+
+
 def test_legacy_results_recover_the_actual_ctr_weight_and_resume_keys_distinguish_it() -> None:
     from capt12.experiments.prior_art_comparison import _result_key
 

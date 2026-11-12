@@ -32,6 +32,7 @@ from capt12.data.loader import assert_disjoint_splits, assert_no_row_overlap, lo
 from capt12.data.preprocessing import build_group_histograms
 from capt12.distortions.registry import block_cost_matrix, conditional_utility_cost
 from capt12.evaluation.metrics import prediction_metrics
+from capt12.evaluation.released_ranking import ReleasedRankingAccumulator, ranking_metadata
 from capt12.experiments.fixed_support import (
     _expected_frame_from_cartesian,
     _fixed_design,
@@ -1304,6 +1305,8 @@ def _evaluate_test(
     shared_by_design: dict[str, tuple[ChannelSolution, ChannelSolution]],
     *,
     context_column: str,
+    ranking_mc_replicates: int = 8,
+    ranking_mc_seed: int = 0,
 ) -> pd.DataFrame:
     context_values = test_frame[context_column].astype(str).to_numpy()
     rows = []
@@ -1333,6 +1336,7 @@ def _evaluate_test(
                 for context, cell in cell_by_context.items()
             }
         for method, channels in methods.items():
+            ranking = ReleasedRankingAccumulator(replicates=ranking_mc_replicates, seed=ranking_mc_seed)
             scores = np.empty(len(test_frame), dtype=float)
             expected_loss_sum = 0.0
             covered = 0
@@ -1352,6 +1356,8 @@ def _evaluate_test(
                 loss_zero = token_channel @ -np.log(np.clip(1 - probabilities, 1e-6, 1))
                 context_labels = labels[mask]
                 context_tokens = test_tokens[mask]
+                ranking.add_context(token_channel, probabilities, context_tokens, context_labels,
+                                    source_groups=design.assignment)
                 expected_loss_sum += float(
                     np.where(
                         context_labels == 1,
@@ -1365,6 +1371,7 @@ def _evaluate_test(
                     f"test contexts are missing from channel table: {len(test_frame) - covered}"
                 )
             metrics = prediction_metrics(labels, scores)
+            released = ranking.finish()
             rows.append(
                 {
                     "design": design.name,
@@ -1377,8 +1384,12 @@ def _evaluate_test(
                     "test_rows": len(test_frame),
                     "expected_randomized_log_loss": expected_loss_sum / len(test_frame),
                     "mixture_mean_log_loss": metrics["unweighted_log_loss"],
-                    "ROC_AUC": metrics["ROC_AUC"],
-                    "PR_AUC": metrics["PR_AUC"],
+                    "ROC_AUC": released.roc_auc,
+                    "PR_AUC": released.average_precision,
+                    **ranking_metadata(released),
+                    "ctr_channel_estimator": "exact",
+                    "mean_score_roc_auc": metrics["ROC_AUC"],
+                    "mean_score_average_precision": metrics["PR_AUC"],
                     "ECE": metrics["ECE"],
                     "calibration_ratio": metrics["calibration_ratio"],
                 }
@@ -1801,7 +1812,7 @@ def _write_report(
             "",
             "In `objective_aligned` mode, the common partition/decoder cost is the context aggregation `C_repr(z,o) = sum_b P(b|z) C_b(z,o)`, while each public-context channel uses its corresponding `C_b`. In `teacher_kl_fixed` mode, the representation remains teacher-KL by design, providing the R-objective-only ablation.",
             "",
-            "D_test AUC and calibration use the expected prediction under mechanism randomness. `expected_randomized_log_loss` instead averages the loss after drawing a sanitized output and is the primary randomized log-loss metric. These are frozen-reference diagnostics; no downstream bidder or CTR model is retrained.",
+            "D_test ROC_AUC integrates pairwise ranks of independently released scores; PR_AUC is the Monte Carlo mean of finite-test-set Average Precision, with replicate values and Monte Carlo standard error saved. mean_score_* and calibration diagnostics use the expected prediction and are separate estimands. expected_randomized_log_loss averages per-output loss and remains the primary utility metric. These are frozen-reference diagnostics; no downstream model is retrained.",
             "",
         ]
     )
@@ -2251,6 +2262,8 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         cells_by_design,
         shared_by_design,
         context_column=context_column,
+        ranking_mc_replicates=int(config["ctr_ranking_mc_replicates"]),
+        ranking_mc_seed=int(config["ctr_ranking_mc_seed"]),
     )
     progress.emit(
         "test_evaluation_finished",
