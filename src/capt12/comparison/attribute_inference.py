@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import beta
 
+from capt12.comparison.attack_metrics import binary_attack_metrics, precision_recall
 from capt12.experiments.sampling import stable_hash64
 from capt12.privacy.adjacency import Group
 
@@ -120,6 +121,7 @@ class AttributeInferenceResult:
         path.mkdir(parents=True, exist_ok=True)
         self.pairs.to_csv(path / "pairs.csv", index=False)
         self.roc.to_csv(path / "roc.csv", index=False)
+        precision_recall(self.roc, self.summary.get("positive_prior", 0.5)).to_csv(path / "pr.csv", index=False)
         np.savez_compressed(path / "attacker_scores.npz", **self.score_tables)
         render_attribute_roc(self.roc, self.summary, path)
         (path / "summary.json").write_text(
@@ -183,6 +185,7 @@ def evaluate_attribute_inference(
     method: str = "likelihood_ratio",
     smoothing: float = 1.0,
     target_fpr: float = 0.01,
+    prior: float = 0.5,
     confidence: float = 0.95,
     calibration_fraction: float = 0.5,
     seed: int = 0,
@@ -200,6 +203,8 @@ def evaluate_attribute_inference(
         raise ValueError("attribute attack adjacency must be tuple_adjacent or joint_all_pairs")
     if not 0 < target_fpr < 1 or not 0 < confidence < 1 or seed < 0:
         raise ValueError("attack FPR/confidence must be in (0, 1), and seed nonnegative")
+    if not np.isfinite(prior) or not 0 < prior < 1:
+        raise ValueError("attribute attack prior must be in (0,1)")
     for outputs, groups, ids in (
         (attack_outputs, attack_groups, attack_ids),
         (test_outputs, test_groups, test_ids),
@@ -311,6 +316,7 @@ def evaluate_attribute_inference(
                     )
                 x, y = curve["fpr"].to_numpy(), curve["tpr"].to_numpy()
                 row["roc_auc"] = float(np.sum(np.diff(x) * (y[:-1] + y[1:]) / 2))
+                row.update(binary_attack_metrics(curve, prior))
                 for label, successes, indices in zip(("tpr", "fpr"), counts, tested, strict=True):
                     row[label] = successes / len(indices)
                     row[f"{label}_successes"] = successes
@@ -328,12 +334,14 @@ def evaluate_attribute_inference(
         else ("complete" if len(completed) == len(eligible_keys) else "incomplete_test_coverage")
     )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": method,
         "status": status,
         "K": k,
         "smoothing": smoothing,
         "target_fpr": target_fpr,
+        "positive_prior": prior,
+        "eau_definition": "P(fixed learned binary attribute-pair attacker(O)=hypothesis) at the chosen prior; IPSJ-TOD1902006 Definition 3.2.1; not the optimal attack supremum",
         "confidence": confidence,
         "calibration_fraction": calibration_fraction,
         "seed": seed,
@@ -354,7 +362,7 @@ def evaluate_attribute_inference(
         "interval_scope": "simultaneous operating-point TPR/FPR intervals over frozen ordered pairs within this mechanism cell; user_day_iid assumption; not the whole grid",
         "interpretation": "empirical attribute inference; test FPR can differ from calibration target; no worst-case privacy guarantee",
     }
-    for metric in ("roc_auc", "tpr", "fpr"):
+    for metric in ("roc_auc", "tpr", "fpr", "pair_eau", "average_precision", "accuracy_uplift"):
         for aggregate in ("mean", "worst"):
             summary[f"{aggregate}_{metric}"] = (
                 float(completed[metric].mean() if aggregate == "mean" else completed[metric].max())

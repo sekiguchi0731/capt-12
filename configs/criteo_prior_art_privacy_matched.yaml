@@ -65,5 +65,6 @@ attribute_attack_method: likelihood_ratio
 attribute_attack_smoothing: 1.0
 attribute_attack_target_fpr: 0.01
 attribute_attack_confidence: 0.95
+attribute_attack_prior: 0.5
 attribute_attack_calibration_fraction: 0.5
 attribute_attack_seed: 0

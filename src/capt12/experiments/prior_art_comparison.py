@@ -351,7 +351,7 @@ def _attach_attribute_attack(
         row["attribute_attack_status"] = "disabled"
         return
     controls = {key: value for key, value in config.items() if key.startswith("attribute_attack_")}
-    identity = {"schema_version": 1, "mechanism": row.get("model_sha256") if row["method"] == "mass12_raw" else row["channel_sha256"],
+    identity = {"schema_version": 2, "mechanism": row.get("model_sha256") if row["method"] == "mass12_raw" else row["channel_sha256"],
                 "cost": row["cost"], "frozen_seed": int(row["seed"]), "controls": controls,
                 "source_git_sha": config.get("source_git_sha"), "splits": config["splits"],
                 "profile": config["profiles"][0], "adjacency": config.get("adjacency", config.get("privacy_scope", "tuple_adjacent"))}
@@ -359,7 +359,7 @@ def _attach_attribute_attack(
     attack_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     path = comparison_path / "attribute_attacks" / attack_id
     summary_path = path / "summary.json"
-    if all((path / name).is_file() for name in ("summary.json", "pairs.csv", "roc.csv", "attacker_scores.npz", "roc.png", "roc.pdf")):
+    if all((path / name).is_file() for name in ("summary.json", "pairs.csv", "roc.csv", "pr.csv", "attacker_scores.npz", "roc.png", "roc.pdf")):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     else:
         seed = int(np.random.SeedSequence([int(config["attribute_attack_seed"]), int(row["seed"])]).generate_state(1)[0])
@@ -378,6 +378,7 @@ def _attach_attribute_attack(
             expected_groups=data.expected_attack_groups, k=int(config["K"]), method=method,
             smoothing=float(config["attribute_attack_smoothing"]),
             target_fpr=float(config["attribute_attack_target_fpr"]),
+            prior=float(config["attribute_attack_prior"]),
             confidence=float(config["attribute_attack_confidence"]),
             calibration_fraction=float(config["attribute_attack_calibration_fraction"]), seed=seed,
             adjacency_mode=identity["adjacency"],
@@ -396,7 +397,9 @@ def _attach_attribute_attack(
     row.update(attribute_attack_id=attack_id, attribute_attack_path=str(path),
                attribute_attack_method=method, attribute_attack_status=summary["status"])
     for key in ("scope_sha256", "target_fpr", "expected_pairs", "eligible_pairs", "evaluated_pairs",
-                "mean_roc_auc", "worst_roc_auc", "mean_tpr", "worst_tpr", "mean_fpr", "worst_fpr"):
+                "mean_roc_auc", "worst_roc_auc", "mean_tpr", "worst_tpr", "mean_fpr", "worst_fpr",
+                "positive_prior", "mean_pair_eau", "worst_pair_eau", "mean_average_precision",
+                "worst_average_precision", "mean_accuracy_uplift", "worst_accuracy_uplift"):
         row[f"attribute_attack_{key}"] = summary[key]
 
 

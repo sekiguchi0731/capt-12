@@ -111,6 +111,13 @@ RESULT_COLUMNS = (
     "attribute_attack_worst_tpr",
     "attribute_attack_mean_fpr",
     "attribute_attack_worst_fpr",
+    "attribute_attack_positive_prior",
+    "attribute_attack_mean_pair_eau",
+    "attribute_attack_worst_pair_eau",
+    "attribute_attack_mean_average_precision",
+    "attribute_attack_worst_average_precision",
+    "attribute_attack_mean_accuracy_uplift",
+    "attribute_attack_worst_accuracy_uplift",
     *RANKING_RESULT_COLUMNS,
 )
 

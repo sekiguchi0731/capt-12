@@ -278,6 +278,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         cfg["attribute_attack_method"] = attack_method
         for key, default in (("attribute_attack_target_fpr", 0.01),
                              ("attribute_attack_confidence", 0.95),
+                             ("attribute_attack_prior", 0.5),
                              ("attribute_attack_calibration_fraction", 0.5)):
             value = float(cfg.get(key, default))
             if not 0 < value < 1:

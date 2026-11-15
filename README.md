@@ -684,7 +684,7 @@ token. The test FPR is measured and can differ from the target. Test labels
 do not choose the attack, thresholds, smoothing, or eligible comparison family.
 
 Controls are `--attack-method likelihood_ratio|none`, `--attack-smoothing`,
-`--attack-target-fpr`, `--attack-confidence`, `--attack-calibration-fraction`,
+`--attack-target-fpr`, `--attack-confidence`, `--attack-prior`, `--attack-calibration-fraction`,
 and `--attack-seed`. The matching config names have the `attribute_attack_`
 prefix. `ATTACK_FACTORIES` in `comparison/attribute_inference.py` separates
 the score-fitting backend from sampling, calibration, and evaluation, so a
@@ -693,7 +693,9 @@ different token-scoring attack can replace it later.
 Each `attribute_attacks/<id>/` saves `pairs.csv` (per-context ordered-pair
 counts, calibrated thresholds, tie probabilities, AUC, actual TPR/FPR and
 intervals), `roc.csv` (all frozen score thresholds), `attacker_scores.npz`,
-`roc.png/pdf`, and `summary.json`. Clopper-Pearson operating-point rate
+`pr.csv` (prior-specific precision/recall), `roc.png/pdf`, and `summary.json`.
+Pairs also save EAU, Average Precision, and prior-only accuracy uplift.
+Clopper-Pearson operating-point rate
 intervals use Bonferroni correction across both rates and all frozen pairs
 within that mechanism cell, under the declared `user_day_iid` assumption;
 they are not simultaneous across the whole experiment grid. AUC and ROC
@@ -728,8 +730,149 @@ correspondence; Section 5.3.1 on optimal versus realistic attackers; and
 Section 6 on comparing privacy notions. Here the distributions are estimated
 from finite data and the hypotheses concern conditional attribute values,
 rather than reproducing that paper's analytic comparisons of DP frameworks.
-No epsilon conversion or hypothesis test of a claimed privacy budget is
-performed by this empirical evaluation.
+The basic ROC evaluator does not estimate epsilon. The separate saved-artifact
+comparison below adds explicit, finite-sample lower-bound event witnesses.
+
+### Common-pair PR curves, EAU and utility
+
+`compare-attribute-privacy` consumes existing results.csv and saved
+attribute_attacks artifacts, including copied remote runs. It requires no
+Criteo data, CUDA, mechanism training or attacker retraining. It checks saved
+score thresholds against attacker_scores.npz, validates release counts/rates,
+checks mechanism identity and records source/code checksums. Original artifacts
+are preserved. Repeat --results to compare multiple result files.
+
+~~~bash
+nohup .venv/bin/capt12 compare-attribute-privacy \
+  --results outputs/mass_b200_pilot/results.csv \
+  --output-dir outputs/mass_b200_pilot/privacy_comparison \
+  --prior 0.5 \
+  > logs/attribute-privacy-comparison.log 2>&1 < /dev/null &
+~~~
+
+EAU follows IPSJ-TOD1902006, Definition 3.2.1 (printed p. 56): the probability
+that the attacker correctly predicts the protected label. Here the hypothesis
+is binary membership in an **attribute-value pair** at fixed public context/
+profile. The default prior is explicitly 1/2 for every method and pair;
+--prior permits another common prior, such as 0.1. Thus
+`pair_eau = pi*TPR + (1-pi)*(1-FPR)`, evaluated at the trained log-LR decision
+threshold `log((1-pi)/pi)`, fixed before test inspection. This estimates EAU
+of a particular learned attack; it is not the supremum over all attackers,
+IEAU, or an unconditional multiclass EAU. Prior-only baseline accuracy is
+`max(pi,1-pi)`; its difference from EAU is saved without zero clipping.
+
+PR uses `precision = pi*TPR/(pi*TPR+(1-pi)*FPR)`, with undefined precision
+when no decisions are positive. Curve interpolation first randomizes between
+adjacent frozen ROC decision rules, then converts to precision; straight-line
+interpolation of precision is incorrect. This is attack-decision randomization,
+with no change to the released mechanism.
+
+The comparison intersects **completed** pair IDs across all mechanisms within
+each cost/frozen-seed/K/L cell, validates pair group counts and attack controls, and
+uses exactly this common scope for every method. coverage.csv preserves
+expected, fit/calibration-eligible, evaluated and common pair counts. Missing
+groups are never treated as zero leakage. --min-test-count permits an explicit
+support sensitivity analysis; default 1 retains rare groups. Utility still
+covers the full common D_test and frozen CTR service.
+
+Outputs include PR plots for equal-pair macro means, pointwise worst-pair
+envelopes and representative pairs chosen by calibration support. Worst
+envelopes may switch pair at each recall and do not describe one attacker.
+Scalar plots show EAU/AP versus CTR logloss, with mean and largest-pair EAU
+separated. pair_pr_order.csv checks each pair's PR order at all piecewise ROC
+knots and one-sided limits, rather than a coarse recall grid (FPR numerical
+tolerance 1e-10). dominance_summary.csv combines this descriptive PR order with
+logloss and reports counterexamples, without claiming population dominance.
+pair_metrics.csv, mechanism_metrics.csv, pr_curves.csv, comparison.json and
+report.md retain the prior, scope, references and calculations.
+
+Lower precision/EAU/AP means a weaker **measured** attack; lower logloss means
+better utility. A lower macro PR curve alone does not establish an order for
+every pair. A fitted LR attacker need not achieve the population-optimal
+Neyman-Pearson curve from Liu et al.'s analytic comparisons. PR curves have
+no simultaneous confidence bands; observed order is not a universal privacy
+guarantee. Small-group worst-case point estimates can be very noisy.
+Different CAPT epsilon budgets share a comparison cell, so their empirical
+frontier can be compared against MaSS controls without treating a MaSS
+training target as a certified epsilon.
+
+### Rare-score events and exact MI-only counterexamples
+
+event_audit.csv evaluates extreme learned-score buckets (chosen without test
+labels) and the fixed-prior EAU decision event. Counts are recovered from
+cumulative ROC release counts. Simultaneous Clopper-Pearson intervals allocate
+`(1-confidence)/(4*N_events)` to each one-sided endpoint across **all** supplied
+cells, mechanisms, pairs and events. EAU intervals share this allocation.
+Independence of test user-days within groups is a modeling assumption;
+predictions across models need not be independent for the union bound.
+
+Event probability bounds yield lower witnesses such as
+`max(0, log(p_lower/q_upper))`, in both directions. This separate statistical
+audit does not certify privacy or upper-bound MaSS leakage. A zero empirical
+denominator is flagged and its raw log ratio is missing: it never becomes a
+claim of infinite population epsilon. A zero lower bound proves no privacy.
+The selected events may miss other forms of leakage.
+
+The default comparison also writes simulation/; --no-simulation omits it.
+The simulation is independently available:
+
+~~~bash
+nohup .venv/bin/capt12 simulate-mi-privacy-gap \
+  --output-dir outputs/mi_privacy_gap \
+  --epsilon 1 --reveal-probability 0.01 --positive-floor 1e-9 \
+  > logs/mi-privacy-gap.log 2>&1 < /dev/null &
+~~~
+
+It uses known distributions with independent useful and sensitive bits.
+An MI-admissible channel occasionally reveals the sensitive bit already
+encoded in the input token. Its sensitive MI is `q*log(2)`, arbitrarily small
+as q tends to zero, while its exact attribute epsilon is infinite for q>0.
+An attribute-private reference randomizes that bit with epsilon-RR. Both
+preserve the useful bit and have identical exact CTR logloss.
+
+A second version mixes a tiny positive uniform component into **both
+constructed channels**. This gives strictly positive support and finite,
+potentially large privacy loss, while preserving matched utility. MI alone
+does not imply infinite epsilon for a particular finite-alphabet neural
+softmax model. Figures show exact optimal PR, privacy profiles delta(epsilon),
+MI and utility. These are a limitation of MI-only requirements,
+**not trained MaSS/CAPT simulation results**. No postprocessing is added to
+actual MaSS mechanisms.
+
+### B200 experiment distribution
+
+tools/launch_b200_replicates.py assigns one process to each selected GPU,
+with separate configs/results/logs for every seed/n/weight combination and
+a nonblocking lock per launcher output root. It estimates 48 GiB host RAM
+per job (pilot peak about 39 GiB), reserves 16 GiB and reduces concurrency
+to available RAM/CPU capacity. This is a scheduling estimate, not a memory
+limit. It checks only the selected GPUs and refuses occupied devices before
+starting. Use the GPUs currently allocated under the lab's usage rules.
+
+The default adds paired frozen-design/MaSS seeds 1..4 to the existing seed-0
+pilot. An exploratory plan can instead vary click-MI targets and their penalty,
+keeping the additional CTR cost at zero:
+
+~~~bash
+nohup "$HOME/.venvs/capt12-b200/bin/python" -u tools/launch_b200_replicates.py \
+  --gpus 0,1,2,3,4,5 --seeds 0 \
+  --useful-n-list 0.02,0.05,0.1 --utility-weights 1,10 \
+  --output-root outputs/mass_b200_useful_grid \
+  > logs/b200-useful-grid.log 2>&1 < /dev/null &
+~~~
+
+This is six independent condition jobs, each retaining m values 0,0.1,0.5
+and 50 epochs, i.e. 18 MaSS models. n/weight controls are training targets,
+not guarantees of achieved MI or utility. Batch size and learning-rate
+controls stay fixed. --dry-run writes the plan without GPU access or training.
+launch.json records physical GPU, PID and completion status; each condition
+has experiment.log and results.csv.
+
+These remain focused pilot-phase comparisons at epsilon=1/L=16; they do not
+silently start the much larger default full grid. More seeds and privacy/
+utility controls are needed before interpreting an observed frontier as
+representative. Saved results can be passed together to compare-attribute-privacy;
+common references are deduplicated and PR pages retain CAPT/LDP references.
 
 ## Deployment requirements
 

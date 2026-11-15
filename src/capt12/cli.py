@@ -540,6 +540,7 @@ def prior_art_comparison(
     attack_smoothing: float | None = typer.Option(None, "--attack-smoothing"),
     attack_target_fpr: float | None = typer.Option(None, "--attack-target-fpr"),
     attack_confidence: float | None = typer.Option(None, "--attack-confidence"),
+    attack_prior: float | None = typer.Option(None, "--attack-prior", help="Common positive-hypothesis prior for pairwise PR and EAU."),
     attack_calibration_fraction: float | None = typer.Option(None, "--attack-calibration-fraction"),
     attack_seed: int | None = typer.Option(None, "--attack-seed", min=0),
     k: int | None = typer.Option(None, "--K", "--input-count", min=1, max=4096,
@@ -608,6 +609,7 @@ def prior_art_comparison(
             "attribute_attack_smoothing": attack_smoothing,
             "attribute_attack_target_fpr": attack_target_fpr,
             "attribute_attack_confidence": attack_confidence,
+            "attribute_attack_prior": attack_prior,
             "attribute_attack_calibration_fraction": attack_calibration_fraction,
             "attribute_attack_seed": attack_seed,
             "mass_ctr_weight": mass_ctr_weight,
@@ -700,6 +702,7 @@ def evaluate_prior_art_attacks(
     attack_smoothing: float | None = typer.Option(None, "--attack-smoothing"),
     attack_target_fpr: float | None = typer.Option(None, "--attack-target-fpr"),
     attack_confidence: float | None = typer.Option(None, "--attack-confidence"),
+    attack_prior: float | None = typer.Option(None, "--attack-prior"),
     attack_calibration_fraction: float | None = typer.Option(None, "--attack-calibration-fraction"),
     attack_seed: int | None = typer.Option(None, "--attack-seed", min=0),
     mass_device: str | None = typer.Option(None, "--mass-device", help="Device for frozen MaSS inference; no retraining."),
@@ -710,6 +713,7 @@ def evaluate_prior_art_attacks(
     overrides = {f"attribute_attack_{key}": value for key, value in {
         "method": attack_method, "smoothing": attack_smoothing, "target_fpr": attack_target_fpr,
         "confidence": attack_confidence, "calibration_fraction": attack_calibration_fraction,
+        "prior": attack_prior,
         "seed": attack_seed,
     }.items() if value is not None}
     if mass_device is not None:
@@ -719,6 +723,48 @@ def evaluate_prior_art_attacks(
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--attack-method/--attack-target-fpr") from error
     typer.echo(json.dumps({"output": str(output), "mechanisms_retrained": False}, indent=2))
+
+
+@app.command("compare-attribute-privacy")
+def compare_attribute_privacy(
+    results: list[Path] = typer.Option(..., "--results", exists=True, dir_okay=False, help="Repeat for multiple saved results.csv files."),
+    output_dir: Path = typer.Option(..., "--output-dir"),
+    prior: float = typer.Option(0.5, "--prior"),
+    confidence: float = typer.Option(0.95, "--confidence"),
+    max_buckets: int = typer.Option(16, "--max-buckets", min=2),
+    min_test_count: int = typer.Option(1, "--min-test-count", min=1),
+    simulation: bool = typer.Option(True, "--simulation/--no-simulation"),
+) -> None:
+    """PR/EAU/logloss and rare-event analysis of saved attacks; no training or Criteo loading."""
+    from capt12.comparison.privacy_comparison import compare_saved_privacy
+    from capt12.comparison.privacy_simulation import run_mi_counterexample
+
+    try:
+        output = compare_saved_privacy(results, output_dir, prior=prior, confidence=confidence,
+                                       max_buckets=max_buckets, min_test_count=min_test_count)
+        if simulation:
+            run_mi_counterexample(output / "simulation")
+    except (ValueError, AssertionError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps({"output": str(output), "mechanisms_retrained": False, "attacks_retrained": False}, indent=2))
+
+
+@app.command("simulate-mi-privacy-gap")
+def simulate_mi_privacy_gap(
+    output_dir: Path = typer.Option(..., "--output-dir"),
+    epsilon: float = typer.Option(1.0, "--epsilon", min=0),
+    reveal_probability: float = typer.Option(0.01, "--reveal-probability"),
+    positive_floor: float = typer.Option(1e-9, "--positive-floor"),
+) -> None:
+    """Known-channel MI-only counterexample; not a trained MaSS/CAPT experiment."""
+    from capt12.comparison.privacy_simulation import run_mi_counterexample
+
+    try:
+        output = run_mi_counterexample(output_dir, epsilon=epsilon,
+                                       reveal_probability=reveal_probability, positive_floor=positive_floor)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps({"output": str(output), "distribution_known": True, "trained_mass": False}, indent=2))
 
 
 @app.command("evaluate-prior-art-utility")
