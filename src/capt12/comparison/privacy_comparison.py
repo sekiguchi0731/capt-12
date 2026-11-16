@@ -574,7 +574,7 @@ def compare_saved_privacy(
         "sources": sources,
         "evaluation_code_sha256": {
             name: sha256_file(Path(__file__).with_name(name))
-            for name in ("privacy_comparison.py", "attack_metrics.py", "privacy_simulation.py")
+            for name in ("privacy_comparison.py", "attack_metrics.py", "tradeoff_curves.py", "privacy_simulation.py")
         },
         "cells": metadata_cells,
         "positive_prior": prior,

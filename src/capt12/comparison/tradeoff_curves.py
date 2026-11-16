@@ -13,6 +13,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.transforms import Bbox
 
 # Controls of the learned transformation; never group using measured losses/MI.
 MASS_CONTROLS = (
@@ -161,6 +162,36 @@ def same_eau_comparisons(points: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _place_labels(axis) -> None:
+    """Place point labels using rendered text extents, including near endpoints."""
+    renderer = axis.figure.canvas.get_renderer()
+    scale = axis.figure.dpi / 72
+    bounds = axis.get_window_extent(renderer)
+    placed = []
+    for label in axis.texts:
+        width, height, descent = renderer.get_text_width_height_descent(
+            label.get_text(), label.get_fontproperties(), ismath=False
+        )
+        x, y = axis.transData.transform(label.xy)
+        candidates = []
+        for dy in (6, -14, 24, -32, 42, -50, 60):
+            for dx in (6, -width / scale - 6):
+                box = Bbox.from_bounds(
+                    x + dx * scale - 3, y + dy * scale - descent - 3, width + 6, height + 6
+                )
+                outside = not (
+                    bounds.x0 <= box.x0
+                    and box.x1 <= bounds.x1
+                    and bounds.y0 <= box.y0
+                    and box.y1 <= bounds.y1
+                )
+                collisions = sum(box.overlaps(previous) for previous in placed)
+                candidates.append((outside * 100 + collisions, dx, dy, box))
+        _, dx, dy, box = min(candidates, key=lambda item: item[0])
+        label.set_position((dx, dy))
+        placed.append(box)
+
+
 def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = "m") -> None:
     points = parameter_traces(summary, mass_axis)
     points.to_csv(output / "tradeoff_points.csv", index=False)
@@ -203,9 +234,10 @@ def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = 
                     axis.annotate(
                         f"{name}={row['parameter_value']:g}",
                         (row[metric], row["empirical_log_loss"]),
-                        xytext=(4, 5),
+                        xytext=(6, 6),
                         textcoords="offset points",
                         fontsize=7,
+                        arrowprops={"arrowstyle": "-", "linewidth": 0.4, "alpha": 0.5},
                     )
                 axis.set(
                     xlabel=("Mean" if metric.startswith("mean") else "Largest")
@@ -213,7 +245,16 @@ def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = 
                     ylabel="Held-out CTR log loss (lower is better)",
                 )
                 axis.grid(alpha=0.2)
-        axes[-1].legend(fontsize=6, frameon=False)
+        handles, labels = axes[-1].get_legend_handles_labels()
+        fig.legend(
+            handles,
+            labels,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.055),
+            ncol=min(3, len(labels)),
+            fontsize=7,
+            frameon=False,
+        )
         fig.suptitle("Observed parameter sweeps: CAPT vs MaSS")
         fig.text(
             0.5,
@@ -222,7 +263,10 @@ def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = 
             ha="center",
             fontsize=8,
         )
-        fig.tight_layout(rect=(0, 0.04, 1, 0.95))
+        fig.tight_layout(rect=(0, 0.14 if len(labels) <= 6 else 0.2, 1, 0.95))
+        fig.canvas.draw()
+        for axis in axes:
+            _place_labels(axis)
         for ext in ("png", "pdf"):
             fig.savefig(output / "figures" / f"eau_logloss_curve_{cell}.{ext}", dpi=180)
         plt.close(fig)
