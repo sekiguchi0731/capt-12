@@ -162,3 +162,22 @@ def test_duplicate_references_from_parallel_jobs_keep_provenance_and_require_equ
     for key, value in (("channel_sha256", "other"), ("mean_pair_eau", 0.51)):
         with pytest.raises(ValueError, match="different mechanisms or measurements"):
             parameter_traces(pd.DataFrame([row, {**row, "model_id": "new", key: value}]))
+
+
+def test_parallel_result_collection_keeps_only_mass_without_modifying_original(tmp_path):
+    path = Path(__file__).resolve().parents[2] / "tools/launch_b200_replicates.py"
+    spec = importlib.util.spec_from_file_location("eau_launcher", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "results.csv"
+    pd.DataFrame(
+        [
+            dict(method="capt", model_sha256="c", empirical_log_loss=0.4),
+            dict(method="mass12_raw", model_sha256="m", empirical_log_loss=0.5),
+        ]
+    ).to_csv(source, index=False)
+    before = source.read_bytes()
+    collected = pd.read_csv(module.collect_mass_results(source))
+    assert collected.method.tolist() == ["mass12_raw"]
+    assert collected.model_sha256.tolist() == ["m"]
+    assert before == source.read_bytes()

@@ -970,13 +970,16 @@ Reserve 64 GiB here for the concurrent CPU sweep. The launcher checks free host
 RAM and GPU usage, queues excess jobs and records failures in launch.json. It
 repeats deterministic frozen training per job with the same frozen seed. The
 CAPT sweep avoids this repetition by using the pilot's byte-identical files.
+The launcher also exports `mass_results.csv` per job. Use these MaSS-only
+files when combining with the designated CAPT sweep, so repeated native
+reference jobs are not mistaken for extra sweep settings.
 Check all jobs succeeded before combining their results; do not infer MaSS
 privacy from missing settings. Replicate further seeds after this first grid.
 
 ~~~bash
 results_args=(--results outputs/mass_b200_pilot/results.csv \
               --results outputs/criteo_capt_eau_sweep/results.csv)
-for results_file in outputs/criteo_mass_eau_grid/seed-*/results.csv; do
+for results_file in outputs/criteo_mass_eau_grid/seed-*/mass_results.csv; do
   results_args+=(--results "$results_file")
 done
 nohup "$HOME/.venvs/capt12-b200/bin/capt12" compare-attribute-privacy \

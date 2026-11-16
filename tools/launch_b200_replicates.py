@@ -45,6 +45,19 @@ def csv_floats(value: str) -> list[float]:
     return values
 
 
+def collect_mass_results(source: Path) -> Path:
+    """Keep the designated frozen CAPT sweep as the sole reference curve."""
+    import pandas as pd
+
+    frame = pd.read_csv(source, float_precision="round_trip")
+    selected = frame.loc[frame.method.eq("mass12_raw")]
+    if selected.empty:
+        raise ValueError(f"completed job contains no MaSS models: {source}")
+    destination = source.with_name("mass_results.csv")
+    selected.to_csv(destination, index=False)
+    return destination
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", type=csv_ints, default=csv_ints("0,1,2,3"))
@@ -200,6 +213,13 @@ def main() -> None:
                     continue
                 log.close()
                 job.update(status="complete" if code == 0 else "failed", returncode=code)
+                if code == 0:
+                    try:
+                        job["mass_results"] = str(
+                            collect_mass_results(Path(job["output"]) / "results.csv")
+                        )
+                    except (OSError, ValueError, KeyError) as error:
+                        job.update(status="failed", collection_error=str(error))
                 running.remove(entry)
                 free.append(gpu)
                 print(f"Finished seed={job['seed']} returncode={code}", flush=True)
