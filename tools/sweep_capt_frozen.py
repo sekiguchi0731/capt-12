@@ -109,7 +109,15 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--epsilons", default="0.1,0.25,0.5,2,4")
+    parser.add_argument(
+        "--solver-time-limit",
+        type=float,
+        default=30,
+        help="Seconds per LP solver attempt before the existing IPM retry.",
+    )
     args = parser.parse_args()
+    if not np.isfinite(args.solver_time_limit) or args.solver_time_limit <= 0:
+        parser.error("solver time limit must be positive and finite")
     epsilons = [float(v) for v in args.epsilons.split(",")]
     if (
         not epsilons
@@ -130,6 +138,7 @@ def main():
         "data_root": str(args.data_root.resolve()),
         "epsilons": epsilons,
         "source_git_sha": sha,
+        "solver_time_limit": args.solver_time_limit,
     }
     manifest_path = output / "sweep.json"
     if manifest_path.exists() and json.loads(manifest_path.read_text())["identity"] != identity:
@@ -156,6 +165,7 @@ def main():
         require_clean_worktree=True,
     )
     config.setdefault("attribute_attack_prior", 0.5)
+    config["time_limit"] = args.solver_time_limit
     cert_paths = sorted(native.glob("certificate-*-context-*.json"))
     if not cert_paths:
         raise ValueError("source native run has no context certificates")
@@ -242,6 +252,14 @@ def main():
         ),
         service_probabilities={k: o.token_probabilities for k, o in objectives.items()},
     )
+    baseline = exact_logloss(source_channels, data)
+    if not np.isclose(baseline, original["empirical_log_loss"], rtol=1e-10, atol=1e-10):
+        raise ValueError(
+            f"source CAPT logloss does not reproduce on supplied data: {baseline} vs {original['empirical_log_loss']}"
+        )
+    progress.emit(
+        "baseline_reproduced", logloss=baseline, test_rows=len(test), attack_rows=len(train)
+    )
     records = []
     for epsilon in epsilons:
         destination = output / f"epsilon-{epsilon:g}"
@@ -259,7 +277,7 @@ def main():
         entry = manifest["designs"][design_name]
         for stale in ("ldp_contexts", "constant_contexts", "unpooled_contexts"):
             entry.pop(stale, None)
-        for cert in originals:
+        for context_index, cert in enumerate(originals):
             context_value = str(cert.resolved_config["public_context_value"])
             boxes = {k: ConfidenceBox.from_dict(v) for k, v in cert.boxes.items()}
             groups = [Group(g["profile"], tuple(g["values"]), g["context"]) for g in cert.groups]
@@ -277,6 +295,13 @@ def main():
                 progress=progress,
                 heartbeat_seconds=30,
                 cut_formulation=config["robust_cut_formulation"],
+                time_limit=args.solver_time_limit,
+                checkpoint_path=(
+                    destination / "checkpoints" / f"context-{context_index:02d}.npz"
+                    if config["robust_cut_formulation"] == "shared_support_bounds"
+                    else None
+                ),
+                resume_checkpoint=config["robust_cut_formulation"] == "shared_support_bounds",
             )
             repair = repair_robust_channel_uniform(
                 solution.channel,
@@ -306,6 +331,7 @@ def main():
         for index, (old, boxes, groups, pairs, solution, repair) in enumerate(solutions):
             cell_config = dict(old.resolved_config)
             cell_config.update(epsilon=epsilon, source_git_sha=sha, source_worktree_clean=True)
+            cell_config["time_limit"] = args.solver_time_limit
             coverage = copy.deepcopy(old.coverage)
             coverage["context_r_pooling"]["unpooled_released_channel_hash"] = hash_array(
                 repair.channel

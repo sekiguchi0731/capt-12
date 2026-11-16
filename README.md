@@ -788,7 +788,10 @@ intersection of the observed segments at a common EAU, only in the overlapping
 range. Lines and interpolated utilities are descriptive estimates, not newly
 trained mechanisms, attainable mixtures, or a confidence claim. Nonmonotonic
 folds and vertical portions are retained; there is no extrapolation or silent
-best-point selection. More than one CAPT budget is needed for a CAPT curve.
+best-point selection. Identical repeated reference points from parallel jobs are
+collapsed only when the mechanism hash and all plotted measurements agree;
+all source model IDs remain recorded. Conflicting duplicates fail explicitly.
+More than one CAPT budget is needed for a CAPT curve.
 
 pair_pr_order.csv checks each pair's PR order at all piecewise ROC
 knots and one-sided limits, rather than a coarse recall grid (FPR numerical
@@ -935,12 +938,16 @@ nohup "$HOME/.venvs/capt12-b200/bin/python" -u tools/sweep_capt_frozen.py \
   --results outputs/mass_b200_pilot/results.csv \
   --native outputs/mass_b200_pilot/runs/525ea8ed0db8aa7d/native_runs/a6ccb2c3ce4d6ac7 \
   --data-root "$HOME/capt-12/data/CriteoPrivateAd_release/data" \
-  --epsilons 0.1,0.25,0.5,2,4 \
+  --epsilons 0.1,0.25,0.5,2,4 --solver-time-limit 30 \
   --output-dir outputs/criteo_capt_eau_sweep \
   > logs/criteo-capt-eau-sweep.log 2>&1 < /dev/null &
 ~~~
 
-This job uses CPU only. It reuses the original epsilon-1 result when producing
+This job uses CPU only. Each LP attempt has a configurable time limit before
+the existing IPM retry solves the identical LP; feasibility and optimality
+checks are preserved. Shared-support cutting planes are checkpointed per
+context. The original full-test logloss must reproduce before solving.
+It reuses the original epsilon-1 result when producing
 `comparison/`; new point results and all verified certificate bundles are saved
 separately. A nonblocking output lock prevents duplicate runs. Exact source/code
 identity is required when resuming, and completed points are reused. Changing

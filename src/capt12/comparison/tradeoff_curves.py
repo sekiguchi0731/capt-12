@@ -58,10 +58,26 @@ def parameter_traces(summary: pd.DataFrame, mass_axis: str = "m") -> pd.DataFram
             {**row, "trace_id": trace, "parameter": axis, "parameter_value": float(row[axis])}
         )
     result = pd.DataFrame(records).sort_values(["trace_id", "parameter_value", "model_id"])
-    if result.duplicated(["trace_id", "parameter_value"]).any():
-        raise ValueError(
-            "duplicate sweep parameter within a trace; separate differing training controls"
-        )
+    unique = []
+    for _, group in result.groupby(["trace_id", "parameter_value"], sort=False):
+        if len(group) > 1:
+            identity = "model_sha256" if group.method.iloc[0] == "mass12_raw" else "channel_sha256"
+            metrics = group[["mean_pair_eau", "worst_pair_eau", "empirical_log_loss"]].to_numpy(
+                float
+            )
+            if (
+                identity not in group
+                or group[identity].isna().any()
+                or group[identity].nunique() != 1
+                or not np.allclose(metrics, metrics[0], rtol=1e-12, atol=1e-12)
+            ):
+                raise ValueError(
+                    "duplicate sweep parameter with different mechanisms or measurements; select a consistent training/attack replicate"
+                )
+        representative = group.iloc[0].to_dict()
+        representative["replicated_model_ids"] = json.dumps(group.model_id.tolist())
+        unique.append(representative)
+    result = pd.DataFrame(unique)
     result["trace_position"] = result.groupby("trace_id").cumcount()
     return result
 

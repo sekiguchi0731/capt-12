@@ -142,3 +142,23 @@ def test_frozen_sweep_logloss_is_expected_loss_of_released_tokens():
         / 3
     )
     assert module.exact_logloss(channels, data) == pytest.approx(expected)
+
+
+def test_duplicate_references_from_parallel_jobs_keep_provenance_and_require_equal_measurements():
+    row = dict(
+        cell_id="c",
+        method="capt",
+        model_id="old",
+        target_epsilon=1,
+        channel_sha256="same",
+        mean_pair_eau=0.5,
+        worst_pair_eau=0.6,
+        empirical_log_loss=0.3,
+    )
+    frame = pd.DataFrame([row, {**row, "model_id": "new"}])
+    traces = parameter_traces(frame)
+    assert len(traces) == 1
+    assert set(__import__("json").loads(traces.replicated_model_ids.iloc[0])) == {"old", "new"}
+    for key, value in (("channel_sha256", "other"), ("mean_pair_eau", 0.51)):
+        with pytest.raises(ValueError, match="different mechanisms or measurements"):
+            parameter_traces(pd.DataFrame([row, {**row, "model_id": "new", key: value}]))
