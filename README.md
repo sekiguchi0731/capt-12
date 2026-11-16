@@ -779,7 +779,18 @@ Outputs include PR plots for equal-pair macro means, pointwise worst-pair
 envelopes and representative pairs chosen by calibration support. Worst
 envelopes may switch pair at each recall and do not describe one attacker.
 Scalar plots show EAU/AP versus CTR logloss, with mean and largest-pair EAU
-separated. pair_pr_order.csv checks each pair's PR order at all piecewise ROC
+separated. `eau_logloss_curve_*.pdf/png` additionally connects observed settings
+in parameter order (CAPT epsilon; MaSS `--mass-curve-axis m`, or `n`,
+`privacy_weight`, `utility_weight`, `temperature`). Each point is annotated.
+Other recorded MaSS training controls and both seeds remain fixed per trace.
+`tradeoff_points.csv` preserves order; `same_eau_logloss.csv` compares every
+intersection of the observed segments at a common EAU, only in the overlapping
+range. Lines and interpolated utilities are descriptive estimates, not newly
+trained mechanisms, attainable mixtures, or a confidence claim. Nonmonotonic
+folds and vertical portions are retained; there is no extrapolation or silent
+best-point selection. More than one CAPT budget is needed for a CAPT curve.
+
+pair_pr_order.csv checks each pair's PR order at all piecewise ROC
 knots and one-sided limits, rather than a coarse recall grid (FPR numerical
 tolerance 1e-10). dominance_summary.csv combines this descriptive PR order with
 logloss and reports counterexamples, without claiming population dominance.
@@ -798,8 +809,9 @@ training target as a certified epsilon.
 
 ### Rare-score events and exact MI-only counterexamples
 
-event_audit.csv evaluates extreme learned-score buckets (chosen without test
-labels) and the fixed-prior EAU decision event. Counts are recovered from
+event_audit.csv evaluates extreme learned-score buckets, cumulative upper/lower
+score tails at training-score ranks chosen without test labels, and the
+fixed-prior EAU decision event. Counts are recovered from
 cumulative ROC release counts. Simultaneous Clopper-Pearson intervals allocate
 `(1-confidence)/(4*N_events)` to each one-sided endpoint across **all** supplied
 cells, mechanisms, pairs and events. EAU intervals share this allocation.
@@ -813,8 +825,15 @@ denominator is flagged and its raw log ratio is missing: it never becomes a
 claim of infinite population epsilon. A zero lower bound proves no privacy.
 The selected events may miss other forms of leakage.
 
-The default comparison also writes simulation/; --no-simulation omits it.
-The simulation is independently available:
+`mass_capt_leakage_utility.csv` evaluates the actual trained models: does a
+simultaneous MaSS leakage **lower** witness exceed CAPT's reported certificate
+**upper** bound, and is CAPT's full-test logloss no higher? This can establish a
+separation conditional on the CAPT certificate assumptions and audit coverage.
+Two leakage lower bounds alone cannot order privacy. A failed separation test
+does not prove that MaSS is private. No favorable outcome is assumed.
+
+The generic MI counterexample is excluded by default. `--simulation` opts in;
+it is not evidence about trained MaSS on Criteo. The independent command is:
 
 ~~~bash
 nohup .venv/bin/capt12 simulate-mi-privacy-gap \
@@ -896,3 +915,69 @@ composition and is never folded into the main theorem. Criteo has no observed
 profile choices, so this diagnostic requires the deterministic synthetic
 user/epoch assignment utility. Empty profile `S=∅` is excluded unless an
 explicit API option includes it.
+
+### Fixed-design Criteo EAU/logloss sweep
+
+Reuse the transferred pilot encoder, CTR service, partition, decoder, design
+label summaries and certification confidence sets. Re-solve the actual CAPT LP
+for each epsilon, repair and independently verify all new certificates, then
+sample actual releases and train/evaluate the same attribute attacker. No
+encoder/CTR retraining or synthetic distribution is involved. Batch encoding
+retains compact Criteo records; test utility uses the complete D_test with the
+expectation of released-token logloss. MaSS is evaluated in its existing raw
+form. The source mechanism hash is checked against its certificate bundle.
+
+Run from the clean B200 checkout after pulling:
+
+~~~bash
+mkdir -p logs
+nohup "$HOME/.venvs/capt12-b200/bin/python" -u tools/sweep_capt_frozen.py \
+  --results outputs/mass_b200_pilot/results.csv \
+  --native outputs/mass_b200_pilot/runs/525ea8ed0db8aa7d/native_runs/a6ccb2c3ce4d6ac7 \
+  --data-root "$HOME/capt-12/data/CriteoPrivateAd_release/data" \
+  --epsilons 0.1,0.25,0.5,2,4 \
+  --output-dir outputs/criteo_capt_eau_sweep \
+  > logs/criteo-capt-eau-sweep.log 2>&1 < /dev/null &
+~~~
+
+This job uses CPU only. It reuses the original epsilon-1 result when producing
+`comparison/`; new point results and all verified certificate bundles are saved
+separately. A nonblocking output lock prevents duplicate runs. Exact source/code
+identity is required when resuming, and completed points are reused. Changing
+code or controls requires a fresh output directory.
+
+Add learned MaSS settings to improve coverage of the EAU range (50-epoch
+learning, pretrained embeddings, InfoNCE and CTR extension weight 0 retained).
+For an initial seed-0 grid, the following launches 3 m values at each n/weight
+combination, one process per selected B200 GPU, subject to available host RAM:
+
+~~~bash
+nohup "$HOME/.venvs/capt12-b200/bin/python" -u tools/launch_b200_replicates.py \
+  --gpus 0,1,2,3,4,5,6,7 --seeds 0 \
+  --useful-n-list 0.02,0.05,0.1,0.2 --utility-weights 1,10 \
+  --reserve-memory-gib 64 --output-root outputs/criteo_mass_eau_grid \
+  > logs/criteo-mass-eau-grid.log 2>&1 < /dev/null &
+~~~
+
+Reserve 64 GiB here for the concurrent CPU sweep. The launcher checks free host
+RAM and GPU usage, queues excess jobs and records failures in launch.json. It
+repeats deterministic frozen training per job with the same frozen seed. The
+CAPT sweep avoids this repetition by using the pilot's byte-identical files.
+Check all jobs succeeded before combining their results; do not infer MaSS
+privacy from missing settings. Replicate further seeds after this first grid.
+
+~~~bash
+results_args=(--results outputs/mass_b200_pilot/results.csv \
+              --results outputs/criteo_capt_eau_sweep/results.csv)
+for results_file in outputs/criteo_mass_eau_grid/seed-*/results.csv; do
+  results_args+=(--results "$results_file")
+done
+nohup "$HOME/.venvs/capt12-b200/bin/capt12" compare-attribute-privacy \
+  "${results_args[@]}" --mass-curve-axis n \
+  --output-dir outputs/criteo_eau_final \
+  > logs/criteo-eau-final.log 2>&1 < /dev/null &
+~~~
+
+Use the same completed pair intersection and prior across settings. A broad
+parameter grid is exploratory; successful privacy/utility ordering must be
+replicated on independent seeds/data before claiming a general advantage.

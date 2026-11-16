@@ -252,6 +252,7 @@ def test_comparison_cli_and_simulation_artifacts(tmp_path):
             str(output),
             "--prior",
             "0.2",
+            "--simulation",
         ],
     )
     assert result.exit_code == 0, result.output

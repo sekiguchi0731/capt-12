@@ -310,6 +310,7 @@ def compare_saved_privacy(
     confidence: float = 0.95,
     max_buckets: int = 16,
     min_test_count: int = 1,
+    mass_curve_axis: str = "m",
 ) -> Path:
     """No Criteo data or torch is needed: use saved release-count curves only."""
     precision_recall(pd.DataFrame({"tpr": [0, 1], "fpr": [0, 1]}), prior)
@@ -419,6 +420,21 @@ def compare_saved_privacy(
                     curve, int(pair.test_positive), int(pair.test_negative), max_buckets
                 )
                 bucket["event_type"] = "extreme_frozen_score_bucket"
+                # Tail unions can have substantially more power than a single
+                # output-score bucket. Select boundaries using trained score
+                # ranks only, never by their held-out counts.
+                levels = len(curve) - 1
+                ranks = np.unique(np.linspace(1, levels, min(max_buckets, levels), dtype=int))
+                tail = curve.iloc[ranks]
+                for complement in (False, True):
+                    bucket = pd.concat([bucket, pd.DataFrame({
+                        "score": tail.threshold.to_numpy(),
+                        "positive_successes": (int(pair.test_positive) - tail.tp if complement else tail.tp).to_numpy(),
+                        "negative_successes": (int(pair.test_negative) - tail.fp if complement else tail.fp).to_numpy(),
+                        "positive_trials": int(pair.test_positive),
+                        "negative_trials": int(pair.test_negative),
+                        "event_type": "frozen_score_lower_tail" if complement else "frozen_score_upper_tail",
+                    })], ignore_index=True)
                 boundary = np.log1p(-prior) - np.log(prior)
                 decision = curve.loc[curve.threshold >= boundary].iloc[-1]
                 bayes = pd.DataFrame(
@@ -548,6 +564,10 @@ def compare_saved_privacy(
             name = cell if len(batches) == 1 else f"{cell}_page{page + 1}"
             _pr_figures(batch, cell_common[cell], grids, output / "figures", name, prior)
     _scalar_figures(summary, output / "figures")
+    from capt12.comparison.tradeoff_curves import write_tradeoff_curves
+
+    write_tradeoff_curves(summary, output, mass_curve_axis)
+    _mass_capt_joint_comparison(audit, summary).to_csv(output / "mass_capt_leakage_utility.csv", index=False)
     _audit_figure(audit, summary, output / "figures")
     manifest = {
         "schema_version": 1,
@@ -575,10 +595,47 @@ def compare_saved_privacy(
         "eau_interval_scope": "same joint event-family confidence allocation as event audit",
         "coverage_interpretation": "unobserved/excluded pairs remain outside empirical comparison, not zero leakage",
         "true_infinite_epsilon_proven": False,
+        "mass_curve_axis": mass_curve_axis,
+        "same_eau_interpretation": "all intersections of parameter-ordered observed segments within their overlap; descriptive interpolation only, no extrapolation or envelope selection",
     }
     (output / "comparison.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     _write_report(summary, pd.DataFrame(coverage), pd.DataFrame(dominance), output, prior)
     return output
+
+
+def _mass_capt_joint_comparison(audit, summary):
+    """Separate MaSS lower witnesses from CAPT upper certificates.
+
+    Two lower bounds alone do not establish privacy ordering. The CAPT side
+    remains conditional on its certificate's sampling and shift assumptions.
+    """
+    records = []
+    for cell, frame in summary.groupby("cell_id"):
+        for capt in frame.loc[frame.method.eq("capt")].to_dict("records"):
+            valid = capt.get("certificate_valid") in (True, "True")
+            upper = float(capt.get("certified_upper_epsilon", np.nan))
+            for mass in frame.loc[frame.method.eq("mass12_raw")].to_dict("records"):
+                events = audit.loc[audit.model_id.eq(mass["model_id"])]
+                witness = events.loc[events.epsilon_lower.idxmax()]
+                separates = bool(valid and np.isfinite(upper) and witness.epsilon_lower > upper)
+                utility = bool(capt["empirical_log_loss"] <= mass["empirical_log_loss"])
+                records.append({
+                    "cell_id": cell, "capt_id": capt["model_id"], "mass_id": mass["model_id"],
+                    "mass_label": mass["label"], "capt_target_epsilon": capt["target_epsilon"],
+                    "capt_reported_certificate_valid": valid, "capt_certified_upper_epsilon": upper,
+                    "mass_epsilon_lower": witness.epsilon_lower, "witness_pair_id": witness.pair_id,
+                    "witness_event_type": witness.event_type, "witness_score": witness.score,
+                    "witness_positive_trials": witness.positive_trials,
+                    "witness_negative_trials": witness.negative_trials,
+                    "witness_positive_successes": witness.positive_successes,
+                    "witness_negative_successes": witness.negative_successes,
+                    "mass_lower_exceeds_capt_upper": separates,
+                    "capt_logloss_no_higher": utility,
+                    "mass_minus_capt_logloss": mass["empirical_log_loss"]-capt["empirical_log_loss"],
+                    "joint_separation_observed": separates and utility,
+                    "scope": "conditional on CAPT certificate assumptions and simultaneous held-out audit coverage; utility on full D_test",
+                })
+    return pd.DataFrame(records)
 
 
 def _audit_figure(audit, summary, output):
@@ -669,7 +726,9 @@ def _write_report(summary, coverage, dominance, output, prior):
         if len(dominance)
         else "No matching CAPT reference.",
         "",
-        "These results do not establish a population privacy guarantee for MaSS. The separate exact-distribution simulation demonstrates a limitation of MI-only requirements; it is not a trained-MaSS experiment.",
+        "The parameter-sweep EAU/logloss curves connect observed settings in parameter order. same_eau_logloss.csv retains every segment intersection in the overlapping EAU range. Interpolated utilities are descriptive estimates, not new trained settings; folds and vertical segments are retained and there is no extrapolation.",
+        "",
+        "mass_capt_leakage_utility.csv checks whether a MaSS simultaneous held-out leakage lower witness exceeds the reported CAPT certificate upper bound while CAPT has no higher full-test log loss. Comparing two audit lower bounds alone cannot establish privacy ordering. This check is conditional on the CAPT certificate assumptions. These results do not establish a population privacy guarantee for MaSS.",
         "",
     ]
     lines += ["## Figures", ""]
@@ -679,7 +738,7 @@ def _write_report(summary, coverage, dominance, output, prior):
             lines.append(f"- [{path.stem}]({path.relative_to(output).as_posix()})")
     lines += [
         "",
-        "Additional exact-distribution examples are generated in simulation/ by default.",
+        "The generic MI counterexample is excluded by default; it is not an actual MaSS/CAPT experiment.",
         "",
     ]
     (output / "report.md").write_text("\n".join(lines))

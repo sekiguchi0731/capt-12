@@ -733,7 +733,8 @@ def compare_attribute_privacy(
     confidence: float = typer.Option(0.95, "--confidence"),
     max_buckets: int = typer.Option(16, "--max-buckets", min=2),
     min_test_count: int = typer.Option(1, "--min-test-count", min=1),
-    simulation: bool = typer.Option(True, "--simulation/--no-simulation"),
+    simulation: bool = typer.Option(False, "--simulation/--no-simulation"),
+    mass_curve_axis: str = typer.Option("m", "--mass-curve-axis", help="Sweep axis: m, n, privacy_weight, utility_weight, temperature."),
 ) -> None:
     """PR/EAU/logloss and rare-event analysis of saved attacks; no training or Criteo loading."""
     from capt12.comparison.privacy_comparison import compare_saved_privacy
@@ -741,7 +742,8 @@ def compare_attribute_privacy(
 
     try:
         output = compare_saved_privacy(results, output_dir, prior=prior, confidence=confidence,
-                                       max_buckets=max_buckets, min_test_count=min_test_count)
+                                       max_buckets=max_buckets, min_test_count=min_test_count,
+                                       mass_curve_axis=mass_curve_axis)
         if simulation:
             run_mi_counterexample(output / "simulation")
     except (ValueError, AssertionError) as error:
