@@ -779,7 +779,13 @@ Outputs include PR plots for equal-pair macro means, pointwise worst-pair
 envelopes and representative pairs chosen by calibration support. Worst
 envelopes may switch pair at each recall and do not describe one attacker.
 Scalar plots show EAU/AP versus CTR logloss, with mean and largest-pair EAU
-separated. `eau_logloss_curve_*.pdf/png` additionally connects observed settings
+separated. The main `eau_logloss_curve_*.pdf/png` is one plot with mean
+pairwise EAU on x and CTR logloss on y, containing CAPT and MaSS together
+(and LDP as a reference). `eau_logloss_largest_*.pdf/png` is a separate
+supplementary plot. Mean is the equal-pair average across common evaluated
+attribute-value pairs/contexts; largest is their maximum point estimate, which
+can be noisy for small test groups. Neither aggregates across seeds, and the
+mean is not weighted by population group sizes. The curves connect observed settings
 in parameter order (CAPT epsilon; MaSS `--mass-curve-axis m`, or `n`,
 `privacy_weight`, `utility_weight`, `temperature`). Each point is annotated.
 Other recorded MaSS training controls and both seeds remain fixed per trace.
@@ -792,6 +798,14 @@ best-point selection. Identical repeated reference points from parallel jobs are
 collapsed only when the mechanism hash and all plotted measurements agree;
 all source model IDs remain recorded. Conflicting duplicates fail explicitly.
 More than one CAPT budget is needed for a CAPT curve.
+
+EAU can be recomputed from saved `attribute_attacks/` artifacts without
+retraining: `roc.csv` provides held-out TP/FP counts at frozen score thresholds,
+`pairs.csv` the group counts, and `attacker_scores.npz` validates the frozen
+rules (`summary.json` binds the mechanism/scope). Keep these artifacts with
+`results.csv`; the results CSV alone is insufficient for legacy runs and
+common-pair reaggregation. The command writes `pair_metrics.csv` and
+`mechanism_metrics.csv` with EAU and does not derive EAU from MI or CTR scores.
 
 pair_pr_order.csv checks each pair's PR order at all piecewise ROC
 knots and one-sided limits, rather than a coarse recall grid (FPR numerical

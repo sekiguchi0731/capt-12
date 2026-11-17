@@ -728,6 +728,8 @@ def _write_report(summary, coverage, dominance, output, prior):
         "",
         "The parameter-sweep EAU/logloss curves connect observed settings in parameter order. same_eau_logloss.csv retains every segment intersection in the overlapping EAU range. Interpolated utilities are descriptive estimates, not new trained settings; folds and vertical segments are retained and there is no extrapolation.",
         "",
+        "The main eau_logloss_curve figure uses one axis pair: mean pairwise EAU versus CTR logloss. Mean is the equal-pair average over the common evaluated attribute pairs/contexts. The separate supplementary eau_logloss_largest figure uses the largest observed pairwise EAU; small groups can make this maximum noisy. These aggregates are across pairs, not seeds, and the mean is not population-frequency weighted.",
+        "",
         "mass_capt_leakage_utility.csv checks whether a MaSS simultaneous held-out leakage lower witness exceeds the reported CAPT certificate upper bound while CAPT has no higher full-test log loss. Comparing two audit lower bounds alone cannot establish privacy ordering. This check is conditional on the CAPT certificate assumptions. These results do not establish a population privacy guarantee for MaSS.",
         "",
     ]

@@ -199,32 +199,39 @@ def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = 
     matched.to_csv(output / "same_eau_logloss.csv", index=False)
     colors = {"capt": "#2563A6", "mass12_raw": "#D97706", "optimal_ldp": "#666666"}
     for cell, frame in points.groupby("cell_id"):
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
-        for _, trace in frame.groupby("trace_id", sort=False):
-            first = trace.iloc[0]
-            label = (
-                (
-                    f"MaSS {mass_axis} sweep; "
-                    + ", ".join(
-                        f"{key.removeprefix('mass_')}={first[key]:g}"
-                        for key in (
-                            "mass_m",
-                            "mass_n",
-                            "mass_privacy_weight",
-                            "mass_utility_weight",
-                            "mass_seed",
+        for metric, stem, title in (
+            ("mean_pair_eau", "eau_logloss_curve", "EAU–logloss: CAPT vs MaSS"),
+            ("worst_pair_eau", "eau_logloss_largest", "Supplement: largest observed pairwise EAU"),
+        ):
+            fig, axis = plt.subplots(figsize=(8.8, 5.4))
+            method_traces = {}
+            for _, trace in frame.groupby("trace_id", sort=False):
+                first = trace.iloc[0]
+                style = method_traces.get(first.method, 0)
+                method_traces[first.method] = style + 1
+                label = (
+                    (
+                        f"MaSS {mass_axis} sweep; "
+                        + ", ".join(
+                            f"{key.removeprefix('mass_')}={first[key]:g}"
+                            for key in (
+                                "mass_m",
+                                "mass_n",
+                                "mass_privacy_weight",
+                                "mass_utility_weight",
+                                "mass_seed",
+                            )
+                            if key != f"mass_{mass_axis}" and key in first and pd.notna(first[key])
                         )
-                        if key != f"mass_{mass_axis}" and key in first and pd.notna(first[key])
                     )
+                    if first.method == "mass12_raw"
+                    else first.method.upper()
                 )
-                if first.method == "mass12_raw"
-                else first.method.upper()
-            )
-            for axis, metric in zip(axes, ("mean_pair_eau", "worst_pair_eau"), strict=True):
                 axis.plot(
                     trace[metric],
                     trace.empirical_log_loss,
-                    "o-",
+                    marker=("o", "s", "^", "D", "v", "P")[style % 6],
+                    linestyle=("-", "--", "-.", ":")[style % 4],
                     color=colors.get(first.method),
                     label=label,
                     linewidth=1.3,
@@ -239,34 +246,35 @@ def write_tradeoff_curves(summary: pd.DataFrame, output: Path, mass_axis: str = 
                         fontsize=7,
                         arrowprops={"arrowstyle": "-", "linewidth": 0.4, "alpha": 0.5},
                     )
-                axis.set(
-                    xlabel=("Mean" if metric.startswith("mean") else "Largest")
-                    + " pairwise EAU (lower is better)",
-                    ylabel="Held-out CTR log loss (lower is better)",
-                )
-                axis.grid(alpha=0.2)
-        handles, labels = axes[-1].get_legend_handles_labels()
-        fig.legend(
-            handles,
-            labels,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.055),
-            ncol=min(3, len(labels)),
-            fontsize=7,
-            frameon=False,
-        )
-        fig.suptitle("Observed parameter sweeps: CAPT vs MaSS")
-        fig.text(
-            0.5,
-            0.01,
-            "Lines follow parameter order; folds are retained. Segment interpolation is descriptive only.",
-            ha="center",
-            fontsize=8,
-        )
-        fig.tight_layout(rect=(0, 0.14 if len(labels) <= 6 else 0.2, 1, 0.95))
-        fig.canvas.draw()
-        for axis in axes:
+            axis.set(
+                xlabel=("Mean" if metric == "mean_pair_eau" else "Largest observed")
+                + " pairwise EAU (lower is better)",
+                ylabel="Held-out CTR log loss (lower is better)",
+                title=title,
+            )
+            axis.grid(alpha=0.2)
+            handles, labels = axis.get_legend_handles_labels()
+            columns = min(2, len(labels))
+            legend_rows = (len(labels) + columns - 1) // columns
+            fig.legend(
+                handles,
+                labels,
+                loc="lower center",
+                bbox_to_anchor=(0.5, 0.055),
+                ncol=columns,
+                fontsize=7,
+                frameon=False,
+            )
+            fig.text(
+                0.5,
+                0.01,
+                "Lines follow parameter order; segment interpolation is descriptive only.",
+                ha="center",
+                fontsize=8,
+            )
+            fig.tight_layout(rect=(0, 0.12 + 0.035 * legend_rows, 1, 1))
+            fig.canvas.draw()
             _place_labels(axis)
-        for ext in ("png", "pdf"):
-            fig.savefig(output / "figures" / f"eau_logloss_curve_{cell}.{ext}", dpi=180)
-        plt.close(fig)
+            for ext in ("png", "pdf"):
+                fig.savefig(output / "figures" / f"{stem}_{cell}.{ext}", dpi=180)
+            plt.close(fig)
