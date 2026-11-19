@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
+from scipy.special import xlogy
 from sklearn.cluster import KMeans
 
 
@@ -150,6 +151,68 @@ def weighted_cost_kmedoids(
     remap = np.empty(l_count, dtype=int)
     remap[label_order] = np.arange(l_count)
     return validate_partition(remap[assignment], k, l_count)
+
+
+def refine_context_entropy(
+    initial: np.ndarray,
+    counts: np.ndarray,
+    clicks: np.ndarray,
+    *,
+    max_sweeps: int = 100,
+) -> np.ndarray:
+    """Reduce D_design H(Y|C,B) by deterministic single-token relocations."""
+    counts = np.asarray(counts, dtype=float)
+    clicks = np.asarray(clicks, dtype=float)
+    if (
+        counts.ndim != 2 or clicks.shape != counts.shape or not counts.size
+        or not np.isfinite(counts).all() or not np.isfinite(clicks).all()
+        or (clicks < 0).any() or (counts < clicks).any()
+        or (counts != np.floor(counts)).any() or (clicks != np.floor(clicks)).any()
+    ):
+        raise ValueError("expected token-by-context design counts and click counts")
+    if max_sweeps < 1:
+        raise ValueError("max_sweeps must be positive")
+    blocks = int(np.max(initial)) + 1
+    assignment = validate_partition(initial, len(counts), blocks).copy()
+    members = np.bincount(assignment, minlength=blocks)
+    # Work with entropy times sample count. Zero-mass cells contribute zero.
+    labels = np.stack([clicks, counts - clicks], axis=-1)
+    totals = np.zeros((blocks, *labels.shape[1:]))
+    np.add.at(totals, assignment, labels)
+
+    def entropy_mass(hist):
+        mass = hist.sum(axis=-1, keepdims=True)
+        rates = np.divide(hist, mass, out=np.zeros_like(hist), where=mass > 0)
+        return -xlogy(hist, rates).sum(axis=(-1, -2))
+
+    costs = entropy_mass(totals)
+    tolerance = 32 * np.finfo(float).eps * max(1.0, counts.sum())
+    observed = np.flatnonzero(counts.sum(axis=1))
+    for _ in range(max_sweeps):
+        moved = False
+        for token in observed:
+            source = assignment[token]
+            if members[source] == 1:
+                continue
+            # All destination costs use the refitted CTR after adding the token.
+            row = labels[token]
+            insert_costs = entropy_mass(totals + row)
+            deltas = insert_costs - costs
+            remaining_cost = entropy_mass(totals[source] - row)
+            deltas[source] = costs[source] - remaining_cost
+            dest = int(np.argmin(deltas))
+            if deltas[dest] >= deltas[source] - tolerance:
+                continue
+            totals[source] -= row
+            totals[dest] += row
+            costs[source], costs[dest] = remaining_cost, insert_costs[dest]
+            members[source] -= 1
+            members[dest] += 1
+            assignment[token] = dest
+            moved = True
+        if not moved:
+            break
+    return assignment
 
 
 PARTITION_REGISTRY: dict[str, Callable] = {

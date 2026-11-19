@@ -298,3 +298,46 @@ def test_context_solver_applies_certified_convex_r_pooling(tmp_path) -> None:
     assert "[context_r_pooling_started]" in log
     assert log.count("[context_r_pooling_context_finished]") == 2
     assert "[context_r_pooling_finished]" in log
+
+
+def test_shared_entropy_partition_uses_within_context_label_counts():
+    # Every token has marginal CTR 0.5. Only the context-conditional CTR
+    # distinguishes the two useful blocks.
+    k = 6
+    index = np.arange(k)
+    weights = np.ones(k) / k
+    clicks = np.array([[0, 10], [10, 0]] * 3)
+    costs = np.abs(index[:, None] - index[None, :])
+    assignment = index // 3
+    frozen = {
+        "frequencies": weights,
+        "objective_weights": weights,
+        "token_scores": index / k,
+        "assignment": assignment,
+        "decoder": np.eye(2)[assignment].T / 3,
+        "representation_token_cost": costs,
+        "token_context_label_count": np.full_like(clicks, 10),
+        "token_context_label_sum": clicks,
+    }
+    name = "context_entropy_cost_medoid_L2"
+    config = {
+        "context_representation_mode": "objective_aligned",
+        "context_utility_objective": "empirical_logloss",
+        "context_designs": [name],
+    }
+    result = next(d for d in _build_designs(frozen, config) if d.name == name)
+    groups = result.assignment
+    np.testing.assert_array_equal(groups == groups[0], index % 2 == 0)
+    assert result.partition_method == "context_entropy"
+    assert result.decoder_method == "cost_medoid"
+    assert result.decoder.shape == (2, k)
+
+
+def test_entropy_partition_preserves_empty_cells_and_nonempty_blocks():
+    from capt12.partitions.registry import refine_context_entropy
+
+    initial = np.array([0, 0, 1, 2])
+    counts = np.array([[0, 0], [5, 0], [6, 0], [3, 0]])
+    np.testing.assert_array_equal(refine_context_entropy(initial, counts, counts), initial)
+    with pytest.raises(ValueError, match="click counts"):
+        refine_context_entropy(initial, counts, counts + 1)

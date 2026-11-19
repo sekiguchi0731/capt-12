@@ -1810,7 +1810,11 @@ def _write_report(
             "",
             "For empirical and hybrid objectives, the objective contains a channel-invariant empirical entropy term. Relative improvement is therefore normalized by the excess objective after subtracting that floor; this reporting transformation does not alter the LP or the released channel. Exact raw and excess values are saved in the aggregate and context tables.",
             "",
-            "In `objective_aligned` mode, the common partition/decoder cost is the context aggregation `C_repr(z,o) = sum_b P(b|z) C_b(z,o)`, while each public-context channel uses its corresponding `C_b`. In `teacher_kl_fixed` mode, the representation remains teacher-KL by design, providing the R-objective-only ablation.",
+            (
+                "The shared partition refines the cost-medoid initialization by reducing D_design H(Y|C,B) with block-specific CTRs in each public context. The decoder still uses the minimum-cost representative token in each block."
+                if metadata.get("partition_method") == "context_entropy"
+                else "In `objective_aligned` mode, the common partition/decoder cost is the context aggregation `C_repr(z,o) = sum_b P(b|z) C_b(z,o)`, while each public-context channel uses its corresponding `C_b`. In `teacher_kl_fixed` mode, the representation remains teacher-KL by design, providing the R-objective-only ablation."
+            ),
             "",
             "D_test ROC_AUC integrates pairwise ranks of independently released scores; PR_AUC is the Monte Carlo mean of finite-test-set Average Precision, with replicate values and Monte Carlo standard error saved. mean_score_* and calibration diagnostics use the expected prediction and are separate estimands. expected_randomized_log_loss averages per-output loss and remains the primary utility metric. These are frozen-reference diagnostics; no downstream model is retrained.",
             "",
@@ -2401,6 +2405,7 @@ def run_context_stratified_diagnostic(config: dict[str, Any]) -> Path:
         "public_context_column": context_column,
         "context_utility_objective": config["context_utility_objective"],
         "context_representation_mode": config["context_representation_mode"],
+        "partition_method": designs[0].partition_method,
         "representation_objective": designs[0].representation_objective,
         "representation_token_cost_hash": designs[0].representation_token_cost_hash,
         "hybrid_empirical_weight": config["hybrid_empirical_weight"],

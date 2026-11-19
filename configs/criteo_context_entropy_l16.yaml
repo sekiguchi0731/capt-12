@@ -1,0 +1,8 @@
+base_config: criteo_context_stratified.yaml
+output_dir: outputs/context_entropy_l16_runs
+K: 4096
+L: 16
+context_utility_objective: empirical_logloss
+context_representation_mode: objective_aligned
+context_designs: [context_entropy_cost_medoid_L16]
+ctr_ranking_mc_replicates: 32

@@ -241,12 +241,15 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if "context_designs" in cfg:
         context_designs = list(dict.fromkeys(map(str, cfg["context_designs"])))
         match = (
-            re.fullmatch(r"(joint_kmedoids_cost_medoid|singleton_identity)_L([1-9]\d*)", context_designs[0])
+            re.fullmatch(
+                r"(joint_kmedoids_cost_medoid|context_entropy_cost_medoid|singleton_identity)_L([1-9]\d*)",
+                context_designs[0],
+            )
             if len(context_designs) == 1 else None
         )
         if match is None or not 1 <= int(match[2]) <= 4096:
             raise ValueError(
-                "context_designs must select exactly one joint-kmedoids or singleton design with 1 <= L <= 4096"
+                "context_designs must select exactly one joint-kmedoids, context-entropy or singleton design with 1 <= L <= 4096"
             )
         if "K" in cfg and (
             int(match[2]) > cfg["K"]

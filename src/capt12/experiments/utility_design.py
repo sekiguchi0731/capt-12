@@ -34,7 +34,7 @@ from capt12.experiments.simplex_completion import (
 )
 from capt12.mechanisms.diagnostics import UtilityInformativeness, utility_informativeness
 from capt12.mechanisms.lp import solve_ldp_block_lp
-from capt12.partitions.registry import build_partition
+from capt12.partitions.registry import build_partition, refine_context_entropy
 from capt12.pipeline import record_source_provenance
 from capt12.privacy.adjacency import build_adjacency, disconnected_hybrid_components
 from capt12.utils.artifacts import environment, finish_run, prepare_run
@@ -131,7 +131,11 @@ def _build_designs(
     # change when moving between L=8, 16, and 32.
     selected = set(config.get("context_designs", []))
     block_counts = (
-        sorted(int(name.rsplit("_L", 1)[1]) for name in selected if name.startswith("joint_kmedoids_cost_medoid_L"))
+        sorted(
+            int(name.rsplit("_L", 1)[1])
+            for name in selected
+            if name.startswith(("joint_kmedoids_cost_medoid_L", "context_entropy_cost_medoid_L"))
+        )
         if selected else (8, 16, 32)
     )
     for block_count in block_counts:
@@ -144,11 +148,24 @@ def _build_designs(
             token_cost=token_cost,
             token_weights=objective_weights,
         )
+        design_name = f"joint_kmedoids_cost_medoid_L{block_count}"
+        label = f"Joint k-medoids (L={block_count})"
+        method = "weighted_cost_kmedoids"
+        entropy_name = f"context_entropy_cost_medoid_L{block_count}"
+        if entropy_name in selected:
+            joint_assignment = refine_context_entropy(
+                joint_assignment,
+                frozen_arrays["token_context_label_count"],
+                frozen_arrays["token_context_label_sum"],
+            )
+            design_name = entropy_name
+            label = f"Shared block CTR entropy (L={block_count})"
+            method = "context_entropy"
         raw.append(
             (
-                f"joint_kmedoids_cost_medoid_L{block_count}",
-                f"Joint k-medoids (L={block_count})",
-                "weighted_cost_kmedoids",
+                design_name,
+                label,
+                method,
                 "cost_medoid",
                 joint_assignment,
                 build_decoder(
