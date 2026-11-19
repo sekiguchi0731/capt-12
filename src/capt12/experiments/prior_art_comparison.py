@@ -612,7 +612,7 @@ def _native_rows(
         ldp_block = np.asarray(payload["ldp_channels"], dtype=float).copy()
     methods = {
         "capt": ("CAPT-12", capt_block),
-        "optimal_ldp": ("optimal LDP", ldp_block),
+        "optimal_ldp": ("Block LDP (fixed cost)", ldp_block),
     }
     boxes, adjacency, groups = _boxes_by_context(
         config, native_path, data, target_epsilon=target_epsilon

@@ -237,7 +237,7 @@ def _main_publication_figure(frame: pd.DataFrame, output: Path) -> tuple[Path, P
                     linewidth=2.1,
                     label=label,
                 )
-        axis.axhline(0, color=_METHOD_COLORS["optimal_ldp"], linewidth=1.2, label="optimal LDP")
+        axis.axhline(0, color=_METHOD_COLORS["optimal_ldp"], linewidth=1.2, label="Block LDP (fixed cost)")
         axis.axvline(1.0, color="#9CA3AF", linestyle="--", linewidth=1)
         axis.set_xlabel("Actual robust certified upper ε")
         axis.set_ylabel(r"$10^6(\mathrm{LogLoss}_{LDP}-\mathrm{LogLoss}_{method})$")

@@ -56,7 +56,7 @@ def default_method_contracts(*, token_count: int = 4096) -> list[MethodContract]
         ),
         MethodContract(
             "optimal_ldp",
-            "optimal LDP",
+            "Block LDP (fixed cost)",
             "epsilon-local differential privacy",
             ("Z", "B", "S"),
             False,

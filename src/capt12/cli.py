@@ -1745,6 +1745,24 @@ def context_fixed_global_token_ldp(
     )
 
 
+@app.command("fixed-capt-ctr-comparison")
+def fixed_capt_ctr_comparison(
+    certificate: Path = typer.Option(..., "--certificate", exists=True, dir_okay=False),
+    settings: Path = typer.Option(..., "--settings", exists=True, dir_okay=False),
+    output: Path = typer.Option(..., "--output", dir_okay=False),
+    data_root: Path | None = typer.Option(None, "--data-root", exists=True, file_okay=False),
+) -> None:
+    """Compare a certified context CAPT with CTR-optimal original-token LDP."""
+    from capt12.experiments.fixed_capt_ctr_comparison import (
+        ComparisonSettings,
+        run_fixed_capt_ctr_comparison,
+    )
+
+    run_fixed_capt_ctr_comparison(certificate, ComparisonSettings.read(settings), output,
+                                  data_root=data_root)
+    typer.echo(output)
+
+
 @app.command("context-cost-global-ldp-figures")
 def context_cost_global_ldp_figures(
     cost_comparison_dirs: list[Path] = typer.Option(
