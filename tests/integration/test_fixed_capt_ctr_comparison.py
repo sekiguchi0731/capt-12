@@ -191,7 +191,7 @@ def test_k64_fixed_capt_ctr_pilot(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             },
         },
     )
-    certificate_path = tmp_path / "certificate.json"
+    certificate_path = tmp_path / "certificate-pilot-context-00.json"
     certificate.write(certificate_path)
     initial_hash = sha256_file(certificate_path)
     requested_days = []
@@ -216,7 +216,7 @@ def test_k64_fixed_capt_ctr_pilot(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         "predictor_train_days: [19]\npredictor_validation_days: [22]\n"
         "raw_shift_tv: 0.0\niid_utility_target: true\n"
     )
-    output = tmp_path / "comparison.json"
+    output = tmp_path / "comparison" / "context-00.json"
     cli = CliRunner().invoke(
         app,
         [
@@ -239,6 +239,34 @@ def test_k64_fixed_capt_ctr_pilot(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert calibration["beta_R"] < calibration["tv_budget"] <= calibration["uniform_budget"]
     assert calibration["uniform_method"].endswith("outer_bound_for_intersection")
     assert report["capt_fixed_reference_test_log_loss"] > 0
+
+    diagnostic_loads = []
+
+    def record_diagnostic(**kwargs):
+        diagnostic_loads.append(tuple(kwargs["days"]))
+        assert (22 in kwargs["days"]) == ("y" in kwargs["columns"])
+        return load(**kwargs)
+
+    monkeypatch.setattr(experiment, "load_parquet_sample", record_diagnostic)
+    diagnostic = tmp_path / "theory"
+    original_result_hash = sha256_file(output)
+    cli = CliRunner().invoke(
+        app,
+        ["fixed-capt-theory", "--results", str(output.parent), "--output", str(diagnostic)],
+        catch_exceptions=False,
+    )
+    assert cli.exit_code == 0, cli.output
+    assert diagnostic_loads == [(19,), (22,), (25,)]
+    audited = json.loads((diagnostic / "theory.json").read_text())
+    (row,) = audited["contexts"]
+    assert row["public_context_value"] == "ctx"
+    assert row["context_index"] == 0
+    assert row["validation_weight"] == 1
+    assert abs(row["decomposition_residual"]) < 1e-12
+    assert row["d_capt_lower"] == report["capt_validation_plugin_bayes_bounds"][0]
+    assert row["population_decision"] == "population_inconclusive"  # original budget was 0.75
+    assert sha256_file(certificate_path) == initial_hash
+    assert sha256_file(output) == original_result_hash
     # The laws are known for this fixture, so we can evaluate population Bayes
     # values independently of the split-derived estimates and confidence bounds.
     capt = FixedBlocks.from_arrays(assignment, channel)

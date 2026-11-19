@@ -176,21 +176,12 @@ def _json_finite(value):
     return value
 
 
-def run_fixed_capt_ctr_comparison(
-    certificate_path: Path,
-    settings: ComparisonSettings,
-    output: Path,
-    *,
-    data_root: Path | None = None,
-) -> dict:
-    started = time.perf_counter()
+def _verified_fixed_channel(certificate_path: Path):
     verification = verify_certificate(certificate_path)
     if not verification.valid:
         raise ValueError(f"CAPT certificate failed verification: {verification.worst_case}")
     certificate = Certificate.read(certificate_path)
     config = certificate.resolved_config
-    splits = certificate.split_identifiers
-    settings.validate(splits)
     if (
         config.get("dataset") != "criteo"
         or config.get("public_context_policy") != "stratified"
@@ -201,31 +192,6 @@ def run_fixed_capt_ctr_comparison(
     ):
         raise ValueError("expected one verified repaired Criteo context with bound runtime models")
 
-    profile = config["profiles"][0]
-    context_column = config["context_cols"][0]
-    context = str(config["public_context_value"])
-    id_col, user_col = config.get("id_col", "id"), config.get("user_col", "user_id")
-    label = config.get("label_col", "is_clicked")
-    attributes = profile.split("+")
-    columns = list(
-        dict.fromkeys(
-            [
-                id_col,
-                user_col,
-                *attributes,
-                context_column,
-                *config.get("phi_source_cols", []),
-            ]
-        )
-    )
-    if label in columns:
-        raise ValueError("privacy calibration and encoding cannot depend on the click label")
-    if data_root is None:
-        data_root = Path(config["data_root"])
-    files = certificate_path.parent / "models"
-    mapper = joblib.load(files / "category_mapper.joblib")
-    encoder = joblib.load(files / "encoder.joblib")
-    reference = ReferenceModel.load(files / "reference.joblib")
     assignment = np.asarray(certificate.assignment, dtype=int)
     k = len(assignment)
     if not 1 <= k <= 4096:
@@ -240,43 +206,97 @@ def run_fixed_capt_ctr_comparison(
     beta = _certified_block_beta(capt, boxes, edges)
     if beta > certificate.target_epsilon:
         raise ValueError("normalized fixed channel exceeds the certificate's scalar target")
+    return certificate, capt, boxes, edges, beta
+
+
+def _fixed_input_columns(config):
+    id_col, user_col = config.get("id_col", "id"), config.get("user_col", "user_id")
+    categories = list(dict.fromkeys([*config["profiles"][0].split("+"), *config["context_cols"]]))
+    columns = list(
+        dict.fromkeys([id_col, user_col, *categories, *config.get("phi_source_cols", [])])
+    )
+    if config.get("label_col", "is_clicked") in columns:
+        raise ValueError("privacy calibration and encoding cannot depend on the click label")
+    return columns
+
+
+def _load_selected_displays(data_root, days, columns, mapper, *, id_col, user_col, seen_ids):
+    frame = load_parquet_sample(data_root=data_root, columns=columns, days=days)
+    if frame.empty or set(frame["day_int"]) != set(days):
+        raise ValueError(f"missing or empty source days: {days}")
+    if frame[[id_col, user_col]].isna().any().any():
+        raise ValueError("display and user identifiers must be present")
+    ids = pd.Index(frame[id_col].astype(str))
+    if ids.has_duplicates or not ids.intersection(seen_ids).empty:
+        raise ValueError("duplicate display ID within or across loaded splits")
+    selected = select_one_display_per_user_day(
+        mapper.transform(frame),
+        user_col=user_col,
+        day_col="day_int",
+        id_col=id_col,
+    )
+    return selected, seen_ids.append(ids)
+
+
+def _check_context_groups(frame, attributes, profile, context, group_keys):
+    observed_groups = {
+        Group(profile, values, context).key()
+        for values in frame[attributes].drop_duplicates().itertuples(index=False, name=None)
+    }
+    if observed_groups - group_keys:
+        raise ValueError("selected context contains groups outside the verified attribute domain")
+
+
+def _encode_tokens(encoder, frame, k):
+    tokens = np.asarray(encoder.transform(frame), dtype=int) if len(frame) else np.empty(0, int)
+    if tokens.shape != (len(frame),) or (tokens < 0).any() or (tokens >= k).any():
+        raise ValueError("frozen encoder produced tokens outside the certified alphabet")
+    return tokens
+
+
+def run_fixed_capt_ctr_comparison(
+    certificate_path: Path,
+    settings: ComparisonSettings,
+    output: Path,
+    *,
+    data_root: Path | None = None,
+) -> dict:
+    started = time.perf_counter()
+    certificate, capt, boxes, edges, beta = _verified_fixed_channel(certificate_path)
+    config = certificate.resolved_config
+    splits = certificate.split_identifiers
+    settings.validate(splits)
+    profile = config["profiles"][0]
+    context_column = config["context_cols"][0]
+    context = str(config["public_context_value"])
+    id_col, user_col = config.get("id_col", "id"), config.get("user_col", "user_id")
+    label = config.get("label_col", "is_clicked")
+    attributes = profile.split("+")
+    columns = _fixed_input_columns(config)
+    if data_root is None:
+        data_root = Path(config["data_root"])
+    files = certificate_path.parent / "models"
+    mapper = joblib.load(files / "category_mapper.joblib")
+    encoder = joblib.load(files / "encoder.joblib")
+    reference = ReferenceModel.load(files / "reference.joblib")
+    assignment = capt.assignment
+    k = len(assignment)
     seen_ids = pd.Index([], dtype=str)
 
     def load(days, *, utility: bool):
         nonlocal seen_ids
-        frame = load_parquet_sample(
-            data_root=data_root,
-            columns=[*columns, label] if utility else columns,
-            days=days,
-        )
-        if frame.empty or set(frame["day_int"]) != set(days):
-            raise ValueError(f"missing or empty source days: {days}")
-        if frame[[id_col, user_col]].isna().any().any():
-            raise ValueError("display and user identifiers must be present")
-        ids = pd.Index(frame[id_col].astype(str))
-        if ids.has_duplicates or not ids.intersection(seen_ids).empty:
-            raise ValueError("duplicate display ID within or across loaded splits")
-        seen_ids = seen_ids.append(ids)
-        frame = mapper.transform(frame)
-        frame = select_one_display_per_user_day(
-            frame,
-            user_col=user_col,
-            day_col="day_int",
+        frame, seen_ids = _load_selected_displays(
+            data_root,
+            days,
+            [*columns, label] if utility else columns,
+            mapper,
             id_col=id_col,
+            user_col=user_col,
+            seen_ids=seen_ids,
         )
         frame = frame.loc[frame[context_column].astype(str) == context].reset_index(drop=True)
-        observed_groups = {
-            Group(profile, values, context).key()
-            for values in frame[attributes].drop_duplicates().itertuples(index=False, name=None)
-        }
-        if observed_groups - boxes.keys():
-            raise ValueError(
-                "selected context contains groups outside the verified attribute domain"
-            )
-        tokens = np.asarray(encoder.transform(frame), dtype=int) if len(frame) else np.empty(0, int)
-        if tokens.shape != (len(frame),) or (tokens < 0).any() or (tokens >= k).any():
-            raise ValueError("frozen encoder produced tokens outside the certified alphabet")
-        return frame, tokens
+        _check_context_groups(frame, attributes, profile, context, boxes.keys())
+        return frame, _encode_tokens(encoder, frame, k)
 
     def utility_counts(days):
         frame, tokens = load(days, utility=True)

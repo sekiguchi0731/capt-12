@@ -1763,6 +1763,31 @@ def fixed_capt_ctr_comparison(
     typer.echo(output)
 
 
+@app.command("fixed-capt-theory")
+def fixed_capt_theory(
+    results: Path = typer.Option(..., "--results", exists=True, file_okay=False),
+    output: Path = typer.Option(..., "--output", file_okay=False),
+    certificate_dir: Path | None = typer.Option(
+        None, "--certificate-dir", exists=True, file_okay=False,
+    ),
+    data_root: Path | None = typer.Option(None, "--data-root", exists=True, file_okay=False),
+    cross_initial: float = typer.Option(2.0, "--cross-initial"),
+    cross_cap: float = typer.Option(16.0, "--cross-cap"),
+    cross_tolerance: float = typer.Option(0.001, "--cross-tolerance"),
+    grid_subdivisions: int = typer.Option(1, "--grid-subdivisions", min=1, max=8),
+    batch_size: int = typer.Option(16384, "--batch-size", min=1),
+) -> None:
+    """Audit fixed CAPT Bayes loss and LDP crossings on validation data."""
+    from capt12.experiments.fixed_capt_theory import TheorySearch, run_fixed_capt_theory
+
+    run_fixed_capt_theory(
+        results, output, certificate_dir=certificate_dir, data_root=data_root,
+        search=TheorySearch(cross_initial, cross_cap, cross_tolerance),
+        grid_subdivisions=grid_subdivisions, batch_size=batch_size,
+    )
+    typer.echo(output / "report.md")
+
+
 @app.command("context-cost-global-ldp-figures")
 def context_cost_global_ldp_figures(
     cost_comparison_dirs: list[Path] = typer.Option(

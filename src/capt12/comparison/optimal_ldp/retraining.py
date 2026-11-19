@@ -71,12 +71,17 @@ class FixedBlocks:
             counts, self.assignment, len(self.rows)
         )
 
-    def exact_output_joint(self, counts: np.ndarray) -> Joint:
-        bins = joint_probabilities(_by_input(counts, self.assignment, len(self.rows)))
+    def exact_input_joint(self, counts: np.ndarray) -> Joint:
+        return joint_probabilities(_by_input(counts, self.assignment, len(self.rows)))
+
+    def release_joint(self, bins: Joint) -> Joint:
         return tuple(
             tuple(sum(p[y] * w for p, w in zip(bins, column, strict=True)) for y in (0, 1))
             for column in zip(*self.rows, strict=True)
         )
+
+    def exact_output_joint(self, counts: np.ndarray) -> Joint:
+        return self.release_joint(self.exact_input_joint(counts))
 
 
 Channel = FixedBlocks | RandomizedResponse

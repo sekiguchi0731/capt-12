@@ -239,16 +239,33 @@ def _grid_laws(joint: Joint, grid: Sequence[float]) -> tuple[Joint, Joint, np.nd
     return upgraded, tuple((a, b) for a, b in bins), assignment
 
 
+@dataclass(frozen=True)
+class CTRGrid:
+    """A fixed pair of comparison laws, reusable across privacy budgets."""
+
+    upgraded: Joint
+    bins: Joint
+    assignment: np.ndarray
+
+    @classmethod
+    def from_joint(cls, joint: Joint, grid: Sequence[float]) -> CTRGrid:
+        return cls(*_grid_laws(joint, grid))
+
+    def bounds(self, epsilon: float) -> GridResult:
+        lower = _spr(self.upgraded, epsilon).lower
+        upper = _spr(self.bins, epsilon)
+        return GridResult(
+            lower,
+            upper.upper,
+            RandomizedResponse(
+                upper.channel.assignment[self.assignment], upper.channel.outputs, epsilon
+            ),
+        )
+
+
 def grid_bounds(weights: np.ndarray, epsilon: float, grid: Sequence[float]) -> GridResult:
     """Upgraded grid provides the lower bound, binned input the upper bound."""
-    upgraded, bins, assignment = _grid_laws(joint_probabilities(weights), grid)
-    lower = _spr(upgraded, epsilon).lower
-    upper = _spr(bins, epsilon)
-    return GridResult(
-        lower,
-        upper.upper,
-        RandomizedResponse(upper.channel.assignment[assignment], upper.channel.outputs, epsilon),
-    )
+    return CTRGrid.from_joint(joint_probabilities(weights), grid).bounds(epsilon)
 
 
 def bayes_loss_bounds(joint: Joint) -> tuple[float, float]:

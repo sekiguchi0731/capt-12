@@ -62,3 +62,35 @@ uv run pytest -q -s tests/integration/test_fixed_capt_ctr_comparison.py
 | 一律較正の保守値 | 0.526062 | 0.593195 | 0.596662 | +0.065067 | 0.559546 |
 
 いずれのLDP下限もCAPT上限を下回り、3比較とも統計的判定は未確定だった。合成分布での最適値と、有限標本で得られる結論は区別して解釈する。
+
+## 固定CAPTの理論診断
+
+保存済みの比較JSONと認証済みチャネルから、同じ抽出方法で検証データの
+元トークンとクリックの同時度数を再現する。全体の損失は各文脈の検証件数で
+加重し、文脈ごとにLDPのチャネル・予測器を最適化する。訓練日とテスト日は
+件数の照合に使い、クリックラベルは検証日から取得する。
+
+```bash
+uv run capt12 fixed-capt-theory \
+  --results outputs/fixed_capt_ctr \
+  --certificate-dir /path/to/mechanism-run \
+  --data-root data/CriteoPrivateAd_release/data \
+  --output outputs/fixed_capt_theory
+```
+
+証明書の保存場所が比較JSONに記録されたパスと同じ場合は、`--certificate-dir`
+を省略できる。移動した場合は同じファイル名とハッシュの証明書を含む
+ディレクトリを指定する。各文脈の証明書、実際の公開文脈値、検証件数を照合し、
+検証0件の文脈を集約から除く。結果は新規ディレクトリの `contexts.csv`、
+`theory.json`、`report.md` に出力する。
+
+予算1での判定は、CAPTの認証予算と、方向付き丸めを含む経験Bayes損失の
+境界を使う。交差点は独立した下側・上側の判定を二分探索する。
+`--cross-initial`、`--cross-cap`、`--cross-tolerance` で探索範囲と刻みを指定できる。
+`epsilon_cross_upper: null` は探索で有限上界を得られなかったことを表す。
+`epsilon_cross_status: infinite` は検証分布上で有限の交差点が存在しないことを表す。
+`empirical_win_interval_empty: null` は空かどうか未確定。
+格子は既存比較の設定を使用し、`--grid-subdivisions 4` などで細分化できる。
+
+母集団の勝敗欄は経験分布の判定とは独立している。予算1の既存の統計的区間があれば
+文脈別に引き継ぐ。複数文脈を同時に覆う全体の母集団区間は別途構成が必要になる。
