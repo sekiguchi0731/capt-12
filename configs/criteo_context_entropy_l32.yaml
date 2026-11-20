@@ -3,4 +3,5 @@ output_dir: outputs/context_entropy_l32_runs
 K: 4096
 L: 32
 epsilon: 1.0
+time_limit: 300
 context_designs: [context_entropy_cost_medoid_L32]
