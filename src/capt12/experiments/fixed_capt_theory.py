@@ -282,7 +282,10 @@ def _load_bundle(saved, bundle, settings):
                 )
             ):
                 raise ValueError(f"saved result does not bind verified certificate {path.name}")
-            budgets = {name: float(old["comparisons"][name]["lambda"]) for name in METHODS}
+            if old.get("status") == "skipped":
+                budgets = {name: float(old["ldp_budgets"][name]) for name in METHODS}
+            else:
+                budgets = {name: float(old["comparisons"][name]["lambda"]) for name in METHODS}
         else:
             # Without a saved calibrated result, reconstruct the same fallback
             # only for a run that did not use raw-token shift information.
@@ -421,6 +424,12 @@ def run_fixed_capt_theory(
         old = cell["saved"]
         if old is not None and sizes != old["utility_sample_sizes"]:
             raise ValueError(f"sample counts differ from saved result at context {context}")
+        if old is not None and old.get("status") == "skipped":
+            empty = {split for split, n in sizes.items() if n == 0}
+            if not empty or empty != set(old["empty_splits"]):
+                raise ValueError(f"invalid skipped comparison for context {context}")
+            # Validation-only theory can still be evaluated without a fitted predictor.
+            old = None
         row = {
             "context_index": cell["index"],
             "public_context_value": context,

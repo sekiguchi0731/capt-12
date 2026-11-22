@@ -45,7 +45,7 @@ class ComparisonSettings:
     predictor_validation_days: tuple[int, ...]
     eta: float = 0.01
     pseudocounts: tuple[float, ...] = (1, 10, 100)
-    ctr_grid: tuple[float, ...] = tuple(i / 16 for i in range(17))
+    ctr_grid: tuple[float, ...] = tuple(i / 64 for i in range(65))
     exact_max_k: int = 64
     exact_calibration_limit: int = 12
     raw_shift_tv: float | None = None
@@ -75,6 +75,12 @@ class ComparisonSettings:
             raise ValueError("exact_max_k must be in [0,64]; exact_calibration_limit in [0,16]")
         if not 2 <= len(self.ctr_grid) <= 65:
             raise ValueError("ctr_grid needs between 2 and 65 points")
+        if (
+            self.ctr_grid[0] != 0
+            or self.ctr_grid[-1] != 1
+            or not all(a < b for a, b in zip(self.ctr_grid[:-1], self.ctr_grid[1:], strict=True))
+        ):
+            raise ValueError("CTR grid must be strictly increasing from 0 to 1")
         if self.raw_shift_tv is not None and not 0 <= self.raw_shift_tv <= 1:
             raise ValueError("raw_shift_tv must be null or in [0,1]")
         if not isinstance(self.iid_utility_target, bool) or any(
@@ -397,6 +403,99 @@ def run_fixed_capt_ctr_comparison(
     }
     train = utility_counts(settings.predictor_train_days)
     validation = utility_counts(settings.predictor_validation_days)
+    privacy_alpha = float(config["alpha_cert"]) + (settings.alpha_raw_calibration if balls else 0)
+    common = dict(
+        certificate=str(certificate_path.resolve()),
+        certificate_sha256=sha256_file(certificate_path),
+        certificate_source_git_sha=certificate.code_git_sha,
+        evaluation_source_git_sha=git_sha(),
+        data_root=str(data_root.resolve()),
+        profile=profile,
+        context_column=context_column,
+        context=context,
+        K=k,
+        L=len(parent.rows),
+        capt_mechanism=mechanism,
+        capt_output_count=len(capt.rows),
+        population="selected Criteo log user-days in the fixed context with the specified profile applied",
+        observed_profile_selection=False,
+        sampling_unit="one stable-hash-selected display per user-day before public context filtering",
+        online_memoization="single release utility; online reuses the first release per epoch/profile/context",
+        utility_assumption=(
+            "conditionally iid selected user-days in validation and test from the same target law"
+            if settings.iid_utility_target
+            else "empirical temporal holdout only"
+        ),
+        splits={
+            **splits,
+            "D_predict_train": settings.predictor_train_days,
+            "D_predict_validation": settings.predictor_validation_days,
+        },
+        settings=asdict(settings),
+        calibration={
+            **asdict(calibration),
+            "beta_R": beta,
+            "beta_R_basis": "upper-rounded common scalar over reconstructed block confidence sets",
+            "uncertainty_sets": (
+                "certified block-set token preimages intersected with simultaneous raw-token TV balls"
+                if balls
+                else "full original-token preimages of verified block confidence sets"
+            ),
+            "raw_shift_assumption": settings.raw_shift_tv,
+            "cert_group_sizes": cert_sizes,
+            "attribute_edges": certificate.adjacency,
+            "attribute_bound_alpha": privacy_alpha,
+            "verified_block_confidence_methods": sorted({box.method for box in boxes.values()}),
+            "block_shift_tv": certificate.tv_radius,
+        },
+        simultaneous_error_upper=(
+            min(1.0, privacy_alpha + settings.alpha_test + settings.alpha_utility)
+            if settings.iid_utility_target
+            else None
+        ),
+    )
+    train_n, validation_n = int(train.sum()), int(validation.sum())
+    fitted_seconds = 0.0
+
+    def save(result, test):
+        result = {**common, **result}
+        result.update(
+            utility_sample_sizes={
+                "train": train_n,
+                "validation": validation_n,
+                "test": int(test.sum()),
+            },
+            timings_seconds={
+                "verification_and_calibration": calibrated_seconds,
+                "predictor_fit_and_validation": fitted_seconds,
+            },
+            elapsed_seconds=time.perf_counter() - started,
+        )
+        result = _json_finite(result)
+        payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x" if binary else "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        return result
+
+    def skip(test):
+        sizes = {"train": train_n, "validation": validation_n, "test": int(test.sum())}
+        empty = [name for name, count in sizes.items() if count == 0]
+        record = dict(
+            status="skipped",
+            skip_reason="empty_utility_split",
+            empty_splits=empty,
+            comparisons={},
+            ldp_budgets=budgets,
+            simultaneous_error_upper=None,
+        )
+        if binary:
+            record["binary_channel"] = binary_metadata
+        # No joint privacy/utility claim for a skipped comparison.
+        return save(record, test)
+
+    if train_n == 0 or validation_n == 0:
+        return skip(utility_counts(splits["D_test"]))
     fitted = prepare_comparison(
         capt,
         budgets,
@@ -415,6 +514,8 @@ def run_fixed_capt_ctr_comparison(
     scores = reference.predict(pd.DataFrame({"__token__": np.arange(k), context_column: context}))
     # Load D_test only after all privacy, mechanism, CTR and smoothing choices.
     test = utility_counts(splits["D_test"])
+    if not test.any():
+        return skip(test)
     result = evaluate_comparison(
         fitted,
         test,
@@ -446,81 +547,15 @@ def run_fixed_capt_ctr_comparison(
                 test_plugin_v_z_minus_fitted_capt=asdict(vz.minus(fitted_test)),
                 test_plugin_v_z_minus_capt_bayes=asdict(vz.minus(info.entropy_release)),
             )
-    privacy_alpha = float(config["alpha_cert"]) + (settings.alpha_raw_calibration if balls else 0)
     result.update(
-        certificate=str(certificate_path.resolve()),
-        certificate_sha256=sha256_file(certificate_path),
-        certificate_source_git_sha=certificate.code_git_sha,
-        evaluation_source_git_sha=git_sha(),
-        data_root=str(data_root.resolve()),
-        profile=profile,
-        context_column=context_column,
-        context=context,
-        K=k,
-        L=len(parent.rows),
-        capt_mechanism=mechanism,
-        capt_output_count=len(capt.rows),
-        population="selected Criteo log user-days in the fixed context with the specified profile applied",
-        observed_profile_selection=False,
-        sampling_unit="one stable-hash-selected display per user-day before public context filtering",
-        online_memoization="single release utility; online reuses the first release per epoch/profile/context",
-        utility_assumption=(
-            "conditionally iid selected user-days in validation and test from the same target law"
-            if settings.iid_utility_target
-            else "empirical temporal holdout only"
-        ),
-        splits={
-            **splits,
-            "D_predict_train": settings.predictor_train_days,
-            "D_predict_validation": settings.predictor_validation_days,
-        },
-        utility_sample_sizes={
-            "train": int(train.sum()),
-            "validation": int(validation.sum()),
-            "test": int(test.sum()),
-        },
-        settings=asdict(settings),
-        timings_seconds={
-            "verification_and_calibration": calibrated_seconds,
-            "predictor_fit_and_validation": fitted_seconds,
-        },
-        calibration={
-            **asdict(calibration),
-            "beta_R": beta,
-            "beta_R_basis": "upper-rounded common scalar over reconstructed block confidence sets",
-            "uncertainty_sets": (
-                "certified block-set token preimages intersected with simultaneous raw-token TV balls"
-                if balls
-                else "full original-token preimages of verified block confidence sets"
-            ),
-            "raw_shift_assumption": settings.raw_shift_tv,
-            "cert_group_sizes": cert_sizes,
-            "attribute_edges": certificate.adjacency,
-            "attribute_bound_alpha": privacy_alpha,
-            "verified_block_confidence_methods": sorted({box.method for box in boxes.values()}),
-            "block_shift_tv": certificate.tv_radius,
-        },
-        simultaneous_error_upper=(
-            min(1.0, privacy_alpha + settings.alpha_test + settings.alpha_utility)
-            if settings.iid_utility_target
-            else None
-        ),
+        status="evaluated",
         capt_fixed_reference_test_log_loss=fixed_reference_loss(
-            parent,
-            np.asarray(certificate.decoder),
-            scores,
-            test,
+            parent, np.asarray(certificate.decoder), scores, test
         ),
-        elapsed_seconds=time.perf_counter() - started,
     )
     if binary:
         result["parent_fixed_reference_test_log_loss"] = result[
             "capt_fixed_reference_test_log_loss"
         ]
         result["capt_fixed_reference_test_log_loss"] = None
-    result = _json_finite(result)
-    payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x" if binary else "w", encoding="utf-8") as fh:
-        fh.write(payload)
-    return result
+    return save(result, test)

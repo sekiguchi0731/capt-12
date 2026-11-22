@@ -13,6 +13,10 @@ Parquetの配置が証明書作成時と違う場合は `--data-root` に同じ�
 
 ## 二値CAPTのテスト評価
 
+LDPのCTR格子は既定で0から1までの65点（間隔1/64）。学習時の格子近似と評価時の最適損失の上下界に共通で使う。YAMLの `ctr_grid` を明示すれば以前の格子も再現できる。
+
+対象contextを抽出した後、予測器学習・検証・テストのいずれかが0件なら、CLIは `SKIPPED` を表示して正常終了する。JSONには `status: skipped`、`empty_splits`、各分割の `utility_sample_sizes` を保存する。損失の集計には評価済みのcontextだけを使う。元データの日付欠落や認証エラーは失敗として報告する。
+
 同じコマンドに `--mechanism binary-direct-cp` を指定すると、元の分割を使って二値チャネルを新しく設計する。既定の `--mechanism fixed` は証明書に保存されたチャネルを使う。次はリポジトリ直下から1文脈を評価する例。
 
 ```bash

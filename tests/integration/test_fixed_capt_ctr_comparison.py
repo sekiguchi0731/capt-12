@@ -370,6 +370,84 @@ def test_k64_fixed_capt_ctr_pilot(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         checked["contexts"][0]["d_capt_upper"] == binary["capt_validation_plugin_bayes_bounds"][1]
     )
 
+    # A missing context is different from an unreadable or absent source day.
+    for mode, empty_days, expected in [
+        ("binary-direct-cp", {19, 22, 25}, ["train", "validation", "test"]),
+        ("binary-direct-cp", {22}, ["validation"]),
+        ("fixed", {19}, ["train"]),
+        ("fixed", {25}, ["test"]),
+    ]:
+
+        def filter_context(*, days, empty_days=empty_days, **kwargs):
+            frame = load(days=days, **kwargs)
+            if set(days) & empty_days:
+                frame["B"] = "different-context"
+            return frame
+
+        monkeypatch.setattr(experiment, "load_parquet_sample", filter_context)
+        monkeypatch.setattr(experiment, "prepare_comparison", prepare)
+        skipped_output = tmp_path / f"empty-{expected[0]}-{mode}" / output.name
+        skip_args = [
+            "fixed-capt-ctr-comparison",
+            "--mechanism",
+            mode,
+            "--certificate",
+            str(certificate_path),
+            "--settings",
+            str(settings),
+            "--output",
+            str(skipped_output),
+        ]
+        cli = CliRunner().invoke(app, skip_args, catch_exceptions=False)
+        assert cli.exit_code == 0 and "SKIPPED" in cli.output
+        skipped = json.loads(skipped_output.read_text())
+        assert skipped["status"] == "skipped" and skipped["empty_splits"] == expected
+        assert skipped["utility_sample_sizes"] == {
+            name: (0 if name in expected else count)
+            for name, count in report["utility_sample_sizes"].items()
+        }
+        assert not skipped["comparisons"] and "capt_test_log_loss" not in skipped
+        if expected == ["test"]:
+            # This one-context certificate fixture has no certificate for the
+            # other context used above. Supply its already checked split counts.
+            validation_counts = np.zeros_like(test_counts)
+            np.add.at(validation_counts, (frames[22]["z"], frames[22]["y"]), 1)
+            monkeypatch.setattr(
+                "capt12.experiments.fixed_capt_theory._collect_selected_counts",
+                lambda *a, sizes=skipped["utility_sample_sizes"], counts=validation_counts, **kw: (
+                    {"ctx": sizes},
+                    {"ctx": counts},
+                ),
+            )
+            cli = CliRunner().invoke(
+                app,
+                [
+                    "fixed-capt-theory",
+                    "--results",
+                    str(skipped_output.parent),
+                    "--output",
+                    str(tmp_path / "theory-without-test"),
+                ],
+                catch_exceptions=False,
+            )
+            assert cli.exit_code == 0
+            row = json.loads((tmp_path / "theory-without-test/theory.json").read_text())[
+                "contexts"
+            ][0]
+            assert row["status"] == "evaluated" and not row["has_saved_comparison"]
+
+    monkeypatch.setattr(experiment, "load_parquet_sample", lambda **kwargs: pd.DataFrame())
+    with pytest.raises(ValueError, match="missing or empty source days"):
+        CliRunner().invoke(app, skip_args, catch_exceptions=False)
+
+
+def test_fixed_ctr_config_matches_uniform_default():
+    default = experiment.ComparisonSettings((19,), (22,))
+    config = Path(__file__).resolve().parents[2] / "configs/fixed_capt_ctr_comparison.yaml"
+    expected = np.linspace(0, 1, 65)
+    np.testing.assert_array_equal(default.ctr_grid, expected)
+    np.testing.assert_array_equal(experiment.ComparisonSettings.read(config).ctr_grid, expected)
+
 
 def test_k4096_grid_kernel_only():
     rng = np.random.default_rng(4096)

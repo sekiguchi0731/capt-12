@@ -1767,10 +1767,12 @@ def fixed_capt_ctr_comparison(
         run_fixed_capt_ctr_comparison,
     )
 
-    run_fixed_capt_ctr_comparison(
+    result = run_fixed_capt_ctr_comparison(
         certificate, ComparisonSettings.read(settings), output,
         data_root=data_root, mechanism=mechanism.value,
     )
+    if result["status"] == "skipped":
+        typer.echo(f"SKIPPED context={result['context']} empty={','.join(result['empty_splits'])}")
     typer.echo(output)
 
 
