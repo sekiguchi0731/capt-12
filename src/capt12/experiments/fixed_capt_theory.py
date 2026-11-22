@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from capt12.comparison.optimal_ldp.calibration import calibrate
+from capt12.comparison.optimal_ldp.retraining import FixedBlocks
 from capt12.comparison.optimal_ldp.theory import (
     Bounds,
     empirical_decision,
@@ -29,6 +30,7 @@ from capt12.comparison.optimal_ldp.theory import (
 )
 from capt12.experiments.fixed_capt_ctr_comparison import (
     ComparisonSettings,
+    _binary_from_certificate,
     _check_context_groups,
     _encode_tokens,
     _fixed_input_columns,
@@ -127,6 +129,8 @@ def _read_result_files(results_dir: Path) -> dict:
         saved[index] = json.loads(path.read_text(encoding="utf-8"))
     first = next(iter(saved.values()))
     for doc in saved.values():
+        if doc.get("capt_mechanism", "fixed") != first.get("capt_mechanism", "fixed"):
+            raise ValueError("context results mix different CAPT mechanisms")
         if any(
             doc[key] != first[key]
             for key in (
@@ -248,6 +252,19 @@ def _load_bundle(saved, bundle, settings):
         ):
             raise ValueError(f"mismatched shared inputs in {path.name}")
         old = saved.get(idx)
+        if first.get("capt_mechanism") == "binary-direct-cp":
+            binary, _, eps_cert, metadata = _binary_from_certificate(
+                path, certificate, channel, adjacency
+            )
+            if old and any(
+                old["binary_channel"][key] != _json_finite(value) for key, value in metadata.items()
+            ):
+                raise ValueError(f"saved binary candidate differs from reconstructed {path.name}")
+            high = set(metadata["high_blocks"])
+            # Keep C as the original partition in the information decomposition.
+            channel = FixedBlocks(
+                channel.assignment, tuple(binary.rows[int(c in high)] for c in range(len(channel.rows)))
+            )
         if old is not None:
             existing_splits = {key: old["splits"][key] for key in first_cert.split_identifiers}
             if (
@@ -460,6 +477,7 @@ def run_fixed_capt_theory(
         row["validation_weight"] = row["validation_n"] / aggregate["validation_n"]
         row["test_share_all_certified_contexts"] = row["test_n"] / all_test if all_test else None
     summary = {
+        "capt_mechanism": first.get("capt_mechanism", "fixed"),
         "K": first["K"],
         "L": first["L"],
         "profile": first["profile"],
@@ -535,7 +553,7 @@ def _report(summary: dict) -> str:
         "",
         "## 全体集約",
         "",
-        f"K={summary['K']}、L={summary['L']}。検証日 {summary['validation_days']} の "
+        f"方式 `{summary['capt_mechanism']}`、K={summary['K']}、元分割 L={summary['L']}。検証日 {summary['validation_days']} の "
         f"**{aggregate['validation_n']:,} ユーザー日**を、文脈ごとの検証件数の比で加重した。"
         f"テスト日 {summary['test_days']} の {summary['test_n_all_certified_contexts']:,} 件は件数照合と内訳に使った。"
         "CAPTとLDPの損失は同じ検証分布で計算した。",

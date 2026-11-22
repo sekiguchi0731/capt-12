@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import asdict
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,11 @@ from capt12.pipeline import run_pipeline
 from capt12.utils.artifacts import capt12_source_root
 
 app = typer.Typer(no_args_is_help=True, help="CAPT-12 reproducible research CLI")
+
+
+class CTRMechanism(StrEnum):
+    fixed = "fixed"
+    binary_direct_cp = "binary-direct-cp"
 
 
 def _load(path: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1751,6 +1757,9 @@ def fixed_capt_ctr_comparison(
     settings: Path = typer.Option(..., "--settings", exists=True, dir_okay=False),
     output: Path = typer.Option(..., "--output", dir_okay=False),
     data_root: Path | None = typer.Option(None, "--data-root", exists=True, file_okay=False),
+    mechanism: CTRMechanism = typer.Option(
+        CTRMechanism.fixed, "--mechanism", help="Saved channel or two-output direct CP channel."
+    ),
 ) -> None:
     """Compare a certified context CAPT with CTR-optimal original-token LDP."""
     from capt12.experiments.fixed_capt_ctr_comparison import (
@@ -1758,8 +1767,10 @@ def fixed_capt_ctr_comparison(
         run_fixed_capt_ctr_comparison,
     )
 
-    run_fixed_capt_ctr_comparison(certificate, ComparisonSettings.read(settings), output,
-                                  data_root=data_root)
+    run_fixed_capt_ctr_comparison(
+        certificate, ComparisonSettings.read(settings), output,
+        data_root=data_root, mechanism=mechanism.value,
+    )
     typer.echo(output)
 
 

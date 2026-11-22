@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -15,13 +15,21 @@ import pandas as pd
 import yaml
 
 from capt12.certification.artifact import Certificate, _rebuild_boxes, verify_certificate
+from capt12.comparison.binary_capt import design_label_counts, fit_binary_capt
 from capt12.comparison.optimal_ldp.calibration import TokenTVBall, calibrate
 from capt12.comparison.optimal_ldp.numeric import ONE, UP, decimal_ratio, float_bound, log_bound
 from capt12.comparison.optimal_ldp.retraining import (
     FixedBlocks,
     evaluate_comparison,
+    fit_ctr,
+    fixed_predictor_loss_bounds,
     fixed_reference_loss,
     prepare_comparison,
+)
+from capt12.comparison.optimal_ldp.theory import (
+    Bounds,
+    empirical_ldp_oracle,
+    information_decomposition,
 )
 from capt12.data.loader import assert_disjoint_splits, load_parquet_sample
 from capt12.data.preprocessing import build_group_histograms
@@ -220,6 +228,45 @@ def _fixed_input_columns(config):
     return columns
 
 
+def _binary_from_certificate(path, certificate, parent, edges):
+    if certificate.confidence["coverage_basis"] != "finite_sample" or certificate.tv_radius:
+        raise ValueError("binary-direct-cp requires finite-sample counts and zero block TV shift")
+    config = certificate.resolved_config
+    design_path = path.parent / "mechanism/frozen_design.npz"
+    design_hash = sha256_file(design_path)
+    manifest = path.parent / "sol_review_bundle_manifest.json"
+    if manifest.is_file():
+        for item in json.loads(manifest.read_text())["files"]:
+            if item["path"] == "mechanism/frozen_design.npz" and item["sha256"] != design_hash:
+                raise ValueError("frozen D_design table differs from the source run manifest")
+    design = design_label_counts(
+        design_path, str(config["public_context_value"]), parent.assignment, len(parent.rows)
+    )
+    candidate = fit_binary_capt(
+        parent.assignment, design, certificate.histogram_counts, edges, float(config["alpha_cert"])
+    )
+    # Verify each ordered edge at its declared target, including heterogeneous budgets.
+    beta = 0.0
+    for target in sorted({e.epsilon for e in edges}):
+        bound = _certified_block_beta(
+            candidate.channel, candidate.boxes, [e for e in edges if e.epsilon == target]
+        )
+        if bound > target:
+            raise ValueError("binary CAPT failed exact verification of normalized rows")
+        beta = max(beta, bound)
+    metadata = {
+        "high_blocks": candidate.high_blocks,
+        "probability_of_one_low_high": candidate.probabilities,
+        "design_sha256": design_hash,
+        "design_displays": int(design.sum()),
+        "split": "D_design",
+        "threshold_family_size": max(1, len(parent.rows) - 1),
+        "alpha_context": float(config["alpha_cert"]),
+        "confidence_method": "simultaneous two-cell Clopper-Pearson over groups and thresholds",
+    }
+    return candidate.channel, candidate.boxes, beta, metadata
+
+
 def _load_selected_displays(data_root, days, columns, mapper, *, id_col, user_col, seen_ids):
     frame = load_parquet_sample(data_root=data_root, columns=columns, days=days)
     if frame.empty or set(frame["day_int"]) != set(days):
@@ -260,12 +307,23 @@ def run_fixed_capt_ctr_comparison(
     output: Path,
     *,
     data_root: Path | None = None,
+    mechanism: str = "fixed",
 ) -> dict:
     started = time.perf_counter()
-    certificate, capt, boxes, edges, beta = _verified_fixed_channel(certificate_path)
+    if mechanism not in {"fixed", "binary-direct-cp"}:
+        raise ValueError(f"unknown CAPT mechanism: {mechanism}")
+    binary = mechanism == "binary-direct-cp"
+    if binary and output.exists():
+        raise FileExistsError(f"binary comparison requires a new output file: {output}")
+    certificate, parent, boxes, edges, beta = _verified_fixed_channel(certificate_path)
     config = certificate.resolved_config
     splits = certificate.split_identifiers
     settings.validate(splits)
+    capt = parent
+    if binary:
+        capt, boxes, beta, binary_metadata = _binary_from_certificate(
+            certificate_path, certificate, parent, edges
+        )
     profile = config["profiles"][0]
     context_column = config["context_cols"][0]
     context = str(config["public_context_value"])
@@ -299,16 +357,19 @@ def run_fixed_capt_ctr_comparison(
         return frame, _encode_tokens(encoder, frame, k)
 
     def utility_counts(days):
-        frame, tokens = load(days, utility=True)
-        labels = frame[label].to_numpy()
-        if not np.isin(labels, [0, 1]).all():
-            raise ValueError("utility requires binary click labels")
-        return np.bincount(2 * tokens + labels.astype(int), minlength=2 * k).reshape(k, 2)
+        counts = np.zeros((k, 2), dtype=np.int64)
+        for day in days:
+            frame, tokens = load([day], utility=True)
+            labels = frame[label].to_numpy()
+            if not np.isin(labels, [0, 1]).all():
+                raise ValueError("utility requires binary click labels")
+            counts += np.bincount(2 * tokens + labels.astype(int), minlength=2 * k).reshape(k, 2)
+        return counts
 
     balls, cert_sizes = None, None
     if settings.raw_shift_tv is not None and edges:
         frame, tokens = load(splits["D_cert"], utility=False)
-        balls, cert_sizes = _token_balls(frame, tokens, certificate, settings, assignment)
+        balls, cert_sizes = _token_balls(frame, tokens, certificate, settings, parent.assignment)
         del frame, tokens
     calibration = calibrate(
         beta,
@@ -320,6 +381,14 @@ def run_fixed_capt_ctr_comparison(
             balls is not None and not _balls_respect_block_boxes(balls, boxes, assignment)
         ),
     )
+    if binary and not balls and edges and min(np.bincount(assignment, minlength=2)) >= 2:
+        # For either group, any allowed event masses can be lifted onto a
+        # different representative token in each bin. Disjoint support attains 1.
+        calibration = replace(
+            calibration,
+            tv_method="exact_disjoint_token_preimages",
+            uniform_method="exact_disjoint_token_preimages",
+        )
     calibrated_seconds = time.perf_counter() - started
     budgets = {
         "equal_epsilon": float(config["epsilon"]),
@@ -338,6 +407,10 @@ def run_fixed_capt_ctr_comparison(
         pseudocounts=settings.pseudocounts,
         eta=settings.eta,
     )
+    if binary:
+        parent_predictor = fit_ctr(
+            parent, train, validation, pseudocounts=settings.pseudocounts, eta=settings.eta
+        )
     fitted_seconds = time.perf_counter() - started - calibrated_seconds
     scores = reference.predict(pd.DataFrame({"__token__": np.arange(k), context_column: context}))
     # Load D_test only after all privacy, mechanism, CTR and smoothing choices.
@@ -353,6 +426,26 @@ def run_fixed_capt_ctr_comparison(
         comparison["common_attribute_beta_uniformly_guaranteed"] = (
             name != "equal_epsilon" or budgets[name] <= calibration.uniform_budget
         )
+    if binary:
+        info = information_decomposition(test, capt)
+        oracle = empirical_ldp_oracle(info, settings.ctr_grid, settings.exact_max_k)
+        fitted_test = Bounds(
+            *fixed_predictor_loss_bounds(fitted.capt, capt.exact_output_joint(test))
+        )
+        result.update(
+            binary_channel={**binary_metadata, "fitted_output_ctr": fitted.capt.ctr.tolist()},
+            parent_retrained_test_log_loss=parent_predictor.loss(test),
+            test_plugin_capt_bayes=asdict(info.entropy_release),
+        )
+        for name, comparison in result["comparisons"].items():
+            vz = oracle(budgets[name])
+            comparison.update(
+                test_ldp_fitted_minus_capt_fitted=comparison["ldp_test_log_loss"]
+                - result["capt_test_log_loss"],
+                test_plugin_v_z=asdict(vz),
+                test_plugin_v_z_minus_fitted_capt=asdict(vz.minus(fitted_test)),
+                test_plugin_v_z_minus_capt_bayes=asdict(vz.minus(info.entropy_release)),
+            )
     privacy_alpha = float(config["alpha_cert"]) + (settings.alpha_raw_calibration if balls else 0)
     result.update(
         certificate=str(certificate_path.resolve()),
@@ -364,7 +457,9 @@ def run_fixed_capt_ctr_comparison(
         context_column=context_column,
         context=context,
         K=k,
-        L=len(capt.rows),
+        L=len(parent.rows),
+        capt_mechanism=mechanism,
+        capt_output_count=len(capt.rows),
         population="selected Criteo log user-days in the fixed context with the specified profile applied",
         observed_profile_selection=False,
         sampling_unit="one stable-hash-selected display per user-day before public context filtering",
@@ -402,7 +497,7 @@ def run_fixed_capt_ctr_comparison(
             "cert_group_sizes": cert_sizes,
             "attribute_edges": certificate.adjacency,
             "attribute_bound_alpha": privacy_alpha,
-            "verified_block_confidence_methods": certificate.confidence["methods"],
+            "verified_block_confidence_methods": sorted({box.method for box in boxes.values()}),
             "block_shift_tv": certificate.tv_radius,
         },
         simultaneous_error_upper=(
@@ -411,15 +506,21 @@ def run_fixed_capt_ctr_comparison(
             else None
         ),
         capt_fixed_reference_test_log_loss=fixed_reference_loss(
-            capt,
+            parent,
             np.asarray(certificate.decoder),
             scores,
             test,
         ),
         elapsed_seconds=time.perf_counter() - started,
     )
+    if binary:
+        result["parent_fixed_reference_test_log_loss"] = result[
+            "capt_fixed_reference_test_log_loss"
+        ]
+        result["capt_fixed_reference_test_log_loss"] = None
     result = _json_finite(result)
     payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(payload)
+    with output.open("x" if binary else "w", encoding="utf-8") as fh:
+        fh.write(payload)
     return result

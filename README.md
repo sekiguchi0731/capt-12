@@ -435,7 +435,9 @@ reference-score surrogate; downstream CTR or auction utility is not claimed.
 The `capt12 fixed-capt-ctr-comparison` command loads a verified, repaired CAPT
 channel for one public context and refits CTR predictors. It reports equal-ε,
 TV-calibrated, and uniform-calibrated original-token LDP with SPR or grid
-bounds. See the [protocol, settings, and synthetic pilot](docs/fixed_capt_ctr_comparison.md).
+bounds. Use `--mechanism binary-direct-cp` to evaluate a new two-output threshold channel
+on the same partition, including held-out fitted losses and bounds on the test-distribution
+LDP optimum. See the [protocol, settings, and synthetic pilot](docs/fixed_capt_ctr_comparison.md).
 
 ## Prior-art comparison with neural MaSS
 

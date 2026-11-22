@@ -301,6 +301,75 @@ def test_k64_fixed_capt_ctr_pilot(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         )
     )
 
+    # A new channel uses only the frozen design table and D_cert group counts.
+    # Its test comparator and reference decoder have different output alphabets.
+    np.savez(
+        manifest_path.parent / "frozen_design.npz",
+        context_levels=["ctx"],
+        token_context_label_count=np.full((k, 1), 100),
+        token_context_label_sum=np.rint(100 * ctr[:, None]),
+    )
+    monkeypatch.setattr(experiment, "load_parquet_sample", record_load)
+    requested_days.clear()
+    binary_output = tmp_path / "binary" / output.name
+    args = [
+        "fixed-capt-ctr-comparison",
+        "--mechanism",
+        "binary-direct-cp",
+        "--certificate",
+        str(certificate_path),
+        "--settings",
+        str(settings),
+        "--output",
+        str(binary_output),
+    ]
+    assert CliRunner().invoke(app, args, catch_exceptions=False).exit_code == 0
+    assert requested_days == [(13,), (19,), (22,), (25,)]
+    binary = json.loads(binary_output.read_text())
+    assert binary["capt_mechanism"] == "binary-direct-cp"
+    assert binary["binary_channel"]["high_blocks"] == [1]
+    assert binary["binary_channel"]["threshold_family_size"] == 1
+    assert binary["calibration"]["beta_R"] <= certificate.target_epsilon
+    assert len(binary["binary_channel"]["fitted_output_ctr"]) == 2
+    assert binary["parent_retrained_test_log_loss"] == report["capt_test_log_loss"]
+    assert (
+        binary["parent_fixed_reference_test_log_loss"]
+        == report["capt_fixed_reference_test_log_loss"]
+    )
+    assert binary["capt_fixed_reference_test_log_loss"] is None
+    test_counts = np.zeros((k, 2), dtype=np.int64)
+    np.add.at(test_counts, (frames[25]["z"], frames[25]["y"]), 1)
+    upper_bayes = binary["test_plugin_capt_bayes"]["upper"]
+    assert binary["capt_test_log_loss"] >= upper_bayes - 1e-14
+    for row in binary["comparisons"].values():
+        oracle = solve_spr(test_counts, row["lambda"]).estimate
+        assert row["test_plugin_v_z"]["lower"] <= oracle <= row["test_plugin_v_z"]["upper"]
+        gap = oracle - binary["capt_test_log_loss"]
+        assert row["test_plugin_v_z_minus_fitted_capt"]["lower"] <= gap + 1e-14
+        assert row["test_plugin_v_z_minus_fitted_capt"]["upper"] >= gap - 1e-14
+    assert CliRunner().invoke(app, args).exit_code != 0
+    assert sha256_file(certificate_path) == initial_hash
+
+    binary_theory = tmp_path / "binary-theory"
+    monkeypatch.setattr(experiment, "load_parquet_sample", record_diagnostic)
+    cli = CliRunner().invoke(
+        app,
+        [
+            "fixed-capt-theory",
+            "--results",
+            str(binary_output.parent),
+            "--output",
+            str(binary_theory),
+        ],
+        catch_exceptions=False,
+    )
+    assert cli.exit_code == 0
+    checked = json.loads((binary_theory / "theory.json").read_text())
+    assert checked["capt_mechanism"] == "binary-direct-cp"
+    assert (
+        checked["contexts"][0]["d_capt_upper"] == binary["capt_validation_plugin_bayes_bounds"][1]
+    )
+
 
 def test_k4096_grid_kernel_only():
     rng = np.random.default_rng(4096)

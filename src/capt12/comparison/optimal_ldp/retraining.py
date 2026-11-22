@@ -154,6 +154,30 @@ def fit_ctr(
     return min(candidates, key=lambda item: item.validation_log_loss)
 
 
+def _cross_entropy_bound(joint, scores, ctx) -> Decimal:
+    other = DOWN if ctx is UP else UP
+    total = ZERO
+    for (a, b), score in zip(joint, scores, strict=True):
+        p = Decimal.from_float(float(score))
+        loss_zero = log_bound(other.subtract(ONE, p), other).copy_negate()
+        loss_one = log_bound(p, other).copy_negate()
+        total = ctx.add(total, ctx.add(ctx.multiply(a, loss_zero), ctx.multiply(b, loss_one)))
+    return total
+
+
+def fixed_predictor_loss_bounds(model: Predictor, joint: Joint) -> tuple[float, float]:
+    """Expected loss of frozen CTR scores on an exact output-label law."""
+    return tuple(
+        float_bound(
+            _cross_entropy_bound(
+                [tuple(decimal_ratio(x, ctx) for x in row) for row in joint], model.ctr, ctx
+            ),
+            ctx,
+        )
+        for ctx in (DOWN, UP)
+    )
+
+
 def _mean_loss_upper(model: Predictor, counts: np.ndarray) -> Decimal:
     channel = model.channel
     if isinstance(channel, FixedBlocks):
@@ -178,13 +202,7 @@ def _mean_loss_upper(model: Predictor, counts: np.ndarray) -> Decimal:
             )
             for row in bins
         ]
-    total = ZERO
-    for (a, b), score in zip(joint, model.ctr, strict=True):
-        p = Decimal.from_float(float(score))
-        loss_zero = log_bound(DOWN.subtract(ONE, p), DOWN).copy_negate()
-        loss_one = log_bound(p, DOWN).copy_negate()
-        total = UP.add(total, UP.add(UP.multiply(a, loss_zero), UP.multiply(b, loss_one)))
-    return total
+    return _cross_entropy_bound(joint, model.ctr, UP)
 
 
 def _hoeffding(n: int, alpha: float, *, two_sided: bool = False) -> Decimal:

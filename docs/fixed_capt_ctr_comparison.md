@@ -11,6 +11,28 @@ uv run capt12 fixed-capt-ctr-comparison \
 
 Parquetの配置が証明書作成時と違う場合は `--data-root` に同じスナップショットの配置先を指定する。設定例では時系列ホールドアウトの経験損失を出す。母集団の信頼限界は、下記の標本仮定が妥当な対象に対して `iid_utility_target: true` を設定した場合に出す。複数の文脈や証明書を同時に主張する場合は、対象を事前に決め、全対象に誤認証確率を配分する。
 
+## 二値CAPTのテスト評価
+
+同じコマンドに `--mechanism binary-direct-cp` を指定すると、元の分割を使って二値チャネルを新しく設計する。既定の `--mechanism fixed` は証明書に保存されたチャネルを使う。次はリポジトリ直下から1文脈を評価する例。
+
+```bash
+uv run capt12 fixed-capt-ctr-comparison --mechanism binary-direct-cp \
+  --certificate outputs/context_entropy_l32_runs/8ee23db7e6b8e659/certificate-context_entropy_cost_medoid_L32-context-00.json \
+  --settings configs/fixed_capt_ctr_comparison.yaml \
+  --data-root data/CriteoPrivateAd_release/data \
+  --output outputs/binary_direct_cp_test/context-00.json
+```
+
+元ランの `mechanism/frozen_design.npz` の設計日表示数・クリック数から、文脈内でブロックをCTR順に並べる。同率は元ブロック番号順、設計0件のブロックには順位付け用の値0.5を使う。各閾値の上下について、元証明書の `D_cert` 属性群別カウントを2セルに集計し、文脈の誤り確率を全保護群・2セル・全閾値に配分したClopper–Pearson区間を作る。未観測群は完全単体とする。閾値ごとに2通りの公開確率を計算し、設計損失が最小の候補を選び、各順序付き辺で元のプライバシー予算を満たすことを再検算する。対象は統計的認証カウントとブロックTVシフト0の元証明書。結果JSONに選ばれたブロック、公開確率、学習済み出力CTR、設計ファイルのSHA-256が入る。
+
+指定例では予測器を19–21日で学習し、22–24日で平滑化を選び、25–30日のテスト表示で出力確率に関する期待log lossを取る。二値CAPT、元の固定CAPT、各LDPに共通の条件を使う。
+
+- `capt_test_log_loss` は二値CAPT、`parent_retrained_test_log_loss` は元の固定CAPT、各予算の `ldp_test_log_loss` は学習日に設計したLDPと学習済み予測器の損失。
+- `test_plugin_v_z` は、固定した予算でテスト経験分布上の元トークン最適LDP損失を挟んだ区間。`test_plugin_v_z_minus_fitted_capt` の下端が正なら、学習済みCAPT予測器がこの経験分布の最適LDPを上回る。`test_plugin_v_z_minus_capt_bayes` は、CAPTの出力CTRも同じ経験分布で最適化した場合の差。どちらの区間も数値的な上下界である。
+- 母集団に対する結果は `population_decision` を参照する。多数の文脈を集約するときは学習済み予測器のテスト損失をテスト件数で重み付けする。過去の結果を見て採用した方式の追試には、未使用期間を確保する。
+
+二値評価には新規の出力ファイルを指定する。元証明書は分割と認証カウントの出典であり、選択した二値チャネルの属性上界は結果JSONの `calibration.beta_R` に保存する。`fixed-capt-theory` に二値評価だけを含む結果ディレクトリを渡すと、同じ二値候補を再構成して検証分布での理論診断を実行する。
+
 ## 属性予算
 
 - `beta_R` は、証明書が再構成したブロック信頼集合と順序付き辺から、固定CAPTの最悪の尤度比を再計算して上方丸めした共通スカラー。入力行は保存された重みをカテゴリ確率として解釈する。元トークン集合からブロックへの像がブロック信頼集合の部分集合なら、この値は両機構に課す共通の許容上限になる。
