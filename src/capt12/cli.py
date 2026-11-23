@@ -1751,6 +1751,34 @@ def context_fixed_global_token_ldp(
     )
 
 
+@app.command("criteo-replication-plan")
+def criteo_replication_plan(
+    plan: Path = typer.Option(Path("outputs/criteo_replication/plan.json")),
+    results: Path = typer.Option(Path("outputs/binary_direct_cp_test_l32")),
+    run: Path = typer.Option(Path("outputs/context_entropy_l32_runs/8ee23db7e6b8e659")),
+    source_manifest: Path = typer.Option(Path("data/CriteoPrivateAd_release/source_manifest.json")),
+    shards_per_day: int | None = typer.Option(None, min=1, help="Default: all remaining shards of at least 50 MB each day."),
+) -> None:
+    """Freeze the L32 cohort, predictors and additional Criteo shards before evaluation."""
+    from capt12.experiments.criteo_replication import prepare
+
+    typer.echo(prepare(results, run, source_manifest, plan, shards_per_day))
+
+
+@app.command("criteo-replication-run")
+def criteo_replication_run(
+    plan_sha256: str = typer.Option(..., "--plan-sha256"),
+    plan: Path = typer.Option(Path("outputs/criteo_replication/plan.json"), exists=True),
+    output: Path = typer.Option(Path("outputs/criteo_replication/result.json")),
+    cache: Path = typer.Option(Path("data/criteo_replication_cache")),
+) -> None:
+    """Evaluate only the registered shards with the frozen predictors and budgets."""
+    from capt12.experiments.criteo_replication import evaluate
+
+    evaluate(plan, plan_sha256, output, cache)
+    typer.echo(output)
+
+
 @app.command("fixed-capt-ctr-comparison")
 def fixed_capt_ctr_comparison(
     certificate: Path = typer.Option(..., "--certificate", exists=True, dir_okay=False),

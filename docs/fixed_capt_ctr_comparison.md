@@ -144,3 +144,26 @@ uv run capt12 context-stratified --config configs/criteo_context_entropy_l16.yam
 再学習CTRと最適LDPの効用評価には、この実行が発行した証明書を
 `fixed-capt-ctr-comparison` に渡し、その結果を `fixed-capt-theory` で集約する。
 各方式の損失を同じ検証contextと件数重みで比較する。
+
+## Criteoの追加シャードによる固定二値CAPTの追試
+
+L=32の保存済み結果 `outputs/binary_direct_cp_test_l32/{00..30}.json` と元の証明書・モデルを使う。最初に実行機上で対象、予測器、チャネル、較正予算、評価コードを固定する。日25–30のうち元の `source_manifest.json` に含まれず、旧実験のサイズ基準（50 MB以上）を満たす全シャードを対象とする。使用履歴はこのマニフェストの範囲で確認する。別の場所で候補シャードの結果も閲覧していた場合、そのシャードを未使用とは扱えない。
+
+```bash
+mkdir -p logs
+PLAN_SHA=$(uv run capt12 criteo-replication-plan)
+echo "$PLAN_SHA"
+```
+
+表示されたSHA-256を評価前に記録する。旧データと `source_manifest.json` は元の配置を保つ。パスが異なる場合は計画作成時に `--results`、`--run`、`--source-manifest` で指定できる。事前に小規模な追試を選ぶ場合は `--shards-per-day 1` を指定する。その場合、各日でサイズが最小の適格ファイルを選び、同サイズならパス順で決める。
+
+```bash
+nohup uv run capt12 criteo-replication-run --plan-sha256 "$PLAN_SHA" \
+  > logs/criteo_replication.log 2>&1 < /dev/null &
+```
+
+実行時に固定リビジョンの登録ファイルだけを取得し、SHA-256を検証して `data/criteo_replication_cache/` に保存する。日ごとに旧シャードに一度でも出たユーザーを除外し、追加シャードを横断して各ユーザー日から従来の安定ハッシュで1表示を選ぶ。その後に対象contextを絞る。ピークメモリには1日分の表示ID・ユーザーIDが含まれる。特徴量はバッチ単位で読む。
+
+`outputs/criteo_replication/result.json` には、各日の除外件数、context別件数、学習済みCAPTの期待logloss、元トークン上の最適LDPの65点格子上下界、両者の差を記録する。重みは追試で採用したユーザー日の出現比率。主比較は一律較正で、このランではTV較正の予算も各contextで一致する。追加ログでの属性比は各有向隣接群と両出力を調べ、未観測群の閾値事象確率には区間 [0,1] を使う。`empirical_comparison=win` は、正の効用差と正件数の全対象contextでの属性予算をともに確認した場合に限る。
+
+対象は指定プロファイルを適用した追加ログである。匿名IDが日ごとに変わるため実人物の日をまたぐ独立性は検証できない。`independent_unit_sensitivity` の上下限は独立抽出を仮定した参考値で、未知の母集団については `population_status=assumptions_not_enabled` と報告する。既存の計画・結果の上書きは拒否する。ダウンロードが途中で失敗した場合は、同じ計画とSHA-256で評価を再実行できる。

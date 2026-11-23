@@ -1,0 +1,786 @@
+% !TeX program = lualatex
+% LuaLaTeX で2回コンパイルする。外部の図・データ・文献ファイルは不要。
+\RequirePackage{fix-cm}
+\documentclass[a4paper,11pt]{ltjsarticle}
+\usepackage[left=22mm,right=22mm,top=22mm,bottom=23mm,headheight=16pt]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,booktabs,array,needspace}
+\usepackage{xcolor,fancyhdr}
+\usepackage[unicode,hidelinks,pdfencoding=auto]{hyperref}
+\definecolor{ink}{HTML}{193C4C}
+\newtheoremstyle{jp}{9pt}{5pt}{\normalfont}{}{\bfseries\color{ink}}{．}{0.4em}{}
+\theoremstyle{jp}
+\newtheorem{thm}{定理}
+\newtheorem{prop}[thm]{命題}
+\newtheorem{lem}[thm]{補助定理}
+\AddToHook{env/thm/before}{\Needspace{4\baselineskip}}
+\AddToHook{env/prop/before}{\Needspace{4\baselineskip}}
+\AddToHook{env/lem/before}{\Needspace{4\baselineskip}}
+\renewcommand{\proofname}{証明}
+\newcommand{\E}{\mathbb E}
+\newcommand{\PP}{\mathbb P}
+\newcommand{\ind}{\mathbf 1}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\TV}{\operatorname{TV}}
+\newcommand{\Ber}{\operatorname{Ber}}
+\newcommand{\RR}{\operatorname{RR}}
+\newcommand{\CP}{\operatorname{CP}}
+\newcommand{\Dc}{D_R}
+\newcommand{\V}{V_Z}
+\newcommand{\cA}{\mathcal A}
+\newcommand{\cL}{\mathcal L}
+\newcommand{\ecr}{\varepsilon_\times}
+\newcommand{\law}{\mathfrak P}
+\newcommand{\cx}{\widehat C}
+\newcommand{\para}[1]{\par\Needspace{3\baselineskip}\addvspace{.6\baselineskip}\noindent\textbf{#1}\enspace}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\footnotesize CAPT-12}\fancyhead[R]{\footnotesize 固定二値CAPTと最適LDP}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\emergencystretch}{1.2em}
+\hypersetup{pdftitle={固定二値CAPTと較正済み最適LDPの比較},pdfsubject={勝利条件、直接認証、有限標本からの母集団推論}}
+\begin{document}
+\begin{center}
+{\Large\bfseries 固定二値CAPTと較正済み最適LDPの比較}\\[4pt]
+{\large 勝利条件、属性プライバシー認証、有限標本からの母集団推論}\\[7pt]
+{\small 2026年11月23日}
+\end{center}
+
+\noindent
+固定したCAPTが任意の元トークンLDPに勝つかどうかは、
+属性から識別しやすい情報と、クリック予測に役立つ情報がどこにあるかで変わる。
+本稿では、双方が許されるプライバシー予算を明示し、必要十分条件、有限の逆転境界、
+および較正後にも厳密な優位が残る解析例を与える。
+二値直接認証では、設計時の有限な閾値族を同時認証し、各閾値に対する最も情報量の多い
+公開確率を閉形式で求められる。最後に、母集団の最適LDPに対しても有効な片側信頼限界を証明する。
+31文脈の既存データで数値的不等式は成立するが、今回のテストで確認できた勝利は経験分布上のものである。%
+\footnote{比較設定は研究資料『固定したCAPTチャネルが最適なLDPを上回る条件』と
+『固定CAPTと最適LDPの比較ノート再検証』に基づく。}
+
+\para{論証の構成}
+中心となるのは定理\ref{th:win}・\ref{th:cross}（勝利）、
+定理\ref{th:cert}（機構の適格性）、定理\ref{th:population}と補助定理\ref{th:oracle}（推論）である。
+\emph{較正済み}という主張には定理\ref{th:cal}も必要になる。
+命題\ref{th:binarygap}・\ref{th:boxes}・\ref{th:nested}は設計を説明するための結果で、
+固定した一つのチャネルの勝利認証には必須ではない。
+定理\ref{th:optimal}は最適性の主張に、命題\ref{th:decomp}は勝敗の原因の説明に使う。
+補助定理\ref{th:captupper}と命題\ref{th:joint}は定理\ref{th:population}の証明の中にまとめられる。
+
+\para{対象と記号}
+一つの公開文脈 \(w=(s,b)\) に条件を付ける。\(A\) は保護する属性、
+\(Z\in\mathcal Z\) は固定エンコーダの元トークン（\(K=|\mathcal Z|<\infty\)）、
+\(Y\in\{0,1\}\) はクリック、\(C=c_w(Z)\) は固定ブロックである。
+CAPTは固定した \(R_w(o\mid C)\) により \(\cx\) を出力する。
+LDPには同じ \(Z,w\) を与え、任意の有限出力集合と予測器を許す。
+機構の乱数は入力を条件に \(A,Y\) から独立とする。
+以下、対数は自然対数、\(h(p)=-p\log p-(1-p)\log(1-p)\)、\(0\log0=0\) とする。
+
+\(\law_g\) は、文脈内で属性群 \(g\) が取り得る\emph{元トークン}分布の非空な閉集合である。
+保護する有向辺集合を \(\mathcal E\) とし、各辺で
+\(p\in\law_g,\ p'\in\law_{g'}\) の全組を許す。トークンからの誘導チャネル
+\(M_R(o\mid z)=R_w(o\mid c_w(z))\) のロバスト属性予算を
+\[
+ \beta(M)=\inf\{\beta\ge0:(pM)(o)\le e^\beta(p'M)(o)
+ \quad\text{全ての }(g,g'),p,p',o\}
+\]
+とし、\(\beta_R\) は \(\beta(M_R)\) の有効な認証上限とする。
+分母0もこの不等式で扱う。辺のない場合は \(\beta(M)=0\) とする。
+辺ごとの目標を設定するときは各辺で照合する。
+一方、\(\cL_\lambda=\{Q:Q(o\mid z)\le e^\lambda Q(o\mid z')\ \forall z,z',o\}\)
+は元トークン予算 \(\lambda\) のクラスである。属性目標を \(\beta\) と書き、二つの予算を区別する。
+
+\section{どの分布と予算で勝てるか}
+
+\begin{thm}[固定チャネルの勝利条件]\label{th:win}
+属性目標 \(\beta\) で \(\beta_R\le\beta\) を確認したとする。
+\(O_Q\sim Q(\cdot\mid Z)\)、\(\Dc=H(Y\mid\cx)\)、
+\(\V(\lambda)=\inf_{Q\in\cL_\lambda}H(Y\mid O_Q)\) とおく。
+固定CAPTが両側とも予測器を最適化した比較で厳密に勝つための必要十分条件は
+\[
+ \underbrace{I(Y;Z\mid C)+I(Y;C\mid\cx)}_{\text{固定CAPTが失う予測情報}}
+ <\underbrace{\V(\lambda)-H(Y\mid Z)}_{\text{全ての }\lambda\text{-LDP に不可避な損失}} .
+ \tag{1}\label{eq:win}
+\]
+同値に、\(I(Y;\cx)>\sup_{Q\in\cL_\lambda} I(Y;O_Q)\) である。
+十分条件は
+\(I(Y;\cx)>\tanh^2(\lambda/2)\,I(Y;Z)\)。
+必要条件は \(I(Y;C)>H(Y)-\V(\lambda)\)、および全ての \(Q_0\in\cL_\lambda\) に対する
+\(\Dc<H(Y\mid O_{Q_0})\) である。
+\end{thm}
+\begin{proof}
+任意の出力 \(O\) と予測器 \(f\) について期待loglossは
+\[
+ H(Y\mid O)+\E_O\KL\bigl(P_{Y\mid O}\,\|\,f(\cdot\mid O)\bigr)
+ \tag{2}\label{eq:bayes}
+\]
+である。ゆえに \(P_{Y\mid O}\) が最適である。\(Y-Z-C-\cx\) のマルコフ連鎖から
+\(\Dc-H(Y\mid Z)=I(Y;Z\mid C)+I(Y;C\mid\cx)\) を得る。
+両側の条件付きエントロピーを \(H(Y)\) からの減少量で表すと同値条件が従う。
+KLの強データ処理不等式を、各 \(P_{Z\mid Y=y}\) と \(P_Z\) に適用して \(y\) で平均すると
+\(I(Y;O_Q)\le\tanh^2(\lambda/2)I(Y;Z)\)。
+必要条件は \(I(Y;\cx)\le I(Y;C)\) と \(\V(\lambda)\le H(Y\mid O_{Q_0})\) による。
+\cite{sdpi}
+\end{proof}
+
+\para{最適値の計算}
+\(\theta_z=P(Y=1\mid Z=z)\) とする。ラベルが両値を取り得るとき、
+\(I(Y;O_Q)\) は二つの出力条件付き分布 \(P_{O_Q\mid Y=y}\) の事前確率付き
+Jensen--Shannonダイバージェンスであり、\(f\)-ダイバージェンスになる。
+したがってSPR定理を使える。正質量のトークンを \(\theta_z\) 順
+（尤度比順）に並べ、連続区間への分割と、分割上の一般化randomized response（RR）の
+全候補で最小の条件付きエントロピーを求めればよい。
+有限個の分割のいずれかが最適値を達成し、出力数は高々 \(K\) で足りる。
+ゼロ質量行には実行可能な行を複製できる。ラベルが定数なら最適損失は0である。
+\cite{spr}
+
+これにより、勝利条件を分布の質量だけでも書ける。\(\pi_{zy}=P(Z=z,Y=y)\)、
+\(\psi(u,v)=(u+v)h(v/(u+v))\)、\(\psi(0,0)=0\) とする。
+CTR順の連続分割 \(\mathcal B=(B_1,\ldots,B_m)\) について
+\[
+ A_{jy}=P(Y=y)+(e^\lambda-1)\sum_{z\in B_j}\pi_{zy},\quad
+ D_{\mathcal B}=\frac{\sum_{j=1}^m\psi(A_{j0},A_{j1})}{e^\lambda+m-1}.
+\]
+実際、\(A_{jy}/(e^\lambda+m-1)\) がこの区間RRの出力 \(j\) とラベル \(y\) の同時確率である。
+\(r_{oy}=\sum_z\pi_{zy}M_R(o\mid z)\) とすれば、式\eqref{eq:win}は
+\(\sum_o\psi(r_{o0},r_{o1})<D_{\mathcal B}\) が\emph{全ての連続分割}で成立することと同値である。
+最小の右辺は動的計画法で求まる。
+さらに一般の可測出力を許しても下限は同じである。任意の機構の事後CTRを幅 \(1/m\) で
+有限量子化すれば後処理でLDPを保ち、ビン内の事後CTRの平均と元の値の差は高々 \(1/m\)。
+\(h\) の一様連続性により、この有限出力機構のBayes損失は元の値に収束する。
+
+\para{予測に十分な属性保護統計量}
+ある \(T=T(Z)\) が \(Y\perp Z\mid T\) を満たし、固定CAPTが \(T\) を公開できるとする。
+全ての対象辺と値 \(t\) について
+\(\sup_{p\in\law_g}p(T=t)\le e^\beta\inf_{p'\in\law_{g'}}p'(T=t)\)
+なら、この公開は属性認証を通り、損失は \(H(Y\mid Z)\) である。
+\(I(Y;Z)>0\) なら、次の定理により全ての有限名目予算に対して厳密に勝つ。
+例えば群法則が既知で、予測に十分な \(T\) の分布が属性群間で同じなら属性予算は0となる。
+認証集合に幅がある場合には、その全体で上の不等式を確認する。
+
+\begin{thm}[固定した一つのチャネルの逆転境界]\label{th:cross}
+\[
+ \ecr(R)=\inf\{\lambda\ge0:\V(\lambda)\le\Dc\},\qquad \inf\varnothing=+\infty .
+\]
+有限予算での効用の厳密勝利集合は \([0,\ecr(R))\) である。
+属性上限と元トークン上限を共通の数値 \(\varepsilon\) で指定する場合、
+与えられた認証値で勝利を保証できる区間は \([\beta_R,\ecr(R))\) である
+（左端が右端以上なら空）。属性目標を別に固定した較正比較では
+\(\beta_R\le\beta\) を確認し、有限の較正予算 \(\lambda_{\mathrm{cal}}(\beta)<\ecr(R)\)
+かを調べる。境界そのものでは厳密勝利はない。
+\end{thm}
+\begin{proof}
+\(\V(0)=H(Y)\) であり、予算の増加で可行集合は広がる。
+上で述べた有限個の各SPR分割の損失は予算の連続関数なので、その最小値も連続である。
+元トークンを \(K\) 値RRで出すと無限予算の極限で恒等チャネルに近づく。
+データ処理による下界と合わせて \(\lim_{\lambda\to\infty}\V(\lambda)=H(Y\mid Z)\)。
+
+\(\theta_Z\) が非定数なら \(\V\) は有限予算で厳密に減少する。
+実際、予算 \(\lambda\) の最適出力 \(O\) に、\(Z\) を予算 \(\delta>0\) の \(K\) 値RRで
+独立に報告した \(J\) を追加すると、積の尤度比から予算は \(\lambda+\delta\) 以下である。
+有限LDPでは正質量の各出力 \(o\) のもとで全ての正質量トークンが残る。
+\(m_o=P(Y=1\mid o)\)、\(k_\delta=(e^\delta-1)/(e^\delta+K-1)>0\) とおくと
+\[
+ \operatorname{Cov}(Y,\ind_{\{J=j\}}\mid o)
+ =k_\delta P(Z=j\mid o)(\theta_j-m_o).
+\]
+少なくとも一つの \(j\) で非ゼロなので \(I(Y;J\mid O)>0\) である。
+従って \(H(Y\mid Z)<\Dc<H(Y)\) なら \(\V(\lambda)=\Dc\) の有限解がただ一つある。
+\(\Dc=H(Y)\) なら境界は0で、\(\theta_Z\) が非定数かつ \(\Dc=H(Y\mid Z)\)
+なら境界は \(+\infty\)。\(\theta_Z\) が定数なら \(\Dc=H(Y)\) で境界は0である。
+これらと属性条件の共通部分を取ればよい。
+\end{proof}
+
+\para{上下界しかない場合}
+\(\Dc\in[d^-,d^+]\)、\(\V(t)\in[v^-(t),v^+(t)]\) とする。
+\(v^-(a)>d^+\) は \(a<\ecr(R)\)、\(v^+(b)\le d^-\) は \(\ecr(R)\le b\) の証拠になる。
+両判定を別々に二分探索し、格子で判定できない点では符号を決めない。
+有限上限まで勝つという計算だけで \(\ecr=+\infty\) は導けない。
+複数文脈に共通予算を与える場合は同じ母集団重みの \(\sum_w p_w V_{Z,w}(t)\)
+と \(\sum_w p_wD_{R,w}\) に同じ議論を用いる。
+少なくとも一つの正質量文脈で予測情報があれば曲線は厳密に減少する。
+文脈別に異なる予算では、各文脈の損失をその予算で評価して加重する。
+
+\para{解析例．属性の識別とクリック予測を分ける}
+\(A\) を公平なビット、\(P(U=1\mid A=0)=1/4,\ P(U=1\mid A=1)=3/4\)、
+\(Y=U,\ Z=(A,U),\ C=U\) とする。群の不確実性集合は真の分布を含む単点で、両方向を保護する。
+CAPTは \(U\) を確率 \(3/4\) で正しく公開する。群別の出力1の確率は \(3/8,5/8\) なので
+\(\beta_R=\log(5/3)>0\)。群のトークン支持が互いに素なので、定理\ref{th:cal}より
+\(\lambda_{\mathrm{TV}}=\lambda_{\mathrm{unif}}=\log(5/3)\)。
+任意のトークンLDPを \(A\mid U\) で平均した二つの行もLDPで、同じ \((Y,O)\) を再現する。
+逆に \(U\) だけを入力にする機構も実行できる。二値入力では予算 \(\lambda\) の
+対称RRの後処理で全ての \(\lambda\)-LDPを実現できる。
+実際 \(E=e^\lambda>1\) とし競合の行を \(q_0,q_1\) と書けば、後処理の行は
+\((Eq_0-q_1)/(E-1),(Eq_1-q_0)/(E-1)\) で、いずれも確率分布である。
+よって
+\[
+ \V(\lambda)=h\bigl(1/(1+e^\lambda)\bigr),\qquad
+ \Dc=h(1/4),\qquad \ecr(R)=\log3 .
+\]
+較正後の勝利幅は \(h(3/8)-h(1/4)\simeq0.09923\) natsである。
+
+同じ \((A,U,Y)\) と \(R\) でも元トークンが \(Z=U\) だけなら、
+\(\bar\delta=1/2,\ J_{\beta_R}=1/3\)。TV較正は \(\log(7/3)\) でCAPTが勝つが、
+厳密一律較正は \(\log3\) で同点になる。したがって \(I(A;Y)\) や \(\beta_R\) だけでは勝敗は決まらない。
+重なった支持でも勝てる。例えば \(Z=(U,W)\) の \(W\) が \(A\) を独立な確率 \(1/8\) で
+反転した代理変数なら、\(W\) の一事象だけで \(J_{\beta_R}\ge 7/8-(5/3)/8=2/3\)。
+従って \(\lambda_{\mathrm{unif}}\le\log2<\log3\) である。
+さらに \(Y=U\) に独立な反転率 \(\nu<1/2\) のラベル雑音を加えても、
+双方の \(h(p)\) が \(h(\nu+(1-2\nu)p)\) に変わるだけで境界は同じである。
+
+\begin{prop}[厳密勝利が不可能な場合]\label{th:impossible}
+\(M_R\in\cL_\lambda\) なら \(\V(\lambda)\le\Dc\)。
+\(Y\) と \(Z\) が独立である場合も厳密勝利はない。
+一つの保護辺の両端のトークン不確実性集合が全単体なら、その有向辺の
+属性予算 \(\beta\) を通る全てのチャネルは \(\beta\)-LDPである。
+また、名目上限を設けず、同じ属性認証を通る全ての有限予算LDPと比較すると、
+CAPTはその下限値に対して正の勝利幅を持てない。
+\end{prop}
+\begin{proof}
+第一の主張は自身が競合に含まれることから、第二はデータ処理から従う。
+全単体なら任意の二点質量 \(p=\delta_z,p'=\delta_{z'}\) を属性不等式に代入できる。
+最後の主張では \(M_R\) に入力と独立な一様出力を確率 \(\tau>0\) で混ぜる。
+線形な属性不等式は保たれ、全成分が正なのである有限予算のLDPである。
+\(\tau\downarrow0\) とエントロピーの連続性により、その損失は \(\Dc\) に近づく。
+このため比較クラスの名目予算を明記する必要がある。
+\end{proof}
+
+\section{二値直接認証アルゴリズムの保証}
+
+\begin{thm}[閾値を選んだ後にも成立する属性認証]\label{th:cert}
+文脈 \(w\) の候補 \(T_w\) 個を \(H_j=\ind_{\{C\in S_j\}}\) とする。
+エンコーダ、ブロック、候補族と保護群・辺は認証標本と独立に固定する。
+群 \(g\) の件数 \(n_g\) に条件を付けた各事象の成功数が
+\(\operatorname{Bin}(n_g,p_{gj})\) に従うとする。
+全 \(g,j\) について \(p_{gj}\) の両側Clopper--Pearson区間を作り、
+区間ごとの失敗確率を足して \(\alpha_w\) 以下とする。
+\(n_g=0\) なら \([0,1]\) を使う。適用先の群条件付きトークン分布が認証期から
+TVで \(\Delta_g\) 以内なら、両端を \(\Delta_g\) ずつ拡張して \([0,1]\) と交わらせる。
+得られた区間を \([l_{gj},u_{gj}]\) と書く。
+
+一つの候補について \(q_0=P(\cx=1\mid H_j=0),\
+q_1=P(\cx=1\mid H_j=1)\) とし、出力の入れ替えで \(q_1\ge q_0\) とする。
+\(d=q_1-q_0\)、有向辺 \(e=(g,g')\) の目標を \(\beta_e\)、\(E_e=e^{\beta_e}\) とすると、
+この区間族の全組を保護するための必要十分条件は次の二式である。
+\begin{align}
+ q_0+d\,u_{gj}&\le E_e(q_0+d\,l_{g'j}),\nonumber\\
+ 1-q_0-d\,l_{gj}&\le E_e(1-q_0-d\,u_{g'j}). \tag{3}\label{eq:priv}
+\end{align}
+これを全辺で満たせば、候補も \(q_0,q_1\) も認証標本に応じて選べる。
+全ての対象文脈・辺で選択後のチャネルが属性保証を満たす確率は
+少なくとも \(1-\sum_w\alpha_w\) である。
+\end{thm}
+\begin{proof}
+\(0<k<n\) のとき、片側誤差 \(\tau\) の下端・上端はそれぞれ
+\(\PP_{\ell}(X\ge k)=\tau,\ \PP_u(X\le k)=\tau\) を満たす。
+\(k=0\) の下端は0、\(k=n\) の上端は1である。
+二項尾確率の単調性により、真のパラメータを区間から外す片側の確率は各 \(\tau\) 以下である。
+これを群・候補・文脈にわたり和事象評価すれば、全区間を一度に覆う。
+事象の確率変化はTV以下なので、拡張後は適用先も覆う。
+出力1の確率 \(q_0+dp\) は \(p\) の増加関数、出力0は減少関数である。
+各辺の左右で最悪の端点を代入すると \eqref{eq:priv} を得る。
+同時被覆事象では、この決定論的検査を通る選び方の全てに結論が成り立つ。
+二方向を保護する場合は逆辺も検査する。異なる閾値や文脈の統計量どうしの独立性は不要である。
+\cite{cp}
+\end{proof}
+
+\para{現行実装との対応}
+\(L=32\) では設計データのブロックCTRを安定ソートし、その順序の31切断点を全て候補にする。
+認証用ヒストグラムを各候補の高低二セルに足し、実装は群数 \(G_w\)、二セル、
+\(T_w\) 候補に配分するため、各セルの片側確率は
+\(\alpha_w/(4G_w T_w)\) である。二セルは補集合なので、理論上は一事象を
+片側 \(\alpha_w/(2G_wT_w)\) で扱ってもよい。
+保存チャネルの監査では、この一事象の理想区間を外から覆うことを二項尾確率でも検査し、
+丸めた公開行について全辺の比を再計算した。
+全閾値の区間を同時に持てば、それらのトークン逆像の共通部分も被覆される。
+今回の較正は、採用した閾値の二セル区間の全逆像を用いる。これは共通部分より大きくなり得る。
+現行の二値直接認証コマンドが受理するのはブロックTVシフト0の有限標本証明書である。
+正のシフトについて式\eqref{eq:priv}を使う場合は、拡張した区間による再検査が必要である。
+
+\begin{thm}[固定閾値に対する最適公開確率と閾値選択]\label{th:optimal}
+一つの候補と上記の固定区間を取り、添字 \(j\) を省略する。各正予算辺について
+\[
+ a_*=\max\!\left(0,\max_{e:\beta_e>0}\frac{u_g-E_e l_{g'}}{E_e-1}\right),\qquad
+ c_*=\max\!\left(1,\max_{e:\beta_e>0}\frac{E_e u_{g'}-l_g}{E_e-1}\right)
+ \tag{4}\label{eq:ac}
+\]
+と置く。空の最大は無視する。予算0の辺があれば
+\(u_g\le l_{g'},\ u_{g'}\le l_g\) の両方を要求する。この条件に反する辺があれば
+定数行 \(q_0=q_1\) しか可行でない。それ以外では
+\[
+ q_0^*=\frac{a_*}{a_*+c_*},\qquad q_1^*=\frac{a_*+1}{a_*+c_*}
+ \tag{5}\label{eq:opt}
+\]
+が可行で、同じ閾値の任意の可行二値チャネルはこのチャネルの確率的後処理で得られる。
+従って任意の固定した評価分布でBayes loglossを最小化する。
+同じ評価分布で各候補の最小値を比較すれば、閾値候補族内の最適値を得る。
+\end{thm}
+\begin{proof}
+\(d>0\) なら \(a=q_0/d\ge0,\ c=(1-q_0)/d\ge1,\ d=1/(a+c)\)
+と書ける。出力1と0の群確率はそれぞれ \(d(a+p),d(c-p)\) である。
+\eqref{eq:priv}を代入すると、正予算辺での制約はちょうど \(a\ge a_*,\ c\ge c_*\) になり、
+予算0の辺では定理に示した二条件を得る。
+任意のこのような \(a,c\) に対して、最適候補の出力 \(i=0,1\) を観測した後に
+確率 \(s+t i\) で1を出す。ただし
+\[
+ s=\frac{a-a_*}{a+c},\qquad t=\frac{a_*+c_*}{a+c}.
+\]
+\(0\le s\le s+t\le1\) であり、閾値入力 \(j=0,1\) で
+\(s+t(a_*+j)/(a_*+c_*)=(a+j)/(a+c)\)。
+定数行も入力に依存しない後処理で得られる。データ処理不等式と有限族での最小化が結論を与える。
+\end{proof}
+
+\para{何を最適化したか}
+実装は各辺で \(\beta'_e=\max(0,\min(\beta_e,100)-10^{-9})\) を用い、式\eqref{eq:opt}の後に
+確率 \(10^{-10}\) で公平なビットを混ぜる。その実装候補すべての
+\emph{設計表示分布}上の条件付きエントロピーを浮動小数点で比較する。
+従って式\eqref{eq:opt}の厳密最適性は、指定予算・固定区間の理想問題についての結果である。
+安全マージン、数値比較、設計分布と適用先の違いは残る。
+例えば可行な恒等ビットに正の混合を加えれば、非定数CTRの分布では厳密な効用損失が生じる。
+最後に再学習したCTR予測器の性能には式\eqref{eq:bayes}の推定誤差も加わる。
+
+\begin{prop}[二値出力が十分な場合と、厳密な制限損失]\label{th:binarygap}
+同じ元トークン、属性予算・不確実性集合で、任意の有限出力の属性保護チャネルの
+Bayes損失の下限を \(D_{\cA}\)、任意の二値出力についての最小値を \(D_2\)、
+理想的な固定閾値候補族での最小値を \(D_{\mathrm{thr}}\) とする
+（候補族の全チャネルが同じ属性認証を通るとする）。このとき
+\(H(Y\mid Z)\le D_{\cA}\le D_2\le D_{\mathrm{thr}}\)。
+任意の可行出力 \(O\) と二値化 \(k(O)\) について
+\[
+ 0\le D_2-D_{\cA}\le
+     H(Y\mid O)-D_{\cA}+I(Y;O\mid k(O)).
+ \tag{6}\label{eq:bitgap}
+\]
+\(D_2=D_{\cA}\) となる必要十分条件は、最適な属性保護チャネルの少なくとも一つで
+事後CTRが正質量上で高々二値となることである。
+\end{prop}
+\begin{proof}
+クラスの包含とデータ処理から順序が従う。
+属性認証は後処理で保存され、\(H(Y\mid k(O))-H(Y\mid O)=I(Y;O\mid k(O))\) なので
+\eqref{eq:bitgap}を得る。この情報量は、\(P(Y=1\mid O)\) をそのビン内平均で
+予測したときの平均Bernoulli KLである。事後CTRが二値以下なら同じ値の出力をまとめて損失0で二値化できる。
+逆に任意の二値チャネルは \([0,1]^K\) で表せ、可行集合は閉でコンパクト、損失は連続である。
+\(D_2=D_{\cA}\) ならこの二値最適解が全体の最適解を与える。
+特定の閾値族まで最適とするには、その十分な二値化が同族で実現できることも要る。
+\end{proof}
+
+\para{正のギャップの例}
+\(Z\) は等確率の三値、事後CTRは \(0,1/2,1\) とする。\(A\) は \(Z\) と独立で、
+群法則は既知で同じとする。全チャネルが属性予算0を通り、恒等公開で \(D_{\cA}=(\log2)/3\)。
+条件付きエントロピーは出力・ラベルの同時分布について凹で、同時分布はチャネルの行に線形である。
+従って二値チャネルの最小値は立方体の頂点にある。三状態を二つに決定的にまとめる全通りでは
+\(0,1/2\) または \(1/2,1\) を一緒にするのが最良で、\(D_2=2h(1/4)/3\)。
+差は約 \(0.14384\) natsである。クリックが二値でも、必要な出力数は事後CTRが何値を取るかに依存する。
+
+\begin{prop}[直接区間と32セル区間の比較]\label{th:boxes}
+同じ群のブロック確率に単体制約とセル別区間 \([l_i,u_i]\) を課したとき、
+閾値集合 \(S\) の事象確率に対する正確な射影区間は
+\[
+ \left[
+ \max\!\left\{\sum_{i\in S}l_i,\ 1-\sum_{i\notin S}u_i\right\},
+ \ \min\!\left\{\sum_{i\in S}u_i,\ 1-\sum_{i\notin S}l_i\right\}
+ \right]. \tag{7}\label{eq:projection}
+\]
+直接認証区間が全群でこの区間に含まれるなら、同じ閾値・同じ出力の可行チャネルは全て直接認証でも可行である。
+同じ目的関数での最適損失は増加しない。包含は常に成立するわけではない。
+\end{prop}
+\begin{proof}
+\(S\) 内の総和はセル下限の和から上限の和までの全ての値を取り、
+補集合側も同様である。二つの総和が1になる条件を課すと式\eqref{eq:projection}を得る。
+区間を狭めると全称制約\eqref{eq:priv}の最悪値は緩む。
+式\eqref{eq:ac}の最小 \(a,c\) は大きくならず、旧最適チャネルは新最適チャネルの後処理となる。
+少なくとも一方の最小値が厳密に減り、旧チャネルへの後処理が異なる事後CTRの正質量出力を混ぜれば、
+厳密なエントロピー凹性から損失は厳密に改善する。
+\end{proof}
+
+\para{双方の向きが現れる有限標本}
+ある一群に配分済みの誤差を \(\alpha=0.05\) とし、\(L=32,T=31\) とする。
+各セルに1件ずつの \(n=32\) で \(S\) を16セルとする。
+旧セルの片側誤差 \(\tau_B=\alpha/64\) では共通下端 \(l\le\tau_B\)、上端 \(u>1/16\)
+である（\(p=1/16\) での零件確率 \((15/16)^{32}>\tau_B\)）。
+式\eqref{eq:projection}は \([16l,1-16l]\) となり、\(16l<1/8\)。
+直接二セルの片側誤差 \(\tau_D=\alpha/(4T)\) では、\(p=1/8\) のとき
+\(\PP(X\ge16)\le 2^{32}(1/8)^{16}=2^{-16}<\tau_D\)。
+対称性から直接区間は \((1/8,7/8)\) 内に入り、両端で厳密に狭い。
+反対に \(S\) が一セルで \(0<k<n\) なら、\(\tau_D<\tau_B\) の直接区間は旧セルの区間より広い。
+単体との射影は旧区間をさらに狭め得る。
+従来の32出力robust LPでは出力数や固定デコーダの設計費用も異なる。
+この包含で比較できるのは同じ閾値・出力・損失を課した問題までであり、既存の32出力解との比較には両方の損失評価が要る。
+
+\Needspace{9\baselineskip}
+\section{情報損失とブロック分割}
+
+\begin{prop}[予測情報が失われる段階]\label{th:decomp}
+同じ文脈と母集団上で
+\[
+ \Dc=H(Y\mid Z)+I(Y;Z\mid C)+I(Y;C\mid\cx).
+\]
+さらに、二値直接認証で \(\cx\) が \(H_j\) を通じてだけ \(C\) に依存する場合は
+\[
+ I(Y;C\mid\cx)=I(Y;C\mid H_j)+I(Y;H_j\mid\cx).
+\]
+したがって「ブロック以降の損失」には閾値で高低にまとめた損失と、ビット公開のランダム化損失が含まれる。
+\end{prop}
+\begin{proof}
+連鎖 \(Y-Z-C-H_j-\cx\) に沿って
+\(H(Y\mid C)-H(Y\mid Z)\)、\(H(Y\mid H_j)-H(Y\mid C)\)、
+\(H(Y\mid\cx)-H(Y\mid H_j)\) を足す。それぞれ対応する条件付き相互情報量である。
+後二項をまとめれば第一式になる。学習済み予測器にはさらに式\eqref{eq:bayes}の非負項を足す。
+\end{proof}
+
+\begin{prop}[入れ子分割と最終損失]\label{th:nested}
+同じ分布上で粗い分割 \(C_1\) が細かい分割 \(C_2\) の関数なら
+\(I(Y;Z\mid C_1)-I(Y;Z\mid C_2)=I(Y;C_2\mid C_1)\ge0\)。
+二つの固定した公開チャネルの最終損失の大小は、これだけでは決まらない。
+同じ不確実性集合のもとで、細分化後にも全ての旧可行チャネルを模倣できれば、
+細分化後の\emph{最適値}は悪化しない。
+\end{prop}
+\begin{proof}
+第一式は \(H(Y\mid C_1)-H(Y\mid C_2)\) を二通りに書けばよい。
+例えば \(Z=(U,V),Y=U\)、\(U,V\) は独立な公平ビット、\(A\) は独立で群法則は既知とする。
+粗い \(C_1=U\) をそのまま公開すると損失0、細かい \(C_2=(U,V)\) から定数のみを出すと損失は \(\log2\) であり、両者は属性予算0を守る。
+一般の固定チャネルでも細分化による \(I(Y;C_2\mid C_1)\) の改善分を、公開段階の損失増加が上回り得る。
+模倣可能なら旧チャネルを細分化後の候補に含めて最小化できる。
+別々に推定した信頼集合、入れ子でない分割、異なるデコーダや候補族には、この包含を改めて確かめる必要がある。
+\end{proof}
+
+\section{有限標本から母集団勝利を認証する}
+
+対象文脈集合、元トークン写像、スコア \(f_w\)、CAPTチャネル、標本計画、誤差配分を
+評価標本と独立に固定する。以降 \(P\) は適格な一ユーザー日の \((W,Z,Y)\) の法則、
+\(P_N\) は独立な \(N\) 件の経験分布、\(p_w=P(W=w)\) とする。
+ランダムな標本context数を \(n_w\) とする。
+公開文脈を両者が利用できる全体の最適LDP損失は
+\[
+ \mathcal V(P,\boldsymbol\lambda)=\sum_w p_w V_{Z,w}(\lambda_w)
+ =\inf_{(Q_w,f'_w)_w}P\,\ell_{Q,f'},\qquad
+ \ell_{Q,f'}(w,z,y)=\sum_o Q_w(o\mid z)[-\log f'_w(y\mid o)] .
+\]
+\(P X=\E_P X\) と書く。母集団文脈比率を外部で固定した実験計画には、その重みに対応する別の標本設計が必要となる。
+
+\begin{thm}[未知母集団に対する同時勝利認証]\label{th:population}
+プライバシー認証と較正が確率 \(1-\alpha_P\) 以上で一緒に有効とする。
+各文脈の較正予算は共通の決定論的な包絡 \(\lambda_w\le\lambda^0_w\) を満たすとする
+（この関係が認証事象上だけで成り立つ場合もよい）。
+補助定理\ref{th:oracle}で \(\boldsymbol\lambda^0\) の下界 \(L\)、
+補助定理\ref{th:captupper}で固定予測器の上界 \(U\) を構成する。
+\(\alpha_P+\delta_L+\delta_C\le0.05\) なら、確率95\%以上で属性保証と
+\[
+ P\,\ell_{R,f}\le U,\qquad L\le\mathcal V(P,\boldsymbol\lambda)
+\]
+が同時に成り立つ。従って \(U<L\) を合格条件とする手続きによる
+誤った母集団勝利宣言の確率は5\%以下である。
+\end{thm}
+\begin{proof}
+両補助定理と認証事象の共通部分で、\(\mathcal V(P,\boldsymbol\lambda^0)
+\le\mathcal V(P,\boldsymbol\lambda)\) が単調性から従う。
+\(U<L\) なら母集団において学習済みCAPTが、文脈別にチャネルと予測器を自由に
+最適化する全LDPの下限値を厳密に下回る。共通部分の確率を命題\ref{th:joint}で下から抑える。
+区間が重なるときには、この片側判定による勝敗は未確定である。
+\end{proof}
+
+\para{65点格子が元トークン最適値を挟む理由}
+各 \(w\) の経験CTR \(\hat\theta_z\) を、隣接する格子
+\(t_i\le\hat\theta_z\le t_{i+1}\) に平均保存分割する。
+具体的には \(Z=z\) のもとで上端を確率 \((\hat\theta_z-t_i)/(t_{i+1}-t_i)\) で選び、
+得た値を \(T\) とする。この \((Z,T)\) の結合を使い、\(T=t\) を与えた
+\(Y\) を \(Z\) と独立な \(\Ber(t)\) として作る。このとき \((Z,Y)\) の周辺分布は元の
+経験分布と一致し、\(Y-T-Z\) が成り立つ。どの元トークンLDPも前に \(P(Z\mid T)\) を合成すると、
+同じ \((Y,O)\) を与える格子入力LDPになる。実際、出力列の混合値の最大最小比は元の比以下である。
+従って \(V_T\le V_Z\)。逆に \(Z\) を決定的に区間へ丸めた入力のLDPは
+元トークンでも実行できるので、\(V_Z\le V_{\mathrm{bin}}\)。
+格子上の両端をSPRで解き、下端は下向き、上端は上向きに丸める。
+ゼロ件トークンに擬似カウントを加える必要はない。\(n_w=0\) の文脈の経験寄与は0である。
+
+\begin{lem}[任意の最適LDPに対する次元非依存の片側下界]\label{th:oracle}
+\(G_N\le\mathcal V(P_N,\boldsymbol\lambda^0)\) を各標本で満たす任意の数値下界を使える。
+例えば \(G_N=\sum_{w:n_w>0}(n_w/N)\,\underline v_{w,65}(\lambda_w^0)\)。
+\(0<\delta_L<1,\ v=0.64\) とし、
+\[
+ t=\min\!\left\{0.01,\sqrt{\frac{2\log(1/\delta_L)}{Nv}}\right\},\quad
+ r_L=\frac{\log(1/\delta_L)}{Nt}+\frac{vt}{2},\quad L=\max(0,G_N-r_L).
+ \tag{8}\label{eq:lcb}
+\]
+このとき \(\PP\{L\le\mathcal V(P,\boldsymbol\lambda^0)\}\ge1-\delta_L\)。
+補正 \(r_L\) はトークン数、出力数、公開文脈数に依存しない。
+\end{lem}
+\begin{proof}
+任意の \(\xi>0\) に対して、真の \(P\) での \(\xi\)-最適チャネル族 \(Q^\xi\) を固定する。
+標本に合わせて選び直さない。その真の予測器を
+\(p_y=P(Y=y\mid W,O)\)、\(S=-\log p_Y\)、\(X=\E[S\mid W,Z,Y]\) とする。
+確率0の事象は期待値に寄与しない。任意の標本上で、母集団用の一組も実行できるため
+\[
+ G_N\le\mathcal V(P_N,\boldsymbol\lambda^0)\le P_NX,\qquad
+ PX\le\mathcal V(P,\boldsymbol\lambda^0)+\xi .
+ \tag{9}\label{eq:oracleineq}
+\]
+したがって、この一組の未知損失の上側偏差で足りる。
+この向きにより、全チャネルや全予測器についての一様収束のコストを払わずに済む。
+
+真の事後確率は0に任意に近くなれるので、CAPTで使うクリッピングの仮定を転用しない。
+\(g(t)=\log\E e^{tS}\)、\(c=0.56\) とする。
+二値ラベルでは \(t<1\) の任意のコンパクト区間で \(p^{1-t}|\log p|^j\ (j\le2)\)
+が有界になり、期待値の微分が許される。
+指数傾斜後の分散を使うと
+\[
+ g''(t)=\operatorname{Var}_t(S)
+ \le \frac{\E[e^{tS}(S-c)^2]}{\E e^{tS}} .
+\]
+\(0\le t\le0.01\) では分母は1以上。分子は \((W,O)\) ごとに高々二項で、
+各項は \(u=-\log p_y,\ a=1-t\) として \(e^{-au}(u-c)^2\) となる。
+\(u\ge0\) での最大値は \(u=0\) と \(u=c+2/a\) における値の大きい方である。
+\(a\ge0.99\) より
+\[
+ g''(t)\le2\max\{0.56^2,\ 4e^{-2-0.99(0.56)}/0.99^2\}<0.64 .
+\]
+\(g(0)=0,\ g'(0)=\E S\) と条件付きJensenの不等式から
+\(\log\E e^{t(X-PX)}\le\log\E e^{t(S-\E S)}\le vt^2/2\)。
+独立標本について積を取り、指数Markov不等式を用いると
+\(\PP(P_NX-PX>r_L)\le\delta_L\)。式\eqref{eq:oracleineq}を代入し、
+\(\xi\downarrow0\) で事象 \(\{G_N>\mathcal V(P,\boldsymbol\lambda^0)+r_L+\xi\}\)
+が増加することから結論を得る。
+文脈件数の変動は \(P_NX\) に含まれ、標本比率を既知の母集団比率としては扱っていない。
+\end{proof}
+
+\begin{lem}[固定チャネルと学習済み予測器の上側限界]\label{th:captupper}
+各ユーザー日の損失 \(X_C=\ell_{R,f}(W,Z,Y)\) は出力乱数を積分して計算する。
+固定スコアは \(f_w(1\mid o)\in[\eta,1-\eta]\)、\(0<\eta<1/2\) とする。
+評価標本に未出現の入力・ラベルも含めた決定論的範囲を
+\([a,b]\)、\(W_C=b-a\) とし、\(\bar X_C,s_C^2\) を標本平均と分母 \(N-1\) の分散とする。
+\(N\ge2\) なら確率 \(1-\delta_C\) 以上で
+\[
+ PX_C\le U=\min\!\left\{b,\ \bar X_C+
+ \sqrt{\frac{2s_C^2\log(2/\delta_C)}N}
+ +\frac{7W_C\log(2/\delta_C)}{3(N-1)}\right\}.
+ \tag{10}\label{eq:ucb}
+\]
+\end{lem}
+\begin{proof}
+\(X_C\) は条件付き確率による \(-\log f_w(y\mid o)\) の凸結合であり、
+\(-\log(1-\eta)\le X_C\le-\log\eta\)。
+二値CAPTでは各文脈の高低両行と両ラベルを列挙して、より狭い固定範囲を使える。
+\(W_C>0\) なら \((X_C-a)/W_C\in[0,1]\) に片側経験Bernstein不等式を適用し、元の尺度に戻す。
+\(W_C=0\) は定数損失である。出力を積分した後の標本分散を使い、出力の疑似サンプルを件数に加えない。
+\cite{bernstein}
+\end{proof}
+
+\begin{prop}[プライバシーと効用の合成、テストを用いた選択]\label{th:joint}
+各文脈の全閾値・全群の認証失敗確率を \(\alpha_w\) とし、別途必要な較正集合の
+被覆失敗確率を \(\alpha_{\mathrm{cal}}\) とする。同じ被覆事象を重複して課金する必要はない。
+全体の同時失敗確率は \(\sum_w\alpha_w+\alpha_{\mathrm{cal}}+\delta_L+\delta_C\) 以下である。
+事前指定した \(M\) 個の全体CAPTポリシーからテストで選ぶ場合は、
+共通の母集団・入力・LDP包絡を用いるなら、各CAPT上限に \(\delta_C/M\) を割り当てて同時化できる。
+\end{prop}
+\begin{proof}
+認証事象とそれぞれの片側事象の補集合に和事象評価を使う。文脈ごとの閾値選択は定理\ref{th:cert}
+ですでに覆われており、同じ群が複数辺に現れても追加の失敗は生じない。
+適格な文脈を独立な事前データで決める場合はその選択に条件を付ける。
+\(M\) 候補版も全候補の上限を同時に覆えば、どれを選んでも成立する。
+入力写像や認証族も変えて選択する場合は対応するLDP下界や認証事象も同時に覆う必要がある。
+テストを見た後で設計した機構について、後から数えた \(M\) だけでこの仮定を満たすことはできない。
+\end{proof}
+
+\para{標本の独立性}
+独立だが非同分布の \(P_i\) から固定数採る場合は、対象を \(P=N^{-1}\sum_iP_i\) と定めれば
+同じ二つの限界を使える。上限には独立変数版の経験Bernstein不等式を使い、下限には混合 \(P\) の
+事後確率を一つ選ぶ。\(\sum_i\log \E_{P_i}e^{tX}\le N\log\E_Pe^{tX}\) なので同じ指数評価が成り立つ。
+この拡張にも観測間の独立性が要る。ユーザー日ごとに一件に絞る操作だけでは、同一人物の再訪や
+同じ日の共通ショックに伴う従属性は消えない。\cite{bernstein}
+
+\section{同じ属性保証に対する元トークン予算の較正}
+
+\begin{thm}[一律較正の必要十分条件とTV較正]\label{th:cal}
+\(\beta\ge0\) は有限の属性目標、\(\gamma=e^\beta\) とし、
+\[
+ \bar\delta=\max_{(g,g')\in\mathcal E}\sup_{p,p'}\TV(p,p'),\qquad
+ J_\beta=\max_{(g,g')\in\mathcal E}\sup_{p,p'}\sum_z[p(z)-\gamma p'(z)]_+
+\]
+とする。上限は前記の元トークン集合上で取り、辺がなければ両者を0とする。
+\emph{全ての} \(\lambda\)-LDPが前記の全分布・全辺で属性上限 \(\beta\) を守ることと、
+\[
+ (e^\lambda-1)J_\beta\le e^\beta-1
+ \tag{11}\label{eq:cal}
+\]
+は同値である。従って最大の一律上限と、TVによる安全な上限は
+\[
+ \lambda_{\mathrm{unif}}=\log\!\left(1+\frac{e^\beta-1}{J_\beta}\right),\qquad
+ \lambda_{\mathrm{TV}}=\log\!\left(1+\frac{e^\beta-1}{\bar\delta}\right),
+ \qquad \beta\le\lambda_{\mathrm{TV}}\le\lambda_{\mathrm{unif}}.
+\]
+分母が0の場合、その式の値を \(+\infty\) とする。\(\beta=0\) のとき
+\(J_0=\bar\delta\) であり、正なら最大上限は0、ゼロなら全予算が許される。
+\end{thm}
+\begin{proof}
+\(\lambda>0,\ E=e^\lambda\) とする。有限LDPの非零出力列は
+\(v=m(\mathbf1+(E-1)t)\), \(m=\min_z v_z>0,\ 0\le t_z\le1\) と書ける。
+従って
+\[
+ m^{-1}(p-\gamma p')^\top v
+ \le 1-\gamma+(E-1)\sum_z[p(z)-\gamma p'(z)]_+ .
+\]
+これで十分性を得る。式\eqref{eq:cal}が破れると、右辺が正となる有向辺と分布の組が存在する。
+\(S=\{z:p(z)>\gamma p'(z)\}\) の指示値に二値 \(\lambda\)-RRをかけると、
+出力1の列が \((\mathbf1+(E-1)\ind_S)/(1+E)\) となり、その組の属性制約が実際に破れる。
+\(\lambda=0\) は定数行なので直接従う。\(\gamma\ge1\) から \(J_\beta\le\bar\delta\le1\)。
+この順序と式\eqref{eq:cal}がTV式と大小関係を与える。
+証明は有向辺ごとに働き、逆向きが必要な場合だけその辺を追加する。\cite{spr}
+\end{proof}
+
+\para{個別に属性認証する比較との関係}
+任意の名目上限 \(\lambda_0\) を固定し、個別にも属性認証を通るチャネルだけを残した問題を
+\(W(\beta,\lambda_0)=\inf_{Q\in\cL_{\lambda_0},\,\beta(Q)\le\beta}H(Y\mid O_Q)\) とする。
+集合の包含から \(\V(\lambda_0)\le W(\beta,\lambda_0)\) で、
+\(\lambda_0\le\lambda_{\mathrm{unif}}\) なら両者は等しい。
+それより大きい \(\lambda_0\) では、\(\Dc<\V(\lambda_0)\) は個別認証族への勝利の十分条件にとどまる。
+名目上限を外すと命題\ref{th:impossible}が適用される。
+
+\begin{prop}[較正が等予算に戻る条件と改善の余地]\label{th:preimage}
+有限トークン上のコンパクトな群集合と非空な有限辺集合を仮定する。
+\(\bar\delta=1\)、\(J_\beta=1\)、ある対象辺で許容される二分布が互いに素な支持を持つことは同値である。
+例えば各群の集合がブロック質量制約の\emph{全トークン逆像}で、
+どの非空ビンにも異なる二トークンがあればこの条件を満たす。そのとき両較正予算は \(\beta\) に等しい。
+一方、全辺・全許容組について共通質量
+\(\sum_z\min\{p(z),\gamma p'(z)\}\ge m>0\) を保証できれば \(J_\beta\le1-m\)。
+\(\beta>0\) のとき、これは \(\lambda_{\mathrm{unif}}>\beta\) を保証する。
+\end{prop}
+\begin{proof}
+各組で \(\sum_z[p(z)-\gamma p'(z)]_+=1-\sum_z\min\{p(z),\gamma p'(z)\}\)、
+TVには \(\gamma=1\) の同じ式を使える。最大値は達成されるので、値1と支持の分離が同値である。
+全逆像なら各ビンから群ごとに別の代表トークンを選び、任意の可行な群のビン質量を
+その代表に載せればよい。共通質量が下から抑えられる場合は同じ恒等式と定理\ref{th:cal}による。
+\end{proof}
+
+\para{認証集合の選択}
+同じブロック写像でも、ブロック内に互いに素な元トークン支持が残り得るため、
+ブロックTVを元トークンTVへ代入することはできない。
+元トークンで認証したTV球（中心 \(p_g^0\)、半径 \(r_g\) に統計誤差とシフトを含める）があれば、
+各辺の上界として
+\[
+ J_{\beta,e}\le\min\!\left\{1,\ \TV(p_g^0,p_{g'}^0)+r_g+r_{g'},
+ \ \sum_z[p_g^0(z)-\gamma p_{g'}^0(z)]_++r_g+\gamma r_{g'}\right\}
+\]
+を使える。これは任意の事象の確率変動が各半径以下であることから従う。
+保証付き上界を分母に入れれば予算は安全側だが、最大の一律予算と一致するとは限らない。
+単に数値上界1を返した場合には、互いに素な支持の存在まで示したことにはならない。
+認証CAPTと較正LDPの群集合は共通にする。トークン集合のブロックへの射影が
+既存のブロック認証集合に含まれるだけなら、既存 \(\beta_R\) は共通の許容上限として使え、
+真の最小認証値には改めて両側を同じ集合で評価する必要がある。
+\(J_\beta=0\) で全ての有限予算を許す場合、その合併の最適損失の下限は \(H(Y\mid Z)\)。
+有限予算一つ一つに勝てることと、この下限に対して正の差があることは区別される。
+
+\section{保存された二値CAPTへの適用}
+
+\para{経験分布上の逆転境界}
+CriteoPrivateAdの指定プロファイルを適用したログから、各ユーザー日につき
+安定ハッシュで一表示を選んだ後、学習期・検証期の双方で観測された31文脈を対象とする。
+重みは共通にテスト出現比率 \(n_w/N,\ N=1{,}993{,}209\)。
+元トークン \(K=4096\)、設計ブロック数 \(L=32\)、CAPTの出力数は2で、
+LDPには各文脈で自由にチャネルと予測器を選ばせた。
+保存値を同じトークン集合上で再検査すると、全31文脈の
+\(\beta_{R,w}=\lambda_{{\mathrm{TV}},w}=\lambda_{{\mathrm{unif}},w}\) は
+\(0.999999998875\) と \(0.999999998883\) の間にある。
+元トークン予算を共通にちょうど1まで許した結果を表\ref{tab:audit}に示す。
+
+\begin{table}[htbp]
+\centering
+\caption{同じテスト分布上での二つのCAPT損失と母集団限界。単位はnats／対象ユーザー日。数値は表示桁への概数。}\label{tab:audit}
+\begin{tabular}{@{}lr@{}}
+\toprule
+量 & 計算値\\
+\midrule
+固定チャネルの経験Bayes損失 & 0.615595062\\
+固定チャネル・学習済み予測器の経験損失 & 0.615927337\\
+予算1の経験最適LDPの65点格子範囲 & \([0.619340441,\ 0.619351836]\)\\
+学習済みCAPTに対する経験勝利幅 & \([0.003413104,\ 0.003424500]\)\\
+\midrule
+独立・未使用標本を仮定した \(U_{\mathrm{CAPT}}\) & 0.6167456255\\
+同じ仮定での \(L_{\mathrm{LDP}}\) & 0.6172970018\\
+仮定の下での全体の母集団勝利幅の下限（下向き丸め） & 0.000551376\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+保存したチャネルをテスト経験分布のBayes予測器で評価すると、共通予算
+\(a=1.09619140625\) で格子下界は \(0.61560091367\) 以上、
+\(b=1.09716796875\) で格子上界は \(0.61557685950\) 以下であった。
+双方の比較が厳密なので
+\[
+  \boxed{1.09619140625<\widehat\varepsilon_\times^{\,\mathrm{Bayes}}
+                      <1.09716796875} .
+\]
+その間の予算 \(1.0966796875\) では格子区間がCAPT損失をまたぐ。
+一方、保存した学習済み予測器の経験損失との交点は
+\(1.08740234375<\widehat\varepsilon_\times^{\,\mathrm{fitted}}<1.0888671875\) にある。
+予測器を固定するとCAPT損失が大きくなるため、こちらの境界は小さい。
+いずれも母集団境界の信頼区間ではない。
+全体では両較正予算とも勝利側にある。文脈別の経験Bayes比較では
+31件中5件でCAPT勝利、26件でLDP勝利であり、勝った5件が対象ユーザー日の約85.72\%を占めた。
+
+\para{母集団に関する判定}
+属性認証には日13--18、予測器学習には19--21、予測器検証には22--24、効用テストには25--30を使った。
+対象外の2文脈は学習・検証期だけで除外できる。
+既存の割当は各文脈 \(\alpha_w=0.05/33\) なので、適格な31文脈の属性誤差は約0.046969697。
+\(\delta_C=\delta_L=0.0015\) とすると条件付き同時被覆率は少なくとも95.0030\%である。
+CAPTの補正は約0.000818289、LDPの補正は約0.002043439で、合計約0.002861728は
+経験勝利幅の保守側端点0.003413104を下回る。
+しかし、同じテスト期間の従前の結果を見て二値方式を提案した経緯があり、公開ユーザーIDは日ごとに更新される。
+日間の同一人物の重複や、全ユーザー日の独立性は確認できない。
+さらに、認証期の群分布が適用先でも維持されるかは別の仮定である。
+従って今回の判定は\textbf{経験分布上では全体勝利、未知母集団では未確定}である。
+確証試験には機構・予測器・比較対象・誤差配分・抽出設計を先に固定した独立な未閲覧標本を用いる。
+ログ上には実際のプロファイル選択がなく、評価対象は指定プロファイルを適用した一回の公開である。
+日をまたぐ利用者やオンラインの反復公開へは別途標本設計が必要になる。\cite{criteo}
+
+対象期間との分布の対応を仮定しなければ、過去の観測を一切変えずに将来の \(Y\) が常に0となる
+生成過程も作れる。その将来に対するLDP最適損失は0で、クリップ済みの固定CAPT予測器の損失は正である。
+この反例は、任意の未知の将来分布に対する勝利を今回のログだけからは識別できないことを示す。
+
+\clearpage
+\para{数値の追試}
+リポジトリ直下で次の短いPythonコードを実行すると、逆転境界の証拠に使った
+\(V\) の両端と二種類のCAPT損失を再計算できる。格子中点で符号を決める操作は含まない。
+母集団限界は同じリポジトリの \texttt{tools/audit\_binary\_capt\_population.py} による。
+{\footnotesize
+\begin{verbatim}
+from fractions import Fraction
+from pathlib import Path
+import json, numpy as np
+from capt12.comparison.optimal_ldp.theory import Bounds, weighted_bounds
+from capt12.comparison.optimal_ldp.utility import CTRGrid, joint_probabilities
+
+out = Path("outputs")
+docs = [json.loads((out/"binary_direct_cp_test_l32"/f"{i:02}.json").read_text())
+        for i in range(31)]
+with np.load(out/"binary_direct_cp_test_analysis"/"test_counts.npz") as src:
+    counts = [src[r["context"]] for r in docs]
+n = [int(x.sum()) for x in counts]
+w = [Fraction(k, sum(n)) for k in n]
+grids = [CTRGrid.from_joint(joint_probabilities(x), np.linspace(0, 1, 65))
+         for x in counts]
+print(weighted_bounds([Bounds(**r["test_plugin_capt_bayes"]) for r in docs], w))
+print(json.loads((out/"binary_capt_population_audit"/"audit.json")
+                 .read_text())["capt"]["mean"])
+for e in (1, 1.08740234375, 1.0888671875, 1.09619140625, 1.09716796875):
+    vals = [g.bounds(e) for g in grids]
+    print(e, weighted_bounds([Bounds(v.lower, v.upper) for v in vals], w))
+\end{verbatim}
+}
+
+\begin{thebibliography}{9}\small\setlength{\itemsep}{2pt}
+\bibitem{sdpi} S. Asoodeh and H. Zhang.
+\emph{Contraction of Locally Differentially Private Mechanisms}, Theorem 1.
+\href{https://arxiv.org/abs/2210.13386}{arXiv:2210.13386}.
+\bibitem{spr} E. Ghazi, J. Nasser, F. Calmon and I. Issa.
+\emph{Sort, Partition, Randomize: Optimal Binary Hypothesis Testing under Local Differential Privacy},
+Corollary 3.2, Proposition 3.3, Theorem 3.6.
+\href{https://arxiv.org/abs/2606.07443}{arXiv:2606.07443} (2026).
+\bibitem{cp} C. J. Clopper and E. S. Pearson.
+\emph{The Use of Confidence or Fiducial Limits Illustrated in the Case of the Binomial}.
+Biometrika 26 (1934), 404--413.
+\href{https://doi.org/10.1093/biomet/26.4.404}{doi:10.1093/biomet/26.4.404}.
+\bibitem{bernstein} A. Maurer and M. Pontil.
+\emph{Empirical Bernstein Bounds and Sample Variance Penalization}, Theorems 4 and 11.
+\href{https://arxiv.org/abs/0907.3740}{arXiv:0907.3740} (2009).
+\bibitem{criteo} M. Sebbar et al.
+\emph{CriteoPrivateAd: A Real-World Bidding Dataset to Design Private Advertising Systems},
+\S4.1--4.2. \href{https://arxiv.org/html/2502.12103v2}{arXiv:2502.12103v2} (2025).
+\end{thebibliography}
+\end{document}
